@@ -336,6 +336,7 @@ import { useDateNavigation } from '@/composables/useDateNavigation'
 import { useChartHelpers } from '@/composables/useChartHelpers'
 import { useChartColors } from '@/composables/useChartColors'
 import { useSmartCrop } from '@/composables/useSmartCrop'
+import { useAuth } from '@/composables/useAuth'
 import api from '@/services/api'
 import { getAudioUrl, getBirdImageUrl, getSpectrogramUrl } from '@/services/media'
 
@@ -346,6 +347,7 @@ export default {
   },
   setup() {
     const route = useRoute()
+    const { needsLogin } = useAuth()
     const birdDetails = ref(null)
     const totalVisits = ref(0)
     const firstDetected = ref(null)
@@ -661,6 +663,10 @@ export default {
     }
 
     const triggerFileUpload = () => {
+      if (needsLogin.value) {
+        window.dispatchEvent(new CustomEvent('auth:required'))
+        return
+      }
       imageFileInput.value?.click()
     }
 
@@ -697,6 +703,10 @@ export default {
     }
 
     const revertToWikimedia = async () => {
+      if (needsLogin.value) {
+        window.dispatchEvent(new CustomEvent('auth:required'))
+        return
+      }
       try {
         await api.delete(`/bird/${route.params.name}/image`)
         hasCustomImage.value = false
