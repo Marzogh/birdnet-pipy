@@ -39,12 +39,8 @@ from config.settings import (
     LABELS_PATH,
     LABELS_V3_PATH,
     MODEL_TYPE,
-    RECORDING_MODE,
-    RTSP_URL,
     SPECTROGRAM_DIR,
-    STREAM_URL,
     get_default_settings,
-    load_user_settings,
 )
 from core.api_utils import (
     handle_api_errors,
@@ -88,6 +84,13 @@ from core.migration_audio import (
     start_audio_import_if_not_running,
     start_spectrogram_generation_if_not_running,
 )
+from core.runtime_config import (
+    classify_setting_changes,
+    deep_merge_settings,
+    get_runtime_settings,
+    get_setting_differences,
+    invalidate_runtime_settings_cache,
+)
 from core.storage_manager import delete_detection_files
 from model_service.label_utils import parse_v3_labels
 from version import DISPLAY_NAME, __version__
@@ -102,6 +105,11 @@ db_manager = DatabaseManager()
 # Singleton TimezoneFinder (loads ~40MB shape data on first use)
 _timezone_finder: TimezoneFinder | None = None
 _tz_finder_lock = threading.Lock()
+
+
+def load_user_settings():
+    """Compatibility wrapper around runtime settings loader."""
+    return get_runtime_settings(force_reload=True)
 
 
 def _get_timezone_finder() -> TimezoneFinder:
@@ -932,18 +940,24 @@ def delete_detections_batch():
 _available_species_cache = {}
 
 
+def _get_configured_model_type() -> str:
+    return load_user_settings().get('model', {}).get('type', MODEL_TYPE)
+
+
 def load_available_species():
     """Load all available species from the BirdNET model labels file.
 
     Returns list of dicts with scientific_name and common_name.
     Results are cached per model type since the labels file doesn't change at runtime.
     """
-    if MODEL_TYPE in _available_species_cache:
-        return _available_species_cache[MODEL_TYPE]
+    model_type = _get_configured_model_type()
+
+    if model_type in _available_species_cache:
+        return _available_species_cache[model_type]
 
     species_list = []
     try:
-        if MODEL_TYPE == 'birdnet_v3':
+        if model_type == 'birdnet_v3':
             # V3.0: semicolon-delimited CSV with BOM
             species_list = [
                 {'scientific_name': sci, 'common_name': com}
@@ -969,15 +983,15 @@ def load_available_species():
 
         # Sort by common name for easier browsing
         species_list.sort(key=lambda x: x['common_name'])
-        _available_species_cache[MODEL_TYPE] = species_list
+        _available_species_cache[model_type] = species_list
         logger.info("Loaded available species from labels", extra={
             'count': len(species_list),
-            'model_type': MODEL_TYPE
+            'model_type': model_type
         })
     except Exception as e:
         logger.error("Failed to load species labels", extra={
             'error': str(e),
-            'path': labels_path if 'labels_path' in dir() else MODEL_TYPE
+            'path': labels_path if 'labels_path' in dir() else model_type
         })
 
     return species_list
@@ -1013,17 +1027,22 @@ def get_available_species():
 @require_auth
 def get_stream_config():
     """Provide stream configuration for frontend based on recording mode"""
+    settings = load_user_settings()
+    audio = settings.get('audio', {})
+    recording_mode = audio.get('recording_mode', RecordingMode.PULSEAUDIO)
+    rtsp_url = audio.get('rtsp_url')
+    stream_url = audio.get('stream_url')
 
-    if RECORDING_MODE == RecordingMode.PULSEAUDIO:
+    if recording_mode == RecordingMode.PULSEAUDIO:
         # PulseAudio mode - provide Icecast stream URL
         return jsonify({
             'stream_url': '/stream/stream.mp3',
             'stream_type': 'icecast',
             'description': 'Local Icecast audio stream'
         })
-    elif RECORDING_MODE == RecordingMode.RTSP:
+    elif recording_mode == RecordingMode.RTSP:
         # RTSP mode - use Icecast to transcode RTSP to MP3 for browser
-        if RTSP_URL:
+        if rtsp_url:
             return jsonify({
                 'stream_url': '/stream/stream.mp3',
                 'stream_type': 'icecast',
@@ -1036,11 +1055,11 @@ def get_stream_config():
                 'stream_type': 'none',
                 'description': 'RTSP mode selected but no URL configured'
             })
-    elif RECORDING_MODE == RecordingMode.HTTP_STREAM:
+    elif recording_mode == RecordingMode.HTTP_STREAM:
         # HTTP stream mode - use custom stream URL
-        if STREAM_URL:
+        if stream_url:
             return jsonify({
-                'stream_url': STREAM_URL,
+                'stream_url': stream_url,
                 'stream_type': 'custom',
                 'description': 'User-defined audio stream'
             })
@@ -1362,6 +1381,7 @@ def update_channel_setting():
             current_settings['updates'] = {}
         current_settings['updates']['channel'] = channel
         save_user_settings(current_settings)
+        invalidate_runtime_settings_cache()
 
         logger.info("Update channel changed", extra={'channel': channel})
 
@@ -1401,6 +1421,7 @@ def update_units_setting():
             current_settings['display'] = {}
         current_settings['display']['use_metric_units'] = use_metric
         save_user_settings(current_settings)
+        invalidate_runtime_settings_cache()
 
         logger.info("Display units changed", extra={'use_metric_units': use_metric})
 
@@ -1443,6 +1464,7 @@ def update_notification_settings():
         if urls:
             current_settings['notifications']['apprise_urls'] = list(dict.fromkeys(urls))
         save_user_settings(current_settings)
+        invalidate_runtime_settings_cache()
 
         logger.info("Notification settings updated", extra={
             'changed_fields': list(data.keys())
@@ -1464,63 +1486,66 @@ def update_notification_settings():
 @log_api_request
 @require_auth
 def update_settings():
-    """Update user settings and trigger service restart"""
+    """Update user settings and apply changes without container restart."""
     try:
-        new_settings = request.json
-        if not new_settings:
+        incoming_settings = request.json
+        if not incoming_settings:
             return jsonify({'error': 'No settings data provided'}), 400
 
+        current_settings = load_user_settings()
+        new_settings = deep_merge_settings(current_settings, incoming_settings)
+
         # Validate recording mode settings
-        if 'audio' in new_settings:
-            recording_mode = new_settings['audio'].get('recording_mode')
+        if 'audio' in incoming_settings:
+            incoming_audio = incoming_settings['audio']
+            recording_mode = incoming_audio.get('recording_mode')
             if recording_mode and recording_mode not in VALID_RECORDING_MODES:
                 return jsonify({'error': f'Invalid recording_mode. Must be one of: {", ".join(VALID_RECORDING_MODES)}'}), 400
 
             # Validate RTSP URL if provided
-            rtsp_url = new_settings['audio'].get('rtsp_url')
+            rtsp_url = incoming_audio.get('rtsp_url')
             if recording_mode == RecordingMode.RTSP and not rtsp_url:
                 return jsonify({'error': 'RTSP URL required when recording_mode is "rtsp"'}), 400
             if rtsp_url and not rtsp_url.startswith(('rtsp://', 'rtsps://')):
                 return jsonify({'error': 'Invalid RTSP URL. Must start with rtsp:// or rtsps://'}), 400
 
             # Validate HTTP stream URL if required
-            stream_url = new_settings['audio'].get('stream_url')
+            stream_url = incoming_audio.get('stream_url')
             if recording_mode == RecordingMode.HTTP_STREAM and not stream_url:
                 return jsonify({'error': 'Stream URL required when recording_mode is "http_stream"'}), 400
             if stream_url and not stream_url.startswith(('http://', 'https://')):
                 return jsonify({'error': 'Invalid Stream URL. Must start with http:// or https://'}), 400
 
             # Validate recording_length
-            recording_length = new_settings['audio'].get('recording_length')
+            recording_length = incoming_audio.get('recording_length')
             if recording_length is not None and recording_length not in RECORDING_LENGTH_OPTIONS:
                 return jsonify({'error': 'Invalid recording_length. Must be 9, 12, or 15 seconds'}), 400
 
             # Validate overlap
-            overlap = new_settings['audio'].get('overlap')
+            overlap = incoming_audio.get('overlap')
             if overlap is not None and overlap not in OVERLAP_OPTIONS:
                 return jsonify({'error': 'Invalid overlap. Must be 0.0, 0.5, 1.0, 1.5, 2.0, or 2.5 seconds'}), 400
 
         # Validate model type
-        if 'model' in new_settings:
+        if 'model' in incoming_settings:
             model_type = new_settings['model'].get('type')
             if model_type and model_type not in VALID_MODEL_TYPES:
                 return jsonify({'error': f'Invalid model type. Must be one of: {", ".join(VALID_MODEL_TYPES)}'}), 400
 
         # Validate notification settings
-        if 'notifications' in new_settings:
-            error = _validate_notification_settings(new_settings['notifications'])
+        if 'notifications' in incoming_settings:
+            error = _validate_notification_settings(incoming_settings['notifications'])
             if error:
                 return jsonify({'error': error}), 400
 
         # Compute timezone when location is being saved and timezone is missing or location changed
         # This ensures all containers have correct timezone on next restart
-        if 'location' in new_settings:
-            location = new_settings['location']
+        if 'location' in incoming_settings:
+            location = new_settings.get('location', {})
             lat = location.get('latitude')
             lon = location.get('longitude')
             if lat is not None and lon is not None:
                 # Load current settings to check for changes and preserve timezone
-                current_settings = load_user_settings()
                 current_loc = current_settings.get('location', {})
                 location_changed = (
                     current_loc.get('latitude') != lat or
@@ -1538,20 +1563,39 @@ def update_settings():
                     # Preserve existing timezone if not in incoming payload
                     new_settings['location']['timezone'] = current_loc['timezone']
 
-        # Save settings to JSON file
+        changed_paths = get_setting_differences(current_settings, new_settings)
+        change_plan = classify_setting_changes(changed_paths, current_settings, new_settings)
+
+        # Save settings to JSON file and clear cache
         save_user_settings(new_settings)
+        invalidate_runtime_settings_cache()
 
-        # Write flag to trigger container restart
-        write_flag('restart-backend')
-
-        logger.info("Settings updated, triggering service restart", extra={
-            'changed_sections': list(new_settings.keys())
+        logger.info("Settings updated", extra={
+            'changed_sections': list(incoming_settings.keys()),
+            'changed_paths': changed_paths,
+            'full_restart_required': change_plan['full_restart_required']
         })
+
+        if not changed_paths:
+            message = 'No settings changes detected.'
+        elif change_plan['full_restart_required']:
+            message = 'Settings saved. Some changes require a full service restart to take effect.'
+        elif change_plan['component_restarts']:
+            message = 'Settings successfully updated.'
+        else:
+            message = 'Settings saved. Changes applied immediately.'
 
         return jsonify({
             'status': 'updated',
-            'message': 'Settings saved. Services will restart in 10-30 seconds.',
-            'settings': new_settings
+            'message': message,
+            'settings': new_settings,
+            'changes': {
+                'changed_paths': changed_paths,
+                'hot_applied': change_plan['hot_applied'],
+                'component_restarts': change_plan['component_restarts'],
+                'full_restart_required': change_plan['full_restart_required'],
+                'full_restart_paths': change_plan['full_restart_paths'],
+            }
         }), 200
 
     except Exception as e:
@@ -1860,6 +1904,21 @@ def trigger_system_update():
 
     except Exception as e:
         return jsonify({'error': f'Failed to trigger update: {str(e)}'}), 500
+
+
+@api.route('/api/system/restart', methods=['POST'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def trigger_service_restart():
+    """Trigger backend service restart by writing restart flag file."""
+    write_flag('restart-backend')
+    logger.info("Service restart triggered via API")
+    return jsonify({
+        'status': 'restart_requested',
+        'message': 'Service restart initiated. Services will restart shortly.',
+        'estimated_downtime': '10-30 seconds'
+    }), 200
 
 
 # =============================================================================

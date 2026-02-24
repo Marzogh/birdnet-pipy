@@ -351,21 +351,21 @@ class TestWeatherServiceSingleton:
         service = get_weather_service()
         assert service is None
 
-    def test_singleton_ignores_coords_after_first_call(self):
-        """Test that coords are ignored after service is created."""
+    def test_singleton_restarts_on_coord_change(self):
+        """Test that service is recreated when coordinates change."""
         with patch('core.weather_service.requests.get') as mock_get:
             mock_get.return_value = _create_mock_response()
 
             from core.weather_service import get_weather_service
 
             service1 = get_weather_service(42.47, -76.45)
-            # Second call with different coords should return same service
+            # Second call with different coords should recreate service
             service2 = get_weather_service(0.0, 0.0)
 
-            assert service1 is service2
-            assert service1._lat == 42.47
-            assert service1._lon == -76.45
-            service1.stop()
+            assert service1 is not service2
+            assert service2._lat == 0.0
+            assert service2._lon == 0.0
+            service2.stop()
 
     def test_reset_allows_new_instance(self):
         """Test that reset_weather_service allows creating a new instance."""

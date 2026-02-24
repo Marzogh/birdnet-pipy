@@ -332,6 +332,7 @@ import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import Chart from 'chart.js/auto'
 import SpectrogramModal from '@/components/SpectrogramModal.vue'
+import { useAuth } from '@/composables/useAuth'
 import { useDateNavigation } from '@/composables/useDateNavigation'
 import { useChartHelpers } from '@/composables/useChartHelpers'
 import { useChartColors } from '@/composables/useChartColors'
@@ -402,6 +403,7 @@ export default {
     const { destroyChart } = useChartHelpers()
     const { colorPalette } = useChartColors()
     const { useFocalPoint } = useSmartCrop()
+    const { needsLogin } = useAuth()
     const { focalPoint: imageFocalPoint, isReady: imageReady, updateFocalPoint } = useFocalPoint()
 
     // Detect mobile portrait mode and return appropriate tick limits

@@ -319,16 +319,17 @@ export default {
     const saveAndClose = async () => {
       emit('update:modelValue', [...selectedSpecies.value])
 
-      // If onSave callback is provided, call it and wait for restart
+      // If onSave callback is provided, persist changes then close modal
       if (props.onSave) {
         saving.value = true
         saveError.value = ''
         try {
           await props.onSave([...selectedSpecies.value])
-          // Page will reload after restart, modal closes automatically
+          emit('close')
         } catch (error) {
           console.error('Error saving species filter:', error)
           saveError.value = 'Failed to save. Please try again.'
+        } finally {
           saving.value = false
         }
       } else {

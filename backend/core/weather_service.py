@@ -148,6 +148,10 @@ class WeatherService:
             self._cache = None
             self._cache_time = None
 
+    def get_coordinates(self) -> tuple[float, float]:
+        """Return the service location coordinates."""
+        return self._lat, self._lon
+
 
 # Singleton
 _weather_service: WeatherService | None = None
@@ -170,6 +174,18 @@ def get_weather_service(lat: float | None = None, lon: float | None = None) -> W
             if lat is None or lon is None:
                 return None
             _weather_service = WeatherService(lat, lon)
+        elif lat is not None and lon is not None:
+            # Recreate service if location changed to apply new coordinates immediately
+            current_lat, current_lon = _weather_service.get_coordinates()
+            if current_lat != lat or current_lon != lon:
+                logger.info("Weather location changed, restarting weather service", extra={
+                    'old_lat': current_lat,
+                    'old_lon': current_lon,
+                    'new_lat': lat,
+                    'new_lon': lon
+                })
+                _weather_service.stop()
+                _weather_service = WeatherService(lat, lon)
         return _weather_service
 
 

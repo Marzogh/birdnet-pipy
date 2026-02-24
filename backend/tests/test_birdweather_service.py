@@ -311,14 +311,17 @@ class TestBirdWeatherServiceSingleton:
 
     def test_singleton_returns_none_when_no_id(self):
         """Test that singleton returns None when no station ID configured."""
-        with patch('core.birdweather_service.BIRDWEATHER_ID', None):
+        with patch('core.birdweather_service.get_runtime_settings', return_value={'birdweather': {'id': None}}):
             from core.birdweather_service import get_birdweather_service
             service = get_birdweather_service()
             assert service is None
 
     def test_singleton_returns_instance_when_id_configured(self):
         """Test that singleton returns instance when station ID is configured."""
-        with patch('core.birdweather_service.BIRDWEATHER_ID', 'test-station-123'):
+        with patch(
+            'core.birdweather_service.get_runtime_settings',
+            return_value={'birdweather': {'id': 'test-station-123'}},
+        ):
             import core.birdweather_service as bws
             bws._birdweather_service = None  # Reset
 
@@ -333,7 +336,10 @@ class TestBirdWeatherServiceSingleton:
 
     def test_singleton_returns_same_instance(self):
         """Test that singleton returns the same instance on multiple calls."""
-        with patch('core.birdweather_service.BIRDWEATHER_ID', 'test-station-123'):
+        with patch(
+            'core.birdweather_service.get_runtime_settings',
+            return_value={'birdweather': {'id': 'test-station-123'}},
+        ):
             import core.birdweather_service as bws
             bws._birdweather_service = None  # Reset
 
@@ -342,6 +348,30 @@ class TestBirdWeatherServiceSingleton:
             service2 = get_birdweather_service()
 
             assert service1 is service2
+
+    def test_singleton_stops_when_runtime_id_removed(self):
+        """Test that clearing runtime station ID disables and stops existing service."""
+        import core.birdweather_service as bws
+        bws._birdweather_service = None
+
+        mock_service = MagicMock()
+        mock_service._station_id = 'runtime-station-123'
+
+        with patch('core.birdweather_service.get_runtime_settings') as mock_runtime, \
+             patch('core.birdweather_service.BirdWeatherService', return_value=mock_service):
+            mock_runtime.side_effect = [
+                {'birdweather': {'id': 'runtime-station-123'}},
+                {'birdweather': {'id': None}},
+            ]
+
+            from core.birdweather_service import get_birdweather_service
+
+            service1 = get_birdweather_service()
+            service2 = get_birdweather_service()
+
+            assert service1 is mock_service
+            assert service2 is None
+            mock_service.stop.assert_called_once()
 
 
 class TestBirdWeatherServiceWorker:

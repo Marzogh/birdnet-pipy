@@ -351,9 +351,9 @@ class TestSimpleAPI:
                                     data=json.dumps(new_settings),
                                     content_type='application/json')
                 assert response.status_code == 200
-                assert response.get_json()['message'] == 'Settings saved. Services will restart in 10-30 seconds.'
+                assert 'Settings successfully updated.' in response.get_json()['message']
                 mock_save.assert_called_once()
-                assert mock_flag.call_count >= 1  # at least one restart flag
+                mock_flag.assert_not_called()
 
     def test_settings_url_validation(self):
         """Test URL validation for stream settings."""
@@ -729,8 +729,8 @@ class TestSimpleAPI:
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.db.DatabaseManager'), \
+                 patch('core.api.load_user_settings', return_value={'model': {'type': 'birdnet'}}), \
                  patch('core.api.LABELS_PATH', labels_file), \
-                 patch('core.api.MODEL_TYPE', 'birdnet'), \
                  patch('core.api._available_species_cache', {}):
 
                 from core.api import create_app
@@ -762,8 +762,8 @@ class TestSimpleAPI:
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.db.DatabaseManager'), \
+                 patch('core.api.load_user_settings', return_value={'model': {'type': 'birdnet_v3'}}), \
                  patch('core.api.LABELS_V3_PATH', labels_csv), \
-                 patch('core.api.MODEL_TYPE', 'birdnet_v3'), \
                  patch('core.api._available_species_cache', {}):
 
                 from core.api import create_app

@@ -1,8 +1,10 @@
 """Tests for API contract regression - ensuring response format stability."""
 
 import datetime
+import logging
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 
@@ -205,3 +207,49 @@ class TestGetScientificName:
         label = "Unknown"
         result = get_scientific_name(label)
         assert result == "Unknown"
+
+
+class TestProcessAudioFileErrorHandling:
+    """Test graceful handling for known inference shape mismatch failures."""
+
+    def test_returns_empty_results_on_input_shape_mismatch(self, monkeypatch, caplog):
+        from model_service import inference_server
+
+        model = MagicMock()
+        model.name = "birdnet"
+        model.version = "2.4"
+        model.sample_rate = 48000
+        model.chunk_length_seconds = 3.0
+        model.filter_by_location.return_value = None
+        model.predict.side_effect = ValueError(
+            "Cannot set tensor: Dimension mismatch. Got 96000 but expected 144000 for dimension 1 of input 0."
+        )
+
+        # Simulate a stale 32kHz-sized chunk arriving after model change/restart.
+        monkeypatch.setattr(
+            inference_server,
+            "split_audio",
+            lambda *args, **kwargs: [np.zeros(96000, dtype=np.float32)]
+        )
+
+        with caplog.at_level(logging.WARNING):
+            results = inference_server.process_audio_file(
+                model=model,
+                audio_file_path="/tmp/20260222_201024.wav",
+                lat=40.15,
+                lon=-75.27,
+                week=8,
+                sensitivity=0.75,
+                cutoff=0.75,
+                overlap=0.0,
+                recording_length=9.0,
+                allowed_species=[],
+                blocked_species=[]
+            )
+
+        assert results == []
+        assert model.predict.call_count == 1
+        assert any(
+            "Skipping audio file due to model input shape mismatch" in record.message
+            for record in caplog.records
+        )

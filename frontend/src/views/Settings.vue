@@ -1,6 +1,6 @@
 <template>
   <div class="settings p-4 max-w-4xl mx-auto">
-    <!-- Header with Save/Reset buttons -->
+    <!-- Header with Save button -->
     <div class="flex justify-between items-center mb-4">
       <h1 class="text-xl font-semibold text-gray-800">
         Settings
@@ -13,13 +13,6 @@
         >
           {{ saveStatus.message }}
         </span>
-        <AppButton
-          variant="secondary"
-          :disabled="loading || serviceRestart.isRestarting.value || systemUpdate.isRestarting.value"
-          @click="resetToDefaults"
-        >
-          Reset
-        </AppButton>
         <AppButton
           :loading="loading"
           loading-text="Saving..."
@@ -1497,7 +1490,7 @@ export default {
       }
     }
 
-    // Save settings to API (returns true on success, false on failure)
+    // Save settings to API (returns response payload on success, null on failure)
     const saveSettingsOnly = async () => {
       // Validate stream URLs if using stream modes
       if (recordingMode.value === 'http_stream' && !settings.value.audio.stream_url?.trim()) {
@@ -1513,18 +1506,41 @@ export default {
         loading.value = true
         settingsSaveError.value = ''
         settings.value.location.configured = true
-        await api.put('/settings', settings.value)
+        const { data } = await api.put('/settings', settings.value)
         // Update snapshot after successful save
         takeSnapshot()
         confirmedNotifications.value = cloneNotif()
-        return true
+        return data
       } catch (error) {
         console.error('Error saving settings:', error)
         settingsSaveError.value = 'Failed to save settings. Please try again.'
-        return false
+        return null
       } finally {
         loading.value = false
       }
+    }
+
+    // Trigger backend restart + wait flow when required by changed settings.
+    const triggerRestartIfRequired = async (result, message = 'Applying settings changes') => {
+      const needsFullRestart = result?.changes?.full_restart_required === true
+      if (!needsFullRestart) {
+        return false
+      }
+
+      settingsSaveError.value = ''
+
+      try {
+        await api.post('/system/restart')
+        await serviceRestart.waitForRestart({
+          autoReload: true,
+          message
+        })
+      } catch (error) {
+        console.error('Error triggering restart after settings save:', error)
+        settingsSaveError.value = 'Settings saved, but restart did not complete. Please refresh or restart services.'
+      }
+
+      return true
     }
 
     // Save settings and wait for restart (used by main Save button)
@@ -1533,17 +1549,12 @@ export default {
         return // Nothing changed, skip save and restart
       }
 
-      // Switching to V3 may need to download ~541MB on first use, so allow extra time
-      const switchingToV3 = settings.value.model?.type === 'birdnet_v3' &&
-        originalSettings.value?.model?.type !== 'birdnet_v3'
-
-      const success = await saveSettingsOnly()
-      if (success) {
-        const restartOptions = { autoReload: true, message: 'Updating settings' }
-        if (switchingToV3) {
-          restartOptions.maxWaitSeconds = 600
+      const result = await saveSettingsOnly()
+      if (result) {
+        const restartTriggered = await triggerRestartIfRequired(result, 'Applying settings changes')
+        if (!restartTriggered) {
+          showStatus('success', result?.message || 'Settings saved')
         }
-        await serviceRestart.waitForRestart(restartOptions)
       }
     }
 
@@ -1551,22 +1562,6 @@ export default {
     const dismissSettingsError = () => {
       settingsSaveError.value = ''
       serviceRestart.reset()
-    }
-
-    // Reset to default settings (fetched from backend - single source of truth)
-    const resetToDefaults = async () => {
-      if (confirm('Reset all settings to defaults?')) {
-        try {
-          const { data: defaults } = await api.get('/settings/defaults')
-          if (!defaults.model) defaults.model = { type: 'birdnet' }
-          settings.value = defaults
-          recordingMode.value = defaults.audio?.recording_mode || 'pulseaudio'
-          await saveSettings()
-        } catch (error) {
-          console.error('Error fetching defaults:', error)
-          showStatus('error', 'Failed to load default settings')
-        }
-      }
     }
 
     // Show status message
@@ -1791,21 +1786,19 @@ export default {
       }
     }
 
-    // Save species filter and trigger restart
+    // Save species filter immediately (and restart if required)
     const saveSpeciesFilter = async (newList) => {
       // Update the settings with the new list
       updateFilterList(newList)
 
-      // Save settings to API
-      try {
-        settings.value.location.configured = true
-        await api.put('/settings', settings.value)
-        // Update snapshot after successful save
-        takeSnapshot()
-        await serviceRestart.waitForRestart({ autoReload: true, message: 'Updating settings' })
-      } catch (error) {
-        console.error('Error saving species filter:', error)
-        throw error
+      const result = await saveSettingsOnly()
+      if (!result) {
+        throw new Error('Failed to save species filter')
+      }
+
+      const restartTriggered = await triggerRestartIfRequired(result, 'Applying species filter changes')
+      if (!restartTriggered) {
+        showStatus('success', result?.message || 'Settings saved')
       }
     }
 
@@ -1933,18 +1926,28 @@ export default {
 
     // Unsaved changes modal handlers
     const handleUnsavedSave = async () => {
-      const success = await saveSettingsOnly()
-      if (success) {
-        // Close modal, cancel navigation, show restart banner like regular save
+      const result = await saveSettingsOnly()
+      if (result) {
+        const needsFullRestart = result?.changes?.full_restart_required === true
+
+        // Save succeeded; close modal.
         showUnsavedModal.value = false
-        if (navigationResolver.value) {
-          navigationResolver.value(false) // Cancel navigation - page will reload after restart
-          navigationResolver.value = null
+
+        if (needsFullRestart) {
+          // Keep user on this page so restart progress can be shown (same path as direct Save).
+          if (navigationResolver.value) {
+            navigationResolver.value(false)
+            navigationResolver.value = null
+          }
+          await triggerRestartIfRequired(result, 'Applying settings changes')
+        } else {
+          // No restart required: proceed with the original pending navigation.
+          if (navigationResolver.value) {
+            navigationResolver.value(true)
+            navigationResolver.value = null
+          }
+          showStatus('success', result?.message || 'Settings saved')
         }
-        // Scroll to top to show restart progress banner
-        window.scrollTo({ top: 0, behavior: 'smooth' })
-        // Wait for restart with auto-reload (uses existing banner UI)
-        await serviceRestart.waitForRestart({ autoReload: true, message: 'Updating settings' })
       }
       // On failure: modal stays open, error shown via settingsSaveError
     }
@@ -2002,7 +2005,6 @@ export default {
       exporting,
       exportCSV,
       saveSettings,
-      resetToDefaults,
       toggleUpdateChannel,
       toggleMetricUnits,
       onRecordingModeChange,

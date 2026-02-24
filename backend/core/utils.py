@@ -11,13 +11,8 @@ from PIL import Image
 from scipy.io import wavfile
 from scipy.signal import spectrogram
 
-from config.settings import (
-    SPECTROGRAM_FONT_PATH,
-    SPECTROGRAM_MAX_DBFS,
-    SPECTROGRAM_MAX_FREQ_IN_KHZ,
-    SPECTROGRAM_MIN_DBFS,
-    SPECTROGRAM_MIN_FREQ_IN_KHZ,
-)
+from config.settings import SPECTROGRAM_FONT_PATH
+from core.runtime_config import get_runtime_settings
 
 BUFFER_SIZE = 1000
 
@@ -104,6 +99,12 @@ def trim_audio(source_file_path, output_audio_path, start, end, timeout=30):
 
 
 def generate_spectrogram(input_file_path, output_file_path, graph_title, start_time=0, end_time=None):
+    spec_cfg = get_runtime_settings().get('spectrogram', {})
+    max_dbfs = spec_cfg.get('max_dbfs', 0)
+    min_dbfs = spec_cfg.get('min_dbfs', -120)
+    max_freq_khz = spec_cfg.get('max_freq_khz', 12)
+    min_freq_khz = spec_cfg.get('min_freq_khz', 0)
+
     figsize = (5, 0.8)
 
     # Set up Inter font
@@ -150,7 +151,7 @@ def generate_spectrogram(input_file_path, output_file_path, graph_title, start_t
     plt.figure(figsize=figsize, facecolor='white', dpi=dpi)
     plt.imshow(Sxx_dbfs, aspect='auto', cmap="Greens_r", origin='lower',
                extent=[times.min(), times.max(), frequencies.min(), frequencies.max()],
-               vmin=SPECTROGRAM_MIN_DBFS, vmax=SPECTROGRAM_MAX_DBFS,
+               vmin=min_dbfs, vmax=max_dbfs,
                interpolation='bilinear')  # Smoother rendering
 
     plt.title(graph_title, fontsize=14*scale, fontweight='bold', pad=10*scale)
@@ -163,7 +164,7 @@ def generate_spectrogram(input_file_path, output_file_path, graph_title, start_t
     plt.xticks([])
     plt.yticks([0,6,12])
     plt.yticks(fontsize=10*scale)
-    plt.ylim(SPECTROGRAM_MIN_FREQ_IN_KHZ, SPECTROGRAM_MAX_FREQ_IN_KHZ)
+    plt.ylim(min_freq_khz, max_freq_khz)
 
     # Adjust margins manually
     plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)

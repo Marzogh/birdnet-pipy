@@ -154,8 +154,9 @@ export default {
       }
     }
 
-    const onLocationSaved = (location) => {
+    const onLocationSaved = async (location) => {
       logger.info('Location saved', location)
+      await checkLocationSetup()
     }
 
     const onLoginSuccess = async () => {

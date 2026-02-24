@@ -1502,9 +1502,18 @@ class TestRecordingThread:
     ):
         """Test that PulseAudioRecorder is created when mode is pulseaudio."""
 
-        with patch('core.main.RECORDING_MODE', 'pulseaudio'), \
-             patch('core.main.PULSEAUDIO_SOURCE', 'test-source'), \
-             patch('core.main.RECORDING_LENGTH', 9), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'pulseaudio',
+                    'pulseaudio_source': 'test-source',
+                    'recording_length': 9,
+                    'stream_url': None,
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.main.RECORDING_DIR', '/tmp/test'), \
              patch('core.main.SAMPLE_RATE', 48000), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
@@ -1539,9 +1548,18 @@ class TestRecordingThread:
     ):
         """Test that HttpStreamRecorder is created when mode is http_stream."""
 
-        with patch('core.main.RECORDING_MODE', 'http_stream'), \
-             patch('core.main.STREAM_URL', 'http://test.com/stream'), \
-             patch('core.main.RECORDING_LENGTH', 9), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'http_stream',
+                    'pulseaudio_source': 'default',
+                    'recording_length': 9,
+                    'stream_url': 'http://test.com/stream',
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.main.RECORDING_DIR', '/tmp/test'), \
              patch('core.main.SAMPLE_RATE', 48000), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
@@ -1576,7 +1594,18 @@ class TestRecordingThread:
     ):
         """Test that recorder.start() is called when thread starts."""
 
-        with patch('core.main.RECORDING_MODE', 'pulseaudio'), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'pulseaudio',
+                    'pulseaudio_source': 'default',
+                    'recording_length': 9,
+                    'stream_url': None,
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.audio_manager.PulseAudioRecorder', return_value=mock_recorder), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
              patch('core.main.stop_flag') as mock_stop, \
@@ -1601,7 +1630,18 @@ class TestRecordingThread:
     ):
         """Test that is_healthy() is checked in the loop."""
 
-        with patch('core.main.RECORDING_MODE', 'pulseaudio'), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'pulseaudio',
+                    'pulseaudio_source': 'default',
+                    'recording_length': 9,
+                    'stream_url': None,
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.audio_manager.PulseAudioRecorder', return_value=mock_recorder), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
              patch('core.main.stop_flag') as mock_stop, \
@@ -1626,7 +1666,18 @@ class TestRecordingThread:
     ):
         """Test that recorder.restart() is called when unhealthy."""
 
-        with patch('core.main.RECORDING_MODE', 'pulseaudio'), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'pulseaudio',
+                    'pulseaudio_source': 'default',
+                    'recording_length': 9,
+                    'stream_url': None,
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.audio_manager.PulseAudioRecorder', return_value=mock_recorder), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
              patch('core.main.stop_flag') as mock_stop, \
@@ -1654,7 +1705,18 @@ class TestRecordingThread:
     ):
         """Test that recorder.stop() is called in finally block on exit."""
 
-        with patch('core.main.RECORDING_MODE', 'pulseaudio'), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'pulseaudio',
+                    'pulseaudio_source': 'default',
+                    'recording_length': 9,
+                    'stream_url': None,
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.audio_manager.PulseAudioRecorder', return_value=mock_recorder), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
              patch('core.main.stop_flag') as mock_stop, \
@@ -1683,7 +1745,18 @@ class TestThreadCoordination:
     ):
         """Test that stop_flag stops the recording loop."""
 
-        with patch('core.main.RECORDING_MODE', 'pulseaudio'), \
+        with patch(
+            'core.main.get_runtime_settings',
+            return_value={
+                'audio': {
+                    'recording_mode': 'pulseaudio',
+                    'pulseaudio_source': 'default',
+                    'recording_length': 9,
+                    'stream_url': None,
+                    'rtsp_url': None,
+                }
+            },
+        ), \
              patch('core.audio_manager.PulseAudioRecorder', return_value=mock_recorder), \
              patch('core.main.FILE_SCAN_INTERVAL', 0.01), \
              patch('core.main.stop_flag') as mock_stop, \

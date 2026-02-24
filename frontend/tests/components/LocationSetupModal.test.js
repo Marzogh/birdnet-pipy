@@ -5,7 +5,8 @@ import LocationSetupModal from '@/components/LocationSetupModal.vue'
 // Mock the api service
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
-  put: vi.fn()
+  put: vi.fn(),
+  post: vi.fn()
 }))
 
 vi.mock('@/services/api', () => ({
@@ -13,12 +14,13 @@ vi.mock('@/services/api', () => ({
 }))
 
 // Mock the useServiceRestart composable
+const mockWaitForRestart = vi.hoisted(() => vi.fn().mockResolvedValue(true))
 vi.mock('@/composables/useServiceRestart', () => ({
   useServiceRestart: () => ({
     isRestarting: { value: false },
     restartMessage: { value: '' },
     restartError: { value: '' },
-    waitForRestart: vi.fn().mockResolvedValue(true),
+    waitForRestart: mockWaitForRestart,
     reset: vi.fn()
   })
 }))
@@ -117,7 +119,12 @@ describe('LocationSetupModal', () => {
       mockApi.get.mockResolvedValueOnce({
         data: { location: { latitude: 0, longitude: 0, configured: false } }
       })
-      mockApi.put.mockResolvedValueOnce({ data: { message: 'Settings saved' } })
+      mockApi.put.mockResolvedValueOnce({
+        data: {
+          message: 'Settings saved',
+          changes: { full_restart_required: false }
+        }
+      })
 
       const wrapper = mountModal()
 
@@ -129,7 +136,7 @@ describe('LocationSetupModal', () => {
       await flushPromises()
 
       expect(wrapper.emitted('location-saved')).toBeTruthy()
-      // Note: close is not emitted - page reloads after service restart
+      expect(wrapper.emitted('close')).toBeTruthy()
     })
 
     it('sets configured flag to true when saving', async () => {
@@ -139,7 +146,12 @@ describe('LocationSetupModal', () => {
       })
       mockApi.put.mockImplementationOnce((url, settings) => {
         savedSettings = settings
-        return Promise.resolve({ data: { message: 'Settings saved' } })
+        return Promise.resolve({
+          data: {
+            message: 'Settings saved',
+            changes: { full_restart_required: false }
+          }
+        })
       })
 
       const wrapper = mountModal()
@@ -152,6 +164,40 @@ describe('LocationSetupModal', () => {
       await flushPromises()
 
       expect(savedSettings.location.configured).toBe(true)
+    })
+
+    it('triggers restart flow when full restart is required', async () => {
+      mockApi.get.mockResolvedValueOnce({
+        data: { location: { latitude: 0, longitude: 0, configured: false } }
+      })
+      mockApi.put.mockResolvedValueOnce({
+        data: {
+          message: 'Settings saved. Some changes require a full service restart to take effect.',
+          changes: { full_restart_required: true }
+        }
+      })
+      mockApi.post.mockResolvedValueOnce({
+        data: { status: 'restart_requested' }
+      })
+
+      const wrapper = mountModal()
+
+      await wrapper.find('#latitude').setValue(42.47)
+      await wrapper.find('#longitude').setValue(-76.45)
+
+      const saveButton = wrapper.findAll('button').find(b => b.text().includes('Save Location'))
+      await saveButton.trigger('click')
+      await flushPromises()
+
+      expect(mockApi.post).toHaveBeenCalledWith('/system/restart')
+      expect(mockWaitForRestart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoReload: true,
+          message: 'Applying location and timezone settings'
+        })
+      )
+      expect(wrapper.emitted('location-saved')).toBeFalsy()
+      expect(wrapper.emitted('close')).toBeFalsy()
     })
   })
 

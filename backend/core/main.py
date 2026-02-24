@@ -5,6 +5,7 @@ import signal
 import threading
 import time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -18,7 +19,6 @@ from config.settings import (
     EXTRACTED_AUDIO_DIR,
     LAT,
     LOCATION_CONFIGURED,
-    LOCATION_READY,
     LON,
     PULSEAUDIO_SOURCE,
     RECORDING_DIR,
@@ -28,12 +28,14 @@ from config.settings import (
     SAMPLE_RATE,
     SPECTROGRAM_DIR,
     STREAM_URL,
+    TIMEZONE,
 )
 from core.audio_manager import BaseRecorder, create_recorder
 from core.birdweather_service import get_birdweather_service
 from core.db import DatabaseManager
 from core.logging_config import get_logger, setup_logging
 from core.notification_service import get_notification_service
+from core.runtime_config import get_runtime_settings
 from core.storage_manager import storage_monitor_loop
 from core.utils import (
     convert_wav_to_mp3,
@@ -69,45 +71,106 @@ stop_flag = threading.Event()
 for dir in [RECORDING_DIR, EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR]:
     os.makedirs(dir, exist_ok=True)
 
-def setup_recorder(recording_mode: str, thread_logger) -> BaseRecorder:
+def _get_audio_settings() -> dict[str, Any]:
+    return get_runtime_settings().get('audio', {})
+
+
+def _get_recording_mode(audio_settings: dict[str, Any]) -> str:
+    return audio_settings.get('recording_mode', RECORDING_MODE)
+
+
+def _get_recording_length(audio_settings: dict[str, Any]) -> float:
+    return audio_settings.get('recording_length', RECORDING_LENGTH)
+
+
+def _get_analysis_chunk_length() -> float:
+    return get_runtime_settings().get('audio', {}).get('recording_chunk_length', ANALYSIS_CHUNK_LENGTH)
+
+
+def _get_stream_url(audio_settings: dict[str, Any]) -> str | None:
+    return audio_settings.get('stream_url', STREAM_URL)
+
+
+def _get_rtsp_url(audio_settings: dict[str, Any]) -> str | None:
+    return audio_settings.get('rtsp_url', RTSP_URL)
+
+
+def _get_pulseaudio_source(audio_settings: dict[str, Any]) -> str:
+    return audio_settings.get('pulseaudio_source') or PULSEAUDIO_SOURCE
+
+
+def _get_recorder_signature(audio_settings: dict[str, Any]) -> tuple:
+    return (
+        _get_recording_mode(audio_settings),
+        _get_stream_url(audio_settings),
+        _get_rtsp_url(audio_settings),
+        _get_pulseaudio_source(audio_settings),
+        _get_recording_length(audio_settings),
+    )
+
+
+def _is_valid_timezone(tz: str | None) -> bool:
+    if not tz:
+        return False
+    try:
+        ZoneInfo(tz)
+        return True
+    except Exception:
+        return False
+
+
+def _is_location_ready(settings: dict[str, Any]) -> bool:
+    location = settings.get('location', {})
+    configured = location.get('configured', LOCATION_CONFIGURED)
+    timezone = location.get('timezone', TIMEZONE)
+    return bool(configured) and _is_valid_timezone(timezone)
+
+
+def setup_recorder(audio_settings: dict[str, Any], thread_logger) -> BaseRecorder:
     """Create and configure audio recorder based on recording mode.
 
     Args:
-        recording_mode: 'pulseaudio', 'http_stream', or 'rtsp'
+        audio_settings: audio settings dictionary
         thread_logger: Logger instance for this thread
 
     Returns:
         Configured recorder instance
     """
+    recording_mode = _get_recording_mode(audio_settings)
+    recording_length = _get_recording_length(audio_settings)
+    pulseaudio_source = _get_pulseaudio_source(audio_settings)
+    stream_url = _get_stream_url(audio_settings)
+    rtsp_url = _get_rtsp_url(audio_settings)
+
     # Log startup info based on mode
     if recording_mode == RecordingMode.PULSEAUDIO:
         thread_logger.info("Starting PulseAudio recording", extra={
-            'pulseaudio_source': PULSEAUDIO_SOURCE,
-            'chunk_duration': RECORDING_LENGTH,
+            'pulseaudio_source': pulseaudio_source,
+            'chunk_duration': recording_length,
             'output_dir': RECORDING_DIR
         })
     elif recording_mode == RecordingMode.RTSP:
         thread_logger.info("Starting RTSP stream recording", extra={
-            'rtsp_url': sanitize_url(RTSP_URL),
-            'chunk_duration': RECORDING_LENGTH,
+            'rtsp_url': sanitize_url(rtsp_url),
+            'chunk_duration': recording_length,
             'output_dir': RECORDING_DIR
         })
     else:  # http_stream
         thread_logger.info("Starting HTTP stream recording", extra={
-            'stream_url': STREAM_URL,
-            'chunk_duration': RECORDING_LENGTH,
+            'stream_url': stream_url,
+            'chunk_duration': recording_length,
             'output_dir': RECORDING_DIR
         })
 
     # Delegate to audio_manager factory
     return create_recorder(
         recording_mode=recording_mode,
-        chunk_duration=RECORDING_LENGTH,
+        chunk_duration=recording_length,
         output_dir=RECORDING_DIR,
         target_sample_rate=SAMPLE_RATE,
-        source_name=PULSEAUDIO_SOURCE,
-        stream_url=STREAM_URL,
-        rtsp_url=RTSP_URL
+        source_name=pulseaudio_source,
+        stream_url=stream_url,
+        rtsp_url=rtsp_url
     )
 
 def continuous_audio_recording(thread_logger):
@@ -116,14 +179,43 @@ def continuous_audio_recording(thread_logger):
     This thread ONLY manages the recorder (FFmpeg). It does not scan for files
     or queue them - that's the processing thread's job.
     """
-    # Create recorder
-    recorder = setup_recorder(RECORDING_MODE, thread_logger)
+    recorder: BaseRecorder | None = None
+    current_signature: tuple | None = None
 
     try:
-        recorder.start()
+        # Initialize recorder once before loop for startup validation and
+        # compatibility with existing lifecycle expectations.
+        try:
+            initial_audio_settings = _get_audio_settings()
+            recorder = setup_recorder(initial_audio_settings, thread_logger)
+            recorder.start()
+            current_signature = _get_recorder_signature(initial_audio_settings)
+        except ValueError as e:
+            thread_logger.error("Recorder configuration invalid", extra={'error': str(e)})
+            time.sleep(2)
+        except Exception as e:
+            thread_logger.error("Recording loop error", extra={'error': str(e)}, exc_info=True)
+            time.sleep(1)
 
         while not stop_flag.is_set():
             try:
+                audio_settings = _get_audio_settings()
+                new_signature = _get_recorder_signature(audio_settings)
+
+                if recorder is None:
+                    recorder = setup_recorder(audio_settings, thread_logger)
+                    recorder.start()
+                    current_signature = new_signature
+                elif new_signature != current_signature:
+                    thread_logger.info("Audio settings changed, reloading recorder", extra={
+                        'old_signature': current_signature,
+                        'new_signature': new_signature
+                    })
+                    recorder.stop()
+                    recorder = setup_recorder(audio_settings, thread_logger)
+                    recorder.start()
+                    current_signature = new_signature
+
                 # Check recorder health and restart if needed
                 if not recorder.is_healthy():
                     thread_logger.warning("Recorder unhealthy, restarting...")
@@ -132,6 +224,10 @@ def continuous_audio_recording(thread_logger):
                 # Brief sleep to prevent CPU thrashing
                 time.sleep(FILE_SCAN_INTERVAL)
 
+            except ValueError as e:
+                # Invalid setting combination (e.g., missing URL for selected mode)
+                thread_logger.error("Recorder configuration invalid", extra={'error': str(e)})
+                time.sleep(2)
             except Exception as e:
                 thread_logger.error("Recording loop error", extra={
                     'error': str(e)
@@ -141,7 +237,8 @@ def continuous_audio_recording(thread_logger):
     finally:
         # Always clean up on exit
         thread_logger.info("Stopping audio recording")
-        recorder.stop()
+        if recorder:
+            recorder.stop()
 
 def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> str:
     """Extract audio segment for detection and convert to MP3.
@@ -153,11 +250,12 @@ def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> 
     Returns:
         Path to the MP3 file
     """
-    step_seconds = detection.get('step_seconds', ANALYSIS_CHUNK_LENGTH)
+    analysis_chunk_length = _get_analysis_chunk_length()
+    step_seconds = detection.get('step_seconds', analysis_chunk_length)
     audio_segments_indices = select_audio_chunks(
         detection['chunk_index'], detection['total_chunks'])
     start_time = audio_segments_indices[0] * step_seconds
-    end_time = audio_segments_indices[1] * step_seconds + ANALYSIS_CHUNK_LENGTH
+    end_time = audio_segments_indices[1] * step_seconds + analysis_chunk_length
 
     wav_path = os.path.join(EXTRACTED_AUDIO_DIR, detection['bird_song_file_name'])
     mp3_path = wav_path.replace('.wav', '.mp3')
@@ -179,12 +277,13 @@ def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str
     Returns:
         Path to the spectrogram image
     """
-    step_seconds = detection.get('step_seconds', ANALYSIS_CHUNK_LENGTH)
+    analysis_chunk_length = _get_analysis_chunk_length()
+    step_seconds = detection.get('step_seconds', analysis_chunk_length)
     spectrogram_path = os.path.join(SPECTROGRAM_DIR, detection['spectrogram_file_name'])
 
     title = f"{detection['common_name']} ({detection['confidence']:.2f}) - {detection['timestamp']}"
     start_time = step_seconds * detection['chunk_index']
-    end_time = start_time + ANALYSIS_CHUNK_LENGTH
+    end_time = start_time + analysis_chunk_length
 
     generate_spectrogram(input_file_path, spectrogram_path, title,
                         start_time=start_time, end_time=end_time)
@@ -260,9 +359,15 @@ def handle_detection(detection: dict[str, Any], input_file_path: str, thread_log
     extract_detection_audio(detection, input_file_path)
     create_detection_spectrogram(detection, input_file_path)
 
+    runtime_settings = get_runtime_settings()
+    location = runtime_settings.get('location', {})
+    lat = location.get('latitude', LAT)
+    lon = location.get('longitude', LON)
+    location_configured = location.get('configured', LOCATION_CONFIGURED)
+
     # Attach weather data if location is configured (explicit None check for 0-coordinate support)
-    if LOCATION_CONFIGURED and LAT is not None and LON is not None:
-        weather_service = get_weather_service(LAT, LON)
+    if location_configured and lat is not None and lon is not None:
+        weather_service = get_weather_service(lat, lon)
         if weather_service:
             weather_data = weather_service.get_current_weather()
             if weather_data:
@@ -280,12 +385,14 @@ def handle_detection(detection: dict[str, Any], input_file_path: str, thread_log
                 })
 
     # Upload to BirdWeather if configured
-    if BIRDWEATHER_ID:
+    birdweather_id = runtime_settings.get('birdweather', {}).get('id', BIRDWEATHER_ID)
+    if birdweather_id:
         bw_service = get_birdweather_service()
         if bw_service:
-            step_seconds = detection.get('step_seconds', ANALYSIS_CHUNK_LENGTH)
+            analysis_chunk_length = _get_analysis_chunk_length()
+            step_seconds = detection.get('step_seconds', analysis_chunk_length)
             bw_start_time = step_seconds * detection['chunk_index']
-            bw_end_time = bw_start_time + ANALYSIS_CHUNK_LENGTH
+            bw_end_time = bw_start_time + analysis_chunk_length
             bw_service.publish(detection, input_file_path, bw_start_time, bw_end_time)
 
     thread_logger.debug("Saving detection to database", extra={
@@ -510,30 +617,45 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)  # Docker stop
     signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
 
+    startup_settings = get_runtime_settings()
+    startup_audio = startup_settings.get('audio', {})
+
     logger.info(f"🎵 {DISPLAY_NAME} v{__version__} starting", extra={
         'recording_dir': RECORDING_DIR,
-        'recording_length': RECORDING_LENGTH,
-        'analysis_chunk_length': ANALYSIS_CHUNK_LENGTH,
+        'recording_length': startup_audio.get('recording_length', 9),
+        'analysis_chunk_length': startup_audio.get('recording_chunk_length', 3),
         'timezone': os.environ.get('TZ', 'UTC')
     })
 
-    # Wait for location and timezone to be configured before starting detection
-    if not LOCATION_READY:
-        if not LOCATION_CONFIGURED:
-            logger.info("⏳ Location not configured. Waiting for user to set location in the web interface...")
-        else:
-            logger.info("⏳ Timezone not configured. Please re-save your location in the web interface...")
-        # Sit idle until backend restarts (triggered when user saves location)
-        while not stop_flag.is_set():
-            time.sleep(1)
+    # Wait for location and timezone to be configured before starting detection.
+    # This loop now polls runtime settings, so detection can start without restarting the container.
+    waiting_message_logged = False
+    while not stop_flag.is_set():
+        current_settings = get_runtime_settings()
+        if _is_location_ready(current_settings):
+            break
+
+        if not waiting_message_logged:
+            location = current_settings.get('location', {})
+            if not location.get('configured', False):
+                logger.info("⏳ Location not configured. Waiting for user to set location in the web interface...")
+            else:
+                logger.info("⏳ Timezone not configured. Please re-save your location in the web interface...")
+            waiting_message_logged = True
+        time.sleep(1)
+
+    if stop_flag.is_set():
         logger.info("Shutdown received while waiting for location/timezone configuration")
         import sys
         sys.exit(0)
 
     # Start weather service early to fetch timezone from API
     # (singleton - detection processing will reuse this instance)
-    if LAT is not None and LON is not None:
-        get_weather_service(LAT, LON)
+    location = get_runtime_settings().get('location', {})
+    lat = location.get('latitude', LAT)
+    lon = location.get('longitude', LON)
+    if lat is not None and lon is not None:
+        get_weather_service(lat, lon)
 
     # Start the recording thread
     recording_logger = get_logger(f"{__name__}.recording")

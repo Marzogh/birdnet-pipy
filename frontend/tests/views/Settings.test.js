@@ -5,7 +5,8 @@ import Settings from '@/views/Settings.vue'
 // Mock the api service
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
-  put: vi.fn()
+  put: vi.fn(),
+  post: vi.fn()
 }))
 
 vi.mock('@/services/api', () => ({
@@ -121,9 +122,18 @@ const mountSettings = () => mount(Settings, {
 describe('Settings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockApi.get.mockReset()
+    mockApi.put.mockReset()
+    mockApi.post.mockReset()
+    mockWaitForRestart.mockReset()
+    mockWaitForRestart.mockResolvedValue(true)
+    mockApi.post.mockResolvedValue({ data: { status: 'restart_requested' } })
     mockApi.get.mockImplementation((url) => {
       if (url === '/settings' || url === '/settings/defaults') {
         return Promise.resolve({ data: createMockSettings() })
+      }
+      if (url === '/species/available') {
+        return Promise.resolve({ data: { species: [], total: 0, filtered: 0 } })
       }
       if (url === '/system/storage') {
         return Promise.resolve({ data: {} })
@@ -376,53 +386,13 @@ describe('Settings', () => {
       expect(wrapper.vm.loading).toBe(true)
       expect(saveButton.attributes('disabled')).toBeDefined()
     })
-  })
 
-  describe('Reset to Defaults', () => {
-    it('resets settings to defaults when confirmed', async () => {
+    it('does not render Reset button', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      // Change values
-      wrapper.vm.settings.audio.recording_length = 12
-      wrapper.vm.settings.audio.overlap = 1.5
-
-      // Mock confirm dialog
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
-
-      // Mock save response
-      mockApi.put.mockResolvedValueOnce({
-        data: {
-          status: 'updated',
-          message: 'Settings saved',
-          settings: mockSettings
-        }
-      })
-
       const resetButton = wrapper.findAll('button').find(btn => btn.text() === 'Reset')
-      await resetButton.trigger('click')
-      await flushPromises()
-
-      expect(wrapper.vm.settings.audio.recording_length).toBe(9)
-      expect(wrapper.vm.settings.audio.overlap).toBe(0.0)
-    })
-
-    it('does not reset settings when cancelled', async () => {
-      const wrapper = mountSettings()
-      await flushPromises()
-
-      wrapper.vm.settings.audio.recording_length = 12
-      wrapper.vm.settings.audio.overlap = 1.5
-
-      vi.spyOn(window, 'confirm').mockReturnValue(false)
-
-      const resetButton = wrapper.findAll('button').find(btn => btn.text() === 'Reset')
-      await resetButton.trigger('click')
-      await flushPromises()
-
-      // Values should not change
-      expect(wrapper.vm.settings.audio.recording_length).toBe(12)
-      expect(wrapper.vm.settings.audio.overlap).toBe(1.5)
+      expect(resetButton).toBeUndefined()
     })
   })
 
@@ -492,12 +462,18 @@ describe('Settings', () => {
       expect(wrapper.vm.hasUnsavedChanges).toBe(true)
     })
 
-    it('uses extended timeout when switching to V3 model', async () => {
+    it('saves V3 model change and waits for restart', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
       // Mock successful save
-      mockApi.put.mockResolvedValueOnce({ data: { status: 'updated' } })
+      mockApi.put.mockResolvedValueOnce({
+        data: {
+          status: 'updated',
+          message: 'Settings saved. Restart services to apply all changes.',
+          changes: { full_restart_required: true }
+        }
+      })
 
       // Switch to V3 model
       wrapper.vm.settings.model.type = 'birdnet_v3'
@@ -506,15 +482,20 @@ describe('Settings', () => {
       await wrapper.vm.saveSettings()
       await flushPromises()
 
-      expect(mockWaitForRestart).toHaveBeenCalledWith(
+      expect(mockApi.put).toHaveBeenCalledWith(
+        '/settings',
         expect.objectContaining({
-          maxWaitSeconds: 600,
-          message: 'Updating settings'
+          model: expect.objectContaining({ type: 'birdnet_v3' })
         })
       )
+      expect(mockApi.post).toHaveBeenCalledWith('/system/restart')
+      expect(mockWaitForRestart).toHaveBeenCalledWith(expect.objectContaining({
+        autoReload: true,
+        message: 'Applying settings changes'
+      }))
     })
 
-    it('uses default timeout when not switching to V3', async () => {
+    it('saves non-model changes without waiting for restart', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
@@ -528,16 +509,14 @@ describe('Settings', () => {
       await wrapper.vm.saveSettings()
       await flushPromises()
 
-      expect(mockWaitForRestart).toHaveBeenCalledWith(
+      expect(mockApi.put).toHaveBeenCalledWith(
+        '/settings',
         expect.objectContaining({
-          message: 'Updating settings'
+          location: expect.objectContaining({ latitude: 50.0 })
         })
       )
-      expect(mockWaitForRestart).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          maxWaitSeconds: 600
-        })
-      )
+      expect(mockApi.post).not.toHaveBeenCalled()
+      expect(mockWaitForRestart).not.toHaveBeenCalled()
     })
   })
 
@@ -682,6 +661,36 @@ describe('Settings', () => {
       await flushPromises()
 
       expect(mockApi.put).toHaveBeenCalledWith('/settings', expect.any(Object))
+      expect(wrapper.vm.showUnsavedModal).toBe(false)
+      expect(mockApi.post).not.toHaveBeenCalled()
+      expect(mockWaitForRestart).not.toHaveBeenCalled()
+    })
+
+    it('handleUnsavedSave triggers restart flow and blocks navigation when full restart is required', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      mockApi.put.mockResolvedValueOnce({
+        data: {
+          status: 'updated',
+          message: 'Settings saved. Restart services to apply all changes.',
+          changes: { full_restart_required: true }
+        }
+      })
+
+      wrapper.vm.settings.model.type = 'birdnet_v3'
+      wrapper.vm.showUnsavedModal = true
+      await wrapper.vm.$nextTick()
+
+      await wrapper.vm.handleUnsavedSave()
+      await flushPromises()
+
+      expect(mockApi.put).toHaveBeenCalledWith('/settings', expect.any(Object))
+      expect(mockApi.post).toHaveBeenCalledWith('/system/restart')
+      expect(mockWaitForRestart).toHaveBeenCalledWith(expect.objectContaining({
+        autoReload: true,
+        message: 'Applying settings changes'
+      }))
       expect(wrapper.vm.showUnsavedModal).toBe(false)
     })
 

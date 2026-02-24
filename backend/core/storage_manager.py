@@ -20,20 +20,23 @@ from config.settings import (
     BASE_DIR,
     EXTRACTED_AUDIO_DIR,
     SPECTROGRAM_DIR,
-    user_settings,
 )
 from core.logging_config import get_logger
+from core.runtime_config import get_runtime_settings
 from core.utils import build_detection_filenames, get_legacy_filename
 
 logger = get_logger(__name__)
 
-# Storage configuration from settings (with defaults)
-STORAGE_CONFIG = user_settings.get('storage', {})
-AUTO_CLEANUP_ENABLED = STORAGE_CONFIG.get('auto_cleanup_enabled', True)
-TRIGGER_PERCENT = STORAGE_CONFIG.get('trigger_percent', 85)
-TARGET_PERCENT = STORAGE_CONFIG.get('target_percent', 80)
-KEEP_PER_SPECIES = STORAGE_CONFIG.get('keep_per_species', 60)  # Keep top N by confidence per species
-CHECK_INTERVAL_MINUTES = STORAGE_CONFIG.get('check_interval_minutes', 1440)
+def _get_storage_config() -> dict:
+    """Load current storage settings with defaults."""
+    storage = get_runtime_settings().get('storage', {})
+    return {
+        'auto_cleanup_enabled': storage.get('auto_cleanup_enabled', True),
+        'trigger_percent': storage.get('trigger_percent', 85),
+        'target_percent': storage.get('target_percent', 80),
+        'keep_per_species': storage.get('keep_per_species', 60),
+        'check_interval_minutes': storage.get('check_interval_minutes', 1440),
+    }
 
 
 def get_disk_usage(path=None):
@@ -185,7 +188,7 @@ def estimate_deletable_size(db_manager, keep_per_species=None):
         Tuple of (estimated_bytes, candidate_count)
     """
     if keep_per_species is None:
-        keep_per_species = KEEP_PER_SPECIES
+        keep_per_species = _get_storage_config()['keep_per_species']
 
     # Get candidates (without limit to count all)
     candidates = db_manager.get_cleanup_candidates(keep_per_species=keep_per_species)
@@ -217,10 +220,11 @@ def cleanup_storage(db_manager, target_percent=None, keep_per_species=None):
     Returns:
         dict with files_deleted, bytes_freed, target_achievable, etc.
     """
+    config = _get_storage_config()
     if target_percent is None:
-        target_percent = TARGET_PERCENT
+        target_percent = config['target_percent']
     if keep_per_species is None:
-        keep_per_species = KEEP_PER_SPECIES
+        keep_per_species = config['keep_per_species']
 
     result = {
         'files_deleted': 0,
@@ -325,32 +329,35 @@ def storage_monitor_loop(stop_flag, db_manager):
         stop_flag: threading.Event to signal shutdown
         db_manager: DatabaseManager instance
     """
-    check_interval_seconds = CHECK_INTERVAL_MINUTES * 60
-
-    logger.info("Storage monitor started", extra={
-        'auto_cleanup_enabled': AUTO_CLEANUP_ENABLED,
-        'trigger_percent': TRIGGER_PERCENT,
-        'target_percent': TARGET_PERCENT,
-        'keep_per_species': KEEP_PER_SPECIES,
-        'check_interval_minutes': CHECK_INTERVAL_MINUTES
-    })
+    last_logged_config = None
 
     while not stop_flag.is_set():
         try:
-            if AUTO_CLEANUP_ENABLED:
+            config = _get_storage_config()
+            check_interval_seconds = max(1, int(config['check_interval_minutes'] * 60))
+
+            if config != last_logged_config:
+                logger.info("Storage monitor configuration loaded", extra=config)
+                last_logged_config = config
+
+            if config['auto_cleanup_enabled']:
                 usage = get_disk_usage()
 
                 logger.debug("Disk usage check", extra={
                     'percent_used': usage['percent_used'],
-                    'trigger_percent': TRIGGER_PERCENT
+                    'trigger_percent': config['trigger_percent']
                 })
 
-                if usage['percent_used'] > TRIGGER_PERCENT:
+                if usage['percent_used'] > config['trigger_percent']:
                     logger.info("Disk usage exceeded threshold, starting cleanup", extra={
                         'percent_used': usage['percent_used'],
-                        'trigger_percent': TRIGGER_PERCENT
+                        'trigger_percent': config['trigger_percent']
                     })
-                    cleanup_storage(db_manager, target_percent=TARGET_PERCENT)
+                    cleanup_storage(
+                        db_manager,
+                        target_percent=config['target_percent'],
+                        keep_per_species=config['keep_per_species']
+                    )
 
         except Exception as e:
             logger.error("Error in storage monitor", extra={

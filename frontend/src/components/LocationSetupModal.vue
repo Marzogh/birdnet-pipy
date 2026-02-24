@@ -220,7 +220,6 @@
 <script>
 import { ref, computed } from 'vue'
 import { useServiceRestart } from '@/composables/useServiceRestart'
-import { useAppStatus } from '@/composables/useAppStatus'
 import { limitDecimals } from '@/utils/inputHelpers'
 import api from '@/services/api'
 
@@ -236,7 +235,6 @@ export default {
   setup(props, { emit }) {
     // Composables
     const serviceRestart = useServiceRestart()
-    const appStatus = useAppStatus()
 
     // State
     const latitude = ref(null)
@@ -306,6 +304,7 @@ export default {
 
       saving.value = true
       errorMessage.value = ''
+      let locationSaved = false
 
       try {
         // First, get current settings
@@ -318,24 +317,34 @@ export default {
           configured: true
         }
 
-        // Save updated settings (triggers restart)
-        await api.put('/settings', settings)
+        // Save updated settings and inspect restart requirements
+        const { data: saveResult } = await api.put('/settings', settings)
+        locationSaved = true
+        const needsFullRestart = saveResult?.changes?.full_restart_required === true
+
+        if (needsFullRestart) {
+          // Trigger container restart so TZ env is reloaded in all services.
+          await api.post('/system/restart')
+          await serviceRestart.waitForRestart({
+            autoReload: true,
+            message: 'Applying location and timezone settings'
+          })
+          return
+        }
 
         emit('location-saved', {
           latitude: latitude.value,
           longitude: longitude.value
         })
-
-        saving.value = false
-
-        // Signal that we're restarting
-        appStatus.setRestarting(true)
-
-        // Wait for service restart, then auto-reload
-        await serviceRestart.waitForRestart({ autoReload: true, message: 'Updating settings' })
+        emit('close')
       } catch (error) {
         console.error('Save error:', error)
-        errorMessage.value = 'Failed to save location. Please try again.'
+        if (locationSaved) {
+          errorMessage.value = 'Location saved, but restart did not complete. Please refresh or restart services.'
+        } else {
+          errorMessage.value = 'Failed to save location. Please try again.'
+        }
+      } finally {
         saving.value = false
       }
     }

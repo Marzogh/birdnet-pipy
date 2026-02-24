@@ -22,6 +22,7 @@ from scipy.io import wavfile
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logging_config import get_logger, log_execution_time, setup_logging
+from core.runtime_config import get_runtime_settings
 from core.utils import build_detection_filenames
 
 from .base_model import BirdDetectionModel
@@ -235,8 +236,30 @@ def build_detection_result(species, chunk_index, total_chunks, step_seconds,
     }
 
 
+def _is_input_shape_mismatch_error(error: Exception) -> bool:
+    """Return True when model inference failed due to tensor input shape mismatch."""
+    message = str(error)
+    return (
+        isinstance(error, ValueError)
+        and "Cannot set tensor" in message
+        and "Dimension mismatch" in message
+    )
+
+
 @log_execution_time
-def process_audio_file(model: BirdDetectionModel, audio_file_path, lat, lon, week, sensitivity, cutoff):
+def process_audio_file(
+    model: BirdDetectionModel,
+    audio_file_path,
+    lat,
+    lon,
+    week,
+    sensitivity,
+    cutoff,
+    overlap: float,
+    recording_length: float,
+    allowed_species: list[str] | None,
+    blocked_species: list[str] | None
+):
     """Process an audio file and return detected species.
 
     Args:
@@ -265,15 +288,14 @@ def process_audio_file(model: BirdDetectionModel, audio_file_path, lat, lon, wee
             'model': model.name
         })
 
-    # Get overlap and chunk length from settings/model
-    overlap = settings.OVERLAP
+    # Get overlap and chunk length from runtime settings/model
     chunk_length = model.chunk_length_seconds
 
     # Time audio loading and splitting
     split_start = time.time()
     audio_chunks = split_audio(
         audio_file_path, chunk_length, model.sample_rate,
-        settings.RECORDING_LENGTH, overlap=overlap)
+        recording_length, overlap=overlap)
     split_time = time.time() - split_start
     logger.debug("Audio split complete", extra={
         'split_time': round(split_time, 3),
@@ -286,6 +308,10 @@ def process_audio_file(model: BirdDetectionModel, audio_file_path, lat, lon, wee
     logger.info("Starting audio analysis", extra={
         'file': os.path.basename(audio_file_path),
         'chunks': len(audio_chunks),
+        'model': model.name,
+        'model_version': model.version,
+        'lat': lat,
+        'lon': lon,
         'overlap': overlap,
         'sensitivity': sensitivity,
         'cutoff': cutoff
@@ -300,16 +326,31 @@ def process_audio_file(model: BirdDetectionModel, audio_file_path, lat, lon, wee
     file_timestamp_str = source_file_name.split('.')[0]
     file_timestamp = datetime.datetime.strptime(file_timestamp_str, "%Y%m%d_%H%M%S")
 
-    # Get filter lists from settings
-    allowed_species = settings.ALLOWED_SPECIES
-    blocked_species = settings.BLOCKED_SPECIES
+    # Normalize optional filter lists
+    allowed_species = allowed_species or []
+    blocked_species = blocked_species or []
 
     # Time inference loop
     inference_start = time.time()
     for chunk_index, audio_chunk in enumerate(audio_chunks):
         # Run model inference (includes cutoff filtering and human detection)
-        species_in_audio_chunk = model.predict(
-            audio_chunk, sensitivity, cutoff, chunk_index=chunk_index)
+        try:
+            species_in_audio_chunk = model.predict(
+                audio_chunk, sensitivity, cutoff, chunk_index=chunk_index)
+        except Exception as error:
+            if _is_input_shape_mismatch_error(error):
+                logger.warning("Skipping audio file due to model input shape mismatch", extra={
+                    'file': os.path.basename(audio_file_path),
+                    'chunk_index': chunk_index,
+                    'chunk_samples': len(audio_chunk),
+                    'expected_samples': int(model.chunk_length_seconds * model.sample_rate),
+                    'model': model.name,
+                    'model_version': model.version,
+                    'error': str(error)
+                })
+                return []
+            raise
+
         if species_in_audio_chunk:
             chunks_with_detections += 1
 
@@ -415,22 +456,52 @@ def analyze_audio_file():
 
         week = datetime.datetime.now().isocalendar()[1]
 
-        # Get current settings from config
-        lat = settings.LAT
-        lon = settings.LON
-        sensitivity = settings.SENSITIVITY
-        cutoff = settings.CUTOFF
+        # Get current analysis settings from runtime config
+        runtime_settings = get_runtime_settings()
+        location_settings = runtime_settings.get('location', {})
+        detection_settings = runtime_settings.get('detection', {})
+        audio_settings = runtime_settings.get('audio', {})
+        species_filter_settings = runtime_settings.get('species_filter', {})
+
+        lat = location_settings.get('latitude')
+        lon = location_settings.get('longitude')
+        sensitivity = detection_settings.get('sensitivity', 0.75)
+        cutoff = detection_settings.get('cutoff', 0.60)
+        overlap = audio_settings.get('overlap', 0.0)
+        recording_length = audio_settings.get('recording_length', 9)
+        allowed_species = species_filter_settings.get('allowed_species') or []
+        blocked_species = species_filter_settings.get('blocked_species') or []
+
+        requested_model_type = runtime_settings.get('model', {}).get('type', settings.MODEL_TYPE)
+        if requested_model_type != settings.MODEL_TYPE:
+            logger.warning("Model type changed in settings; full restart required", extra={
+                'loaded_model_type': settings.MODEL_TYPE,
+                'requested_model_type': requested_model_type
+            })
 
         logger.info("Audio analysis request received", extra={
             'file': os.path.basename(audio_file_path),
             'lat': lat,
             'lon': lon,
             'sensitivity': sensitivity,
-            'cutoff': cutoff
+            'cutoff': cutoff,
+            'overlap': overlap
         })
 
         # Process audio file (model handles thread safety internally)
-        results = process_audio_file(model, resolved_path, lat, lon, week, sensitivity, cutoff)
+        results = process_audio_file(
+            model,
+            resolved_path,
+            lat,
+            lon,
+            week,
+            sensitivity,
+            cutoff,
+            overlap,
+            recording_length,
+            allowed_species,
+            blocked_species
+        )
 
         processing_time = time.time() - start_time
         logger.info("Request completed", extra={

@@ -8,12 +8,17 @@ import queue
 import threading
 from datetime import datetime
 
-from config.settings import load_user_settings
 from core.logging_config import get_logger
+from core.runtime_config import get_runtime_settings
 
 logger = get_logger(__name__)
 
 NOTIFICATION_QUEUE_MAXSIZE = 100
+
+
+def load_user_settings():
+    """Compatibility wrapper around runtime settings cache."""
+    return get_runtime_settings()
 
 
 class NotificationService:
@@ -29,7 +34,7 @@ class NotificationService:
         logger.info("Notification service started", extra={'url_count': len(self._apprise_urls)})
 
     def _load_config(self):
-        """Load notification config from settings file."""
+        """Load notification config from runtime settings cache."""
         settings = load_user_settings()
         notif = settings['notifications']
         self._apprise_urls = notif['apprise_urls']

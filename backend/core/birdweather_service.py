@@ -16,13 +16,13 @@ import requests
 
 from config.settings import BIRDWEATHER_ID, LAT, LON
 from core.logging_config import get_logger
+from core.runtime_config import get_runtime_settings
 from core.timezone_service import get_timezone
 
 logger = get_logger(__name__)
 
 BIRDWEATHER_API_BASE = "https://app.birdweather.com/api/v1/stations"
 BIRDWEATHER_TIMEOUT = 30
-
 
 def _to_iso8601_with_tz(timestamp_str: str) -> str:
     """Convert timestamp string to ISO8601 with local timezone."""
@@ -44,6 +44,7 @@ class BirdWeatherService:
     def __init__(self, station_id: str):
         self._station_id = station_id
         self._queue: queue.Queue = queue.Queue(maxsize=BIRDWEATHER_QUEUE_MAXSIZE)
+        self._stop_event = threading.Event()
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
         logger.info("BirdWeather service started", extra={'station_id': station_id[:8] + '...'})
@@ -77,8 +78,11 @@ class BirdWeatherService:
 
     def _worker_loop(self) -> None:
         """Process uploads sequentially in background."""
-        while True:
-            item = self._queue.get()
+        while not self._stop_event.is_set():
+            try:
+                item = self._queue.get(timeout=1)
+            except queue.Empty:
+                continue
             try:
                 self._do_publish(*item)
             except Exception as e:
@@ -198,10 +202,13 @@ class BirdWeatherService:
         url = f"{BIRDWEATHER_API_BASE}/{self._station_id}/detections"
 
         # Offsets are relative to the uploaded soundscape clip (0 to clip_duration)
+        location = get_runtime_settings().get('location', {})
+        lat = location.get('latitude', LAT)
+        lon = location.get('longitude', LON)
         payload = {
             'timestamp': timestamp,
-            'lat': LAT,
-            'lon': LON,
+            'lat': lat,
+            'lon': lon,
             'soundscapeId': soundscape_id,
             'soundscapeStartTime': 0,
             'soundscapeEndTime': clip_duration,
@@ -237,6 +244,12 @@ class BirdWeatherService:
             logger.warning("Detection upload error", extra={'error': str(e)})
             return False
 
+    def stop(self) -> None:
+        """Stop background worker thread."""
+        self._stop_event.set()
+        if self._worker.is_alive():
+            self._worker.join(timeout=2)
+
 
 # Singleton
 _birdweather_service: BirdWeatherService | None = None
@@ -249,6 +262,20 @@ def get_birdweather_service() -> BirdWeatherService | None:
         BirdWeatherService instance if station ID is configured, None otherwise
     """
     global _birdweather_service
-    if _birdweather_service is None and BIRDWEATHER_ID:
-        _birdweather_service = BirdWeatherService(BIRDWEATHER_ID)
+    station_id = get_runtime_settings().get('birdweather', {}).get('id', BIRDWEATHER_ID)
+
+    if not station_id:
+        if _birdweather_service is not None:
+            logger.info("BirdWeather disabled in settings, stopping service")
+            _birdweather_service.stop()
+            _birdweather_service = None
+        return None
+
+    if _birdweather_service is None:
+        _birdweather_service = BirdWeatherService(station_id)
+    elif _birdweather_service._station_id != station_id:
+        logger.info("BirdWeather station changed, restarting service")
+        _birdweather_service.stop()
+        _birdweather_service = BirdWeatherService(station_id)
+
     return _birdweather_service
