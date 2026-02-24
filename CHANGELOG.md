@@ -2,10 +2,15 @@
 
 ## [Unreleased]
 
+- Added hot-apply settings — most settings take effect immediately without a service restart
+- Added runtime settings cache with mtime-based invalidation for efficient config reads
+- Added change classification that categorizes setting changes into hot-apply, component restart, or full restart
 - Added notification system via Apprise with guided service picker and built-in test
 - Added notification triggers: every detection (with per-species cooldown), first of day, and rare species
 - Added immediate autosave for notification settings (no restart required)
 - Added microphone volume adjustment instructions to docs
+- Fixed species filter modal not closing after successful hot-save
+- Fixed inference shape mismatch crash by skipping stale audio files
 - Fixed notification API returning 500 instead of 400 for malformed payloads
 - Fixed notification URL masking crash on edge-case URLs
 

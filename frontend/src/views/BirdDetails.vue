@@ -337,7 +337,6 @@ import { useDateNavigation } from '@/composables/useDateNavigation'
 import { useChartHelpers } from '@/composables/useChartHelpers'
 import { useChartColors } from '@/composables/useChartColors'
 import { useSmartCrop } from '@/composables/useSmartCrop'
-import { useAuth } from '@/composables/useAuth'
 import api from '@/services/api'
 import { getAudioUrl, getBirdImageUrl, getSpectrogramUrl } from '@/services/media'
 
@@ -403,7 +402,6 @@ export default {
     const { destroyChart } = useChartHelpers()
     const { colorPalette } = useChartColors()
     const { useFocalPoint } = useSmartCrop()
-    const { needsLogin } = useAuth()
     const { focalPoint: imageFocalPoint, isReady: imageReady, updateFocalPoint } = useFocalPoint()
 
     // Detect mobile portrait mode and return appropriate tick limits
