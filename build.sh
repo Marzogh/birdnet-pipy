@@ -227,9 +227,6 @@ if [ "$RUN_TESTS" = true ]; then
     cd ..
 fi
 
-# Generate version.json before Docker build
-generate_version_info
-
 # Detect system resources and choose build strategy
 RAM_KB=$(get_total_ram_kb)
 RAM_MB=$((RAM_KB / 1024))
@@ -265,6 +262,9 @@ else
     print_error "Docker build failed!"
     exit 1
 fi
+
+# Generate version.json after successful build so it reflects what's actually running
+generate_version_info
 
 print_status "Build process complete!"
 

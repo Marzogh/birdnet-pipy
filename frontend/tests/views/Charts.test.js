@@ -88,7 +88,7 @@ describe('Charts', () => {
     wrapper.vm.selectedDate = '2024-01-10'
     await wrapper.vm.onDateChange()
 
-    expect(state.fetchChartsData).toHaveBeenCalledWith('2024-01-10', 'most')
+    expect(state.fetchChartsData).toHaveBeenCalledWith('2024-01-10')
   })
 
   it('disables forward navigation when on today', async () => {

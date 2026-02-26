@@ -876,7 +876,12 @@
             v-if="systemUpdate.versionInfo.value"
             class="flex items-center gap-2 text-xs text-gray-500"
           >
-            <span class="font-mono">{{ systemUpdate.versionInfo.value.version && systemUpdate.versionInfo.value.version !== 'unknown' ? `v${systemUpdate.versionInfo.value.version}-` : '' }}{{ systemUpdate.versionInfo.value.current_commit }}</span>
+            <a
+              :href="`${systemUpdate.versionInfo.value.remote_url}/blob/${systemUpdate.versionInfo.value.current_branch}/CHANGELOG.md`"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="font-mono hover:text-blue-600 transition-colors"
+            >{{ systemUpdate.versionInfo.value.version && systemUpdate.versionInfo.value.version !== 'unknown' ? `v${systemUpdate.versionInfo.value.version}` : '' }}({{ systemUpdate.versionInfo.value.current_commit }})</a>
             <span class="px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">{{ systemUpdate.versionInfo.value.current_branch }}</span>
           </div>
         </div>
@@ -960,7 +965,7 @@
 
         <!-- GitHub Repository Link -->
         <a
-          href="https://github.com/Suncuss/BirdNET-PiPy"
+          :href="systemUpdate.versionInfo.value?.remote_url || 'https://github.com/Suncuss/BirdNET-PiPy'"
           target="_blank"
           rel="noopener noreferrer"
           class="mt-2 w-full py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors flex items-center justify-center gap-2"

@@ -228,7 +228,7 @@ class DatabaseManager:
 
         return [{'hour': f"{hour}:00", 'count': count} for hour, count in hourly_activity.items()]
 
-    def get_activity_overview(self, date=None, num_species=10, order='most'):
+    def get_activity_overview(self, date=None, order='most'):
         if date:
             start_of_day = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
         else:
@@ -273,10 +273,10 @@ class DatabaseManager:
 
         logger.debug("Activity overview generated", extra={
             'total_species': len(species_hourly_activity),
-            'returned_species': min(num_species, len(species_activity))
+            'returned_species': len(species_activity)
         })
 
-        return species_activity[:min(num_species, len(species_activity))]
+        return species_activity
 
     def get_activity_overview_both(self, date=None, num_species=10):
         if date:

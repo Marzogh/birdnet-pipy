@@ -101,5 +101,6 @@ cd frontend && npm run test                 # Frontend tests
 1. Run backend tests: `cd backend && ./docker-test.sh`
 2. Run frontend tests: `cd frontend && npm run test`
 
+## Branch Sync Rules
 
-
+Before syncing dev to staging or main, always run `./build.sh` first and confirm it passes.

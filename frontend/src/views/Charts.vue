@@ -6,26 +6,6 @@
           Bird Activity Overview
         </h2>
         <div class="flex flex-wrap items-stretch gap-2 justify-center lg:justify-end">
-          <button
-            class="hidden sm:inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors p-2"
-            :disabled="isUpdating"
-            @click="toggleActivityOrder"
-          >
-            Reverse
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-3.5 w-3.5 transition-transform duration-200"
-              :class="{ 'rotate-180': showLeastCommon }"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fill-rule="evenodd"
-                d="M5.293 7.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L10 4.414l-3.293 3.293a1 1 0 01-1.414 0zM5.293 13.707a1 1 0 010-1.414L10 7.586l4.707 4.707a1 1 0 01-1.414 1.414L10 10.414l-3.293 3.293a1 1 0 01-1.414 0z"
-                clip-rule="evenodd"
-              />
-            </svg>
-          </button>
           <button 
             :class="[
               'p-2 rounded-lg transition-all duration-200 flex items-center justify-center',
@@ -89,37 +69,34 @@
       </div>
 
       <div
-        v-if="!isDataEmpty && !detailedBirdActivityError"
-        class="flex h-[300px] lg:h-[375px]"
+        class="transition-[height] duration-500 ease-in-out overflow-hidden"
+        :style="{ height: activityChartHeight }"
       >
-        <div class="w-full lg:w-1/3 lg:pr-2">
-          <canvas
-            ref="totalObservationsChart"
-            class="h-full"
-          />
+        <div
+          v-if="!isDataEmpty && !detailedBirdActivityError"
+          class="flex h-full"
+        >
+          <div class="w-full lg:w-1/3 lg:pr-2">
+            <canvas
+              ref="totalObservationsChart"
+              class="h-full"
+            />
+          </div>
+          <div class="hidden lg:block lg:w-2/3 lg:pl-2 h-full">
+            <canvas
+              ref="hourlyActivityHeatmap"
+              class="h-full"
+            />
+          </div>
         </div>
-        <div class="hidden lg:block lg:w-2/3 lg:pl-2 h-full">
-          <canvas
-            ref="hourlyActivityHeatmap"
-            class="h-full"
-          />
+        <div
+          v-else
+          class="flex items-center justify-center h-full"
+        >
+          <p class="text-lg text-gray-500">
+            {{ detailedBirdActivityError || `No bird activity recorded for ${formattedDate}. Try selecting a different date.` }}
+          </p>
         </div>
-      </div>
-      <div
-        v-else-if="detailedBirdActivityError"
-        class="flex items-center justify-center h-[300px] lg:h-[375px]"
-      >
-        <p class="text-lg text-gray-500">
-          {{ detailedBirdActivityError }}
-        </p>
-      </div>
-      <div
-        v-else
-        class="flex items-center justify-center h-[300px] lg:h-[375px]"
-      >
-        <p class="text-lg text-gray-500">
-          No bird activity recorded for {{ formattedDate }}. Try selecting a different date.
-        </p>
       </div>
     </div>
 
@@ -490,7 +467,6 @@ export default {
         const maxDate = ref(getLocalDateString())
         const isLoading = ref(false)
         const isUpdating = ref(false)
-        const showLeastCommon = ref(false)
 
         // Chart refs
         const totalObservationsChart = ref(null)
@@ -537,6 +513,14 @@ export default {
             return selectedDate.value < maxDate.value
         })
 
+        const activityChartHeight = computed(() => {
+            const speciesCount = detailedBirdActivityData.value.length
+            const rowHeight = 35
+            const minHeight = 375
+            const height = Math.max(minHeight, speciesCount * rowHeight + 60)
+            return `${height}px`
+        })
+
         const canGoForwardTrends = computed(() => {
             return trendsEndDate.value < trendsMaxDate.value
         })
@@ -558,23 +542,7 @@ export default {
             year: 'Year'
         }
 
-        const currentOrder = () => showLeastCommon.value ? 'least' : 'most'
-
         // Methods
-        const toggleActivityOrder = async () => {
-            if (isUpdating.value) return
-            showLeastCommon.value = !showLeastCommon.value
-            isUpdating.value = true
-            try {
-                await fetchChartsData(selectedDate.value, currentOrder())
-                if (!isDataEmpty.value) {
-                    await createCharts()
-                }
-            } finally {
-                isUpdating.value = false
-            }
-        }
-
         const onDateChange = async () => {
             if (isUpdating.value) return
 
@@ -582,7 +550,7 @@ export default {
             isLoading.value = true
 
             try {
-                await fetchChartsData(selectedDate.value, currentOrder())
+                await fetchChartsData(selectedDate.value)
                 if (!isDataEmpty.value) {
                     await createCharts()
                 }
@@ -954,7 +922,7 @@ export default {
 
         // Lifecycle
         onMounted(async () => {
-            await fetchChartsData(selectedDate.value, currentOrder())
+            await fetchChartsData(selectedDate.value)
             if (!isDataEmpty.value) {
                 createCharts()
             }
@@ -989,11 +957,10 @@ export default {
             canGoForward,
             isLoading,
             isUpdating,
+            activityChartHeight,
             previousDay,
             nextDay,
             goToToday,
-            showLeastCommon,
-            toggleActivityOrder,
             // Species dropdown and chart
             allSpecies,
             filteredSpecies,

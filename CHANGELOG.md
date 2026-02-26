@@ -13,6 +13,10 @@
 - Fixed inference shape mismatch crash by skipping stale audio files
 - Fixed notification API returning 500 instead of 400 for malformed payloads
 - Fixed notification URL masking crash on edge-case URLs
+- Changed Bird Activity Overview on Charts page to show all species for the day instead of top/bottom 10
+- Changed chart height to scale dynamically based on species count with smooth animated transitions
+- Changed version display format to version(commit hash)
+- Fixed GitHub repository link to use remote URL from version info
 
 ## [0.5.4] - 2026-02-19
 
@@ -31,7 +35,7 @@
 ## [0.5.3] - 2026-02-16
 
 - Added eBird species link to bird details page
-- Added "Reverse" toggle to Bird Activity Overview to switch between most and least common species (hidden on mobile)
+- Added sort toggle to Bird Activity Overview (replaced in later release by showing all species)
 
 ## [0.5.2] - 2026-02-15
 

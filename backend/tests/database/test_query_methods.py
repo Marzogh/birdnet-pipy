@@ -35,10 +35,10 @@ class TestDatabaseQueryMethods:
                 }
                 test_db_manager.insert_detection(detection)
 
-        overview = test_db_manager.get_activity_overview(test_date, num_species=2)
+        overview = test_db_manager.get_activity_overview(test_date)
 
-        # Should get top 2 species
-        assert len(overview) == 2
+        # Should get all 3 species
+        assert len(overview) == 3
         assert overview[0]['species'] == 'American Robin'  # 5 detections
         assert overview[0]['totalObservations'] == 5
         assert len(overview[0]['hourlyActivity']) == 24
