@@ -457,7 +457,9 @@ build_application() {
 
     cd "$PROJECT_ROOT"
     chmod +x build.sh
-    sudo -u "$ACTUAL_USER" UID="$ACTUAL_UID" GID="$ACTUAL_GID" ./build.sh
+    if ! sudo -u "$ACTUAL_USER" UID="$ACTUAL_UID" GID="$ACTUAL_GID" ./build.sh; then
+        return 1
+    fi
     print_status "Application built successfully"
 }
 
@@ -624,6 +626,21 @@ perform_update() {
 
     if [ "$LOCAL" = "$REMOTE" ]; then
         print_status "Already up to date, no code changes needed"
+
+        # Check if version.json is stale (e.g., previous build failed mid-way)
+        # If so, rebuild to fix the version mismatch
+        local current_commit_short=$(git rev-parse --short HEAD)
+        local version_commit=$(grep -o '"commit": *"[^"]*"' "$PROJECT_ROOT/data/version.json" 2>/dev/null | grep -o '"[^"]*"$' | tr -d '"' || true)
+        if [ "$current_commit_short" != "$version_commit" ]; then
+            print_warning "version.json is stale (shows $version_commit, expected $current_commit_short)"
+            print_status "Rebuilding to fix version mismatch..."
+            if build_application; then
+                print_status "Rebuild successful, version.json updated"
+            else
+                print_warning "Rebuild failed - version.json may still be stale"
+            fi
+        fi
+
         print_status "Refreshing system configurations..."
         configure_pulseaudio
         create_service_file

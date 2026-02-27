@@ -120,7 +120,10 @@ build_sequential() {
 
         # Use --progress=plain for better visibility on slow builds
         # Do NOT use --no-cache - we want layer caching for speed!
-        docker compose build --progress=plain "$service"
+        if ! docker compose build --progress=plain "$service"; then
+            print_error "Docker build failed for $service!"
+            exit 1
+        fi
 
         # Optional: prune dangling images (not build cache) to free disk space
         docker image prune -f 2>/dev/null || true
@@ -152,7 +155,7 @@ generate_version_info() {
     fi
 
     # Write version.json
-    cat > data/version.json << EOF
+    if ! cat > data/version.json << EOF
 {
     "version": "$VERSION",
     "commit": "$COMMIT_HASH",
@@ -162,6 +165,10 @@ generate_version_info() {
     "build_time": "$BUILD_TIME"
 }
 EOF
+    then
+        print_error "Failed to write data/version.json (permission issue?)"
+        exit 1
+    fi
 
     print_status "Version info: v$VERSION $COMMIT_HASH ($BRANCH)"
 }
@@ -249,19 +256,17 @@ else
     # Standard parallel build with BuildKit for cache mount support
     export DOCKER_BUILDKIT=1
     print_status "Building Docker images..."
-    docker compose build
+    if ! docker compose build; then
+        print_error "Docker build failed!"
+        exit 1
+    fi
 
     # Prune dangling images left behind when 'latest' tag is reassigned
     # (low-memory path already does this between builds)
     docker image prune -f 2>/dev/null || true
 fi
 
-if [ $? -eq 0 ]; then
-    print_status "Docker images built successfully!"
-else
-    print_error "Docker build failed!"
-    exit 1
-fi
+print_status "Docker images built successfully!"
 
 # Generate version.json after successful build so it reflects what's actually running
 generate_version_info

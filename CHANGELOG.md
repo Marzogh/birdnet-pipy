@@ -17,6 +17,11 @@
 - Changed chart height to scale dynamically based on species count with smooth animated transitions
 - Changed version display format to version(commit hash)
 - Fixed GitHub repository link to use remote URL from version info
+- Fixed build.sh not detecting Docker build failures (exit code was masked by subsequent prune command)
+- Fixed build.sh silently keeping stale version.json when write fails (disk full, permissions)
+- Fixed update loop where system stays stuck on "update available" after a failed build
+- Fixed build_application not propagating build.sh failures in conditional contexts
+- Removed incorrect `docker logs` commands from deployment README (correct form is `docker compose logs`)
 
 ## [0.5.4] - 2026-02-19
 

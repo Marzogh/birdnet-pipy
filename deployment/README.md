@@ -100,21 +100,6 @@ cd ~/BirdNET-PiPy && sudo ./install.sh --update --branch staging
 
 ## Troubleshooting
 
-### Quick Diagnostic Flow
-
-```bash
-# 1. Are all containers running?
-docker ps
-
-# 2. Is the audio socket available?
-ls -la /run/pulse/native
-
-# 3. Check container logs for errors
-docker logs main        # Audio recording & BirdNET analysis
-docker logs icecast     # Live audio streaming
-docker logs api         # REST API
-```
-
 ### No Audio Being Recorded
 
 ```bash
