@@ -6,6 +6,22 @@
           Bird Activity Overview
         </h2>
         <div class="flex flex-wrap items-stretch gap-2 justify-center lg:justify-end">
+          <div class="flex items-center bg-gray-100 rounded-full p-0.5">
+            <button
+              v-for="opt in speciesLimitOptions"
+              :key="opt.value"
+              :class="[
+                'px-3 py-1 text-xs font-medium rounded-full transition-all duration-200',
+                speciesLimit === opt.value
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              ]"
+              :disabled="isUpdating"
+              @click="setSpeciesLimit(opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
           <button 
             :class="[
               'p-2 rounded-lg transition-all duration-200 flex items-center justify-center',
@@ -468,6 +484,15 @@ export default {
         const isLoading = ref(false)
         const isUpdating = ref(false)
 
+        // Species limit for heatmap
+        const speciesLimit = ref(10)
+        const speciesLimitOptions = [
+            { label: '10', value: 10 },
+            { label: '20', value: 20 },
+            { label: '30', value: 30 },
+            { label: 'All', value: 0 }
+        ]
+
         // Chart refs
         const totalObservationsChart = ref(null)
         const hourlyActivityHeatmap = ref(null)
@@ -494,6 +519,13 @@ export default {
         const trendsChartError = ref(null)
 
         // Computed properties
+        const limitedBirdActivityData = computed(() => {
+            if (speciesLimit.value === 0 || speciesLimit.value >= detailedBirdActivityData.value.length) {
+                return detailedBirdActivityData.value
+            }
+            return detailedBirdActivityData.value.slice(0, speciesLimit.value)
+        })
+
         const isDataEmpty = computed(() =>
             detailedBirdActivityData.value.length === 0 ||
             detailedBirdActivityData.value.every(bird => bird.hourlyActivity.every(count => count === 0))
@@ -514,7 +546,7 @@ export default {
         })
 
         const activityChartHeight = computed(() => {
-            const speciesCount = detailedBirdActivityData.value.length
+            const speciesCount = limitedBirdActivityData.value.length
             const rowHeight = 35
             const minHeight = 375
             const height = Math.max(minHeight, speciesCount * rowHeight + 60)
@@ -587,8 +619,16 @@ export default {
         const createCharts = async () => {
             // Add small delay to ensure DOM is ready
             await nextTick()
-            await createTotalObsChart(totalObservationsChart, detailedBirdActivityData.value)
-            await createHeatmap(hourlyActivityHeatmap, detailedBirdActivityData.value)
+            await createTotalObsChart(totalObservationsChart, limitedBirdActivityData.value)
+            await createHeatmap(hourlyActivityHeatmap, limitedBirdActivityData.value)
+        }
+
+        const setSpeciesLimit = (limit) => {
+            if (isUpdating.value || speciesLimit.value === limit) return
+            speciesLimit.value = limit
+            if (!isDataEmpty.value) {
+                createCharts()
+            }
         }
 
         // Species dropdown methods
@@ -958,6 +998,9 @@ export default {
             isLoading,
             isUpdating,
             activityChartHeight,
+            speciesLimit,
+            speciesLimitOptions,
+            setSpeciesLimit,
             previousDay,
             nextDay,
             goToToday,

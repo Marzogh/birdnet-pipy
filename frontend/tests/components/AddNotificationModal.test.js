@@ -83,16 +83,16 @@ describe('notificationServices - URL builders', () => {
       .toBe('hassio://homeassistant.local:8123/tok')
   })
 
-  it('Home Assistant: defaults to secure scheme without prefix', () => {
+  it('Home Assistant: defaults to insecure scheme without prefix', () => {
     const service = SERVICES.find(s => s.id === 'homeassistant')
     expect(service.buildUrl({ server: 'homeassistant.local:8123', token: 'tok' }))
-      .toBe('hassios://homeassistant.local:8123/tok')
+      .toBe('hassio://homeassistant.local:8123/tok')
   })
 
   it('Home Assistant: encodes token with special characters', () => {
     const service = SERVICES.find(s => s.id === 'homeassistant')
     expect(service.buildUrl({ server: 'ha.local', token: 'tok/en@val' }))
-      .toBe('hassios://ha.local/tok%2Fen%40val')
+      .toBe('hassio://ha.local/tok%2Fen%40val')
   })
 
   it('MQTT: builds URL with broker and topic', () => {

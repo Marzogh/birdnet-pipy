@@ -13,6 +13,7 @@
 - Fixed inference shape mismatch crash by skipping stale audio files
 - Fixed notification API returning 500 instead of 400 for malformed payloads
 - Fixed notification URL masking crash on edge-case URLs
+- Added species limit selector (10/20/30/All) to Bird Activity Overview heatmap, defaulting to top 10
 - Changed Bird Activity Overview on Charts page to show all species for the day instead of top/bottom 10
 - Changed chart height to scale dynamically based on species count with smooth animated transitions
 - Changed version display format to version(commit hash)
@@ -21,6 +22,7 @@
 - Fixed build.sh silently keeping stale version.json when write fails (disk full, permissions)
 - Fixed update loop where system stays stuck on "update available" after a failed build
 - Fixed build_application not propagating build.sh failures in conditional contexts
+- Fixed Home Assistant notification tests to match HTTP default scheme
 - Fixed Home Assistant notifications defaulting to HTTPS instead of HTTP, causing failures on local HA instances
 - Fixed MQTT notifications silently disabled due to missing paho-mqtt dependency
 - Fixed notification placeholders to show IP address examples (`.local` hostnames don't resolve inside Docker)
