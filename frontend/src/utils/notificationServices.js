@@ -83,13 +83,13 @@ export const SERVICES = [
     id: 'homeassistant',
     label: 'Home Assistant',
     fields: [
-      { key: 'server', label: 'Server', placeholder: 'homeassistant.local:8123', required: true, type: 'text' },
+      { key: 'server', label: 'Server', placeholder: 'http://192.168.1.60:8123', required: true, type: 'text' },
       { key: 'token', label: 'Access Token', placeholder: 'Long-lived access token', required: true, type: 'password' }
     ],
     buildUrl(values) {
       const { scheme, host } = deriveScheme(values.server, {
-        prefixMap: { 'http://': 'hassio' },
-        defaultScheme: 'hassios'
+        prefixMap: { 'https://': 'hassios' },
+        defaultScheme: 'hassio'
       })
       return `${scheme}://${host}/${enc(values.token)}`
     },
@@ -99,7 +99,7 @@ export const SERVICES = [
     id: 'mqtt',
     label: 'MQTT',
     fields: [
-      { key: 'server', label: 'Broker', placeholder: 'localhost', required: true, type: 'text' },
+      { key: 'server', label: 'Broker', placeholder: '192.168.1.60:1883', required: true, type: 'text' },
       { key: 'topic', label: 'Topic', placeholder: 'birdnet/detections', required: true, type: 'text' },
       { key: 'user', label: 'Username (optional)', placeholder: '', required: false, type: 'text' },
       { key: 'password', label: 'Password (optional)', placeholder: '', required: false, type: 'password' }

@@ -21,6 +21,9 @@
 - Fixed build.sh silently keeping stale version.json when write fails (disk full, permissions)
 - Fixed update loop where system stays stuck on "update available" after a failed build
 - Fixed build_application not propagating build.sh failures in conditional contexts
+- Fixed Home Assistant notifications defaulting to HTTPS instead of HTTP, causing failures on local HA instances
+- Fixed MQTT notifications silently disabled due to missing paho-mqtt dependency
+- Fixed notification placeholders to show IP address examples (`.local` hostnames don't resolve inside Docker)
 - Removed incorrect `docker logs` commands from deployment README (correct form is `docker compose logs`)
 
 ## [0.5.4] - 2026-02-19

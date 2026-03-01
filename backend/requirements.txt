@@ -22,6 +22,7 @@ requests>=2.32.4
 
 # Notifications
 apprise>=1.8.0
+paho-mqtt>=2.0.0
 
 # Timezone utilities
 timezonefinder>=6.2.0
