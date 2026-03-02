@@ -446,21 +446,45 @@ configure_pulseaudio() {
 }
 
 # Build Docker images
+# Optional arg: $1 = space-separated list of services to build
 build_application() {
     if [ "$SKIP_BUILD" = true ]; then
         print_status "Skipping Docker image build (--skip-build flag)"
         return 0
     fi
 
+    local services="$1"
+
     print_status "Building BirdNET-PiPy application..."
     print_status "Building as user $ACTUAL_USER (UID:$ACTUAL_UID, GID:$ACTUAL_GID)..."
 
     cd "$PROJECT_ROOT"
     chmod +x build.sh
-    if ! sudo -u "$ACTUAL_USER" UID="$ACTUAL_UID" GID="$ACTUAL_GID" ./build.sh; then
+
+    local build_args=()
+    if [ -n "$services" ]; then
+        # Convert space-separated to comma-separated for CLI transport
+        local csv_services="${services// /,}"
+        build_args=(--services "$csv_services")
+    fi
+
+    if ! sudo -u "$ACTUAL_USER" UID="$ACTUAL_UID" GID="$ACTUAL_GID" ./build.sh "${build_args[@]}"; then
         return 1
     fi
     print_status "Application built successfully"
+}
+
+# Generate version.json without building Docker images
+refresh_version_info() {
+    print_status "Refreshing version info..."
+    cd "$PROJECT_ROOT"
+    chmod +x build.sh
+    if ! sudo -u "$ACTUAL_USER" UID="$ACTUAL_UID" GID="$ACTUAL_GID" ./build.sh --version-only; then
+        print_warning "Failed to refresh version info (data/version.json may be stale)"
+        return 1
+    fi
+    print_status "Version info refreshed"
+    return 0
 }
 
 # Fix existing data folder permissions
@@ -588,6 +612,108 @@ restart_containers_on_failure() {
     docker compose up -d || true
 }
 
+# Determine which Docker services need rebuilding based on changed files
+# Sets REBUILD_SERVICES: space-separated service names, "all", or "" (no rebuild needed)
+# Args: $1 = old commit, $2 = new commit
+determine_rebuild_services() {
+    local old_commit="$1"
+    local new_commit="$2"
+
+    local need_full_rebuild=false
+    local need_backend=false
+    local need_frontend=false
+    local need_icecast=false
+
+    local changed_files
+    changed_files=$(git diff --name-only "$old_commit".."$new_commit")
+
+    if [ -z "$changed_files" ]; then
+        REBUILD_SERVICES=""
+        return
+    fi
+
+    while IFS= read -r file; do
+        # 1. Full-rebuild triggers
+        case "$file" in
+            docker-compose.yml|build.sh|backend/.dockerignore)
+                need_full_rebuild=true
+                continue
+                ;;
+        esac
+
+        # 2. Service-specific rebuild triggers
+        case "$file" in
+            backend/Dockerfile|backend/requirements.txt|backend/docker-entrypoint.sh)
+                need_backend=true
+                continue
+                ;;
+        esac
+
+        # Frontend rebuild
+        if [[ "$file" == frontend/* ]]; then
+            need_frontend=true
+            continue
+        fi
+
+        # Icecast rebuild
+        if [[ "$file" == deployment/audio/* ]]; then
+            need_icecast=true
+            continue
+        fi
+
+        # 3. Known-safe no-rebuild patterns
+        # Backend runtime code (bind-mounted)
+        if [[ "$file" == backend/*.py || "$file" == backend/*/*.py || "$file" == backend/*/*/*.py ]] || \
+           [[ "$file" == backend/assets/* || "$file" == backend/scripts/* ]]; then
+            continue
+        fi
+
+        # Backend dev/test-only files
+        case "$file" in
+            backend/tests/*|backend/requirements-test.txt|backend/docker-test.sh| \
+            backend/run-tests.sh|backend/pytest.ini|backend/ruff.toml)
+                continue
+                ;;
+        esac
+
+        # Documentation, scripts, and other non-build files
+        case "$file" in
+            docs/*|scripts/*|.github/*|.claude/*|data/*)
+                continue
+                ;;
+        esac
+
+        case "$file" in
+            *.md|install.sh|uninstall.sh|.gitignore)
+                continue
+                ;;
+        esac
+
+        # 4. Fallback: unrecognized file → full rebuild (conservative)
+        print_info "Unrecognized file triggers full rebuild: $file"
+        need_full_rebuild=true
+    done <<< "$changed_files"
+
+    # Build result
+    if [ "$need_full_rebuild" = true ]; then
+        REBUILD_SERVICES="all"
+        return
+    fi
+
+    local services=""
+    if [ "$need_frontend" = true ]; then
+        services="frontend"
+    fi
+    if [ "$need_backend" = true ]; then
+        services="${services:+$services }model-server api main"
+    fi
+    if [ "$need_icecast" = true ]; then
+        services="${services:+$services }icecast"
+    fi
+
+    REBUILD_SERVICES="$services"
+}
+
 # Perform system update (called when --update flag is used)
 # This handles: git sync, build, and system config updates
 # Uses TARGET_BRANCH if specified, otherwise current branch or main
@@ -597,6 +723,7 @@ perform_update() {
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     cd "$PROJECT_ROOT"
+    local update_warnings=false
 
     # Determine target branch: explicit > current > main
     local target_branch="${TARGET_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
@@ -692,12 +819,29 @@ perform_update() {
     find "$PROJECT_ROOT" -maxdepth 1 -mindepth 1 -not -name data \
         -exec chown -R "$ACTUAL_USER:$ACTUAL_USER" {} +
 
-    # Step 5: Build new images (as actual user)
-    print_status "Building application..."
-    if ! build_application; then
-        print_error "Build failed!"
-        restart_containers_on_failure
-        exit 1
+    # Step 5: Determine what needs rebuilding and build
+    determine_rebuild_services "$LOCAL" "$REMOTE"
+
+    if [ -z "$REBUILD_SERVICES" ]; then
+        print_status "No Docker image rebuild needed (only runtime/non-build files changed)"
+        if ! refresh_version_info; then
+            update_warnings=true
+            print_warning "Continuing update with stale version info"
+        fi
+    elif [ "$REBUILD_SERVICES" = "all" ]; then
+        print_status "Full Docker rebuild needed"
+        if ! build_application; then
+            print_error "Build failed!"
+            restart_containers_on_failure
+            exit 1
+        fi
+    else
+        print_status "Selective rebuild needed: $REBUILD_SERVICES"
+        if ! build_application "$REBUILD_SERVICES"; then
+            print_error "Build failed!"
+            restart_containers_on_failure
+            exit 1
+        fi
     fi
 
     # Step 6: Update system configurations (root operations)
@@ -710,6 +854,9 @@ perform_update() {
     # Step 7: Success - exit for systemd restart
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     print_status "Update complete! Applied $COMMITS_BEHIND commits from origin/$target_branch"
+    if [ "$update_warnings" = true ]; then
+        print_warning "Update completed with warnings (version metadata refresh failed)"
+    fi
     print_status "Exiting to restart service with updated code..."
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 

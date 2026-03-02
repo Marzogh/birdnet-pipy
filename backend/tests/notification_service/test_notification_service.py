@@ -398,17 +398,37 @@ class TestNotificationServiceFactory:
 
         with patch('apprise.Apprise', return_value=mock_apprise_instance):
             from core.notification_service import send_test_notification
-            result = send_test_notification('tgram://bot/chat')
-            assert result is True
+            success, message = send_test_notification('tgram://bot/chat')
+            assert success is True
+            assert 'success' in message.lower()
             mock_apprise_instance.add.assert_called_once_with('tgram://bot/chat')
             mock_apprise_instance.notify.assert_called_once()
 
-    def test_send_test_notification_returns_false_on_failure(self):
-        """send_test_notification returns False when Apprise fails."""
+    def test_send_test_notification_returns_error_on_failure(self):
+        """send_test_notification returns (False, error_detail) when Apprise fails."""
         mock_apprise_instance = Mock()
         mock_apprise_instance.notify.return_value = False
 
         with patch('apprise.Apprise', return_value=mock_apprise_instance):
             from core.notification_service import send_test_notification
-            result = send_test_notification('invalid://url')
-            assert result is False
+            success, message = send_test_notification('invalid://url')
+            assert success is False
+            assert isinstance(message, str)
+            assert len(message) > 0
+
+    def test_extract_apprise_error_friendly_messages(self):
+        """_extract_apprise_error maps known errors to friendly messages."""
+        from core.notification_service import _extract_apprise_error
+
+        assert 'resolve hostname' in _extract_apprise_error('socket.gaierror: Name or service not known')
+        assert 'Connection refused' in _extract_apprise_error('ConnectionRefusedError: Connection refused')
+        assert 'timed out' in _extract_apprise_error('socket.timeout: timed out')
+        assert 'Check your configuration' in _extract_apprise_error('')
+        assert 'Check your configuration' in _extract_apprise_error('   ')
+
+    def test_extract_apprise_error_raw_message(self):
+        """_extract_apprise_error returns raw message for unknown errors."""
+        from core.notification_service import _extract_apprise_error
+
+        result = _extract_apprise_error('MQTT Connection Error received from 127.0.0.1:9999')
+        assert result == 'MQTT Connection Error received from 127.0.0.1:9999'

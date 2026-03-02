@@ -215,8 +215,12 @@ setup_fake_origin() {
 }
 
 # Push a synthetic commit to the fake bare origin so it's ahead of the test repo
-# Usage: push_synthetic_commit
+# Usage:
+#   push_synthetic_commit
+#   push_synthetic_commit <relative_path> [content]
 push_synthetic_commit() {
+    local relative_path="${1:-.birdnet-test-marker}"
+    local content="${2:-synthetic-change-$(date +%s)}"
     local bare_repo="/tmp/birdnet-origin.git"
     local work_dir="/tmp/birdnet-work"
     local branch
@@ -231,9 +235,10 @@ push_synthetic_commit() {
         git checkout "$branch"
         git config user.email "test@test.com"
         git config user.name "Test"
-        echo "synthetic-change-$(date +%s)" >> .birdnet-test-marker
-        git add .birdnet-test-marker
-        git commit -m "test: synthetic commit for update testing"
+        mkdir -p "$(dirname "$relative_path")"
+        echo "$content" >> "$relative_path"
+        git add "$relative_path"
+        git commit -m "test: synthetic commit for update testing ($relative_path)"
         git push origin "$branch"
     )
 

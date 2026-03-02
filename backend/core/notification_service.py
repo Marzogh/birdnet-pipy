@@ -193,16 +193,67 @@ def send_test_notification(apprise_url):
         apprise_url: Single Apprise URL to test
 
     Returns:
-        bool: True if notification was sent successfully
+        tuple: (True, message) on success, (False, error_detail) on failure
     """
+    import io
+    import logging
+
     try:
         import apprise
         ap = apprise.Apprise()
         ap.add(apprise_url)
-        return ap.notify(
-            title="BirdNET-PiPy Test Notification",
-            body="If you see this, notifications are working correctly!"
-        )
+
+        # Capture apprise logger output to extract error details
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.WARNING)
+        apprise_logger = logging.getLogger('apprise')
+        apprise_logger.addHandler(handler)
+
+        try:
+            result = ap.notify(
+                title="BirdNET-PiPy Test Notification",
+                body="If you see this, notifications are working correctly!"
+            )
+        finally:
+            apprise_logger.removeHandler(handler)
+
+        if result:
+            return True, 'Test notification sent successfully'
+
+        log_output = stream.getvalue().strip()
+        detail = _extract_apprise_error(log_output)
+        return False, detail
+
     except Exception as e:
         logger.error("Test notification failed", extra={'error': str(e)})
-        return False
+        return False, str(e)
+
+
+def _extract_apprise_error(log_output):
+    """Extract a user-friendly error message from apprise log output."""
+    if not log_output or not log_output.strip():
+        return 'Failed to send test notification. Check your configuration.'
+
+    # Apprise sometimes logs a clean one-liner (e.g. "MQTT Connection Error...")
+    # Other times it logs a full traceback — grab the last line for the root cause
+    lines = log_output.strip().split('\n')
+    last_line = lines[-1].strip()
+
+    # If the last line is a recognizable exception, make it friendlier
+    friendly = {
+        'Name or service not known': 'Could not resolve hostname. Check the server address.',
+        'Connection refused': 'Connection refused. Check the server address and port.',
+        'timed out': 'Connection timed out. Check the server address and port.',
+        'No route to host': 'No route to host. Check the server address.',
+        'Connection reset': 'Connection was reset by the server.',
+    }
+    for keyword, message in friendly.items():
+        if keyword in last_line:
+            return message
+
+    # Return the raw last line if it's short enough to be useful
+    if len(last_line) < 200:
+        return last_line
+
+    return 'Failed to send test notification. Check your configuration.'

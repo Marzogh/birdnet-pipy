@@ -1617,12 +1617,12 @@ def test_notification():
             return jsonify({'error': 'No Apprise URL provided. Include {"apprise_url": "..."} in the request body.'}), 400
 
         from core.notification_service import send_test_notification
-        success = send_test_notification(apprise_url)
+        success, message = send_test_notification(apprise_url)
 
         if success:
-            return jsonify({'success': True, 'message': 'Test notification sent successfully'}), 200
+            return jsonify({'success': True, 'message': message}), 200
         else:
-            return jsonify({'error': 'Failed to send test notification'}), 500
+            return jsonify({'error': message}), 500
 
     except Exception as e:
         logger.error("Test notification error", extra={'error': str(e)})

@@ -74,6 +74,26 @@ setup() {
     assert_file_executable "$PROJECT_DIR/build.sh"
 }
 
+@test "unit: build.sh --services requires a value" {
+    run bash "$PROJECT_DIR/build.sh" --services
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--services requires a comma-separated value"* ]]
+}
+
+@test "unit: build.sh --services rejects unknown service" {
+    run bash "$PROJECT_DIR/build.sh" --services "frontend,not-a-service"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown service in --services: not-a-service"* ]]
+}
+
+@test "unit: build.sh --version-only generates version.json" {
+    rm -f "$PROJECT_DIR/data/version.json"
+    run bash -c "cd \"$PROJECT_DIR\" && ./build.sh --version-only"
+    [ "$status" -eq 0 ]
+    assert_file_exists "$PROJECT_DIR/data/version.json"
+    assert_file_contains "$PROJECT_DIR/data/version.json" "\"commit\""
+}
+
 @test "unit: --update requires local install" {
     # Create a temporary directory without .git
     local temp_dir=$(mktemp -d)
@@ -216,4 +236,44 @@ setup() {
     # Assert data was preserved (chown skips data/)
     assert_file_exists "$PROJECT_DIR/data/test-preserve.txt"
     assert_file_contains "$PROJECT_DIR/data/test-preserve.txt" "test-data"
+}
+
+@test "integration: update with backend python-only change skips Docker rebuild" {
+    setup_fake_origin
+    push_synthetic_commit "backend/core/test_update_marker.py" "TEST_MARKER = \"$(date +%s)\""
+
+    run sudo SUDO_USER=testuser bash "$PROJECT_DIR/install.sh" --update --skip-build
+    echo "Update output: $output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No Docker image rebuild needed"* ]]
+}
+
+@test "integration: update with frontend change selects frontend rebuild" {
+    setup_fake_origin
+    push_synthetic_commit "frontend/src/test-update-marker.ts" "export const testMarker = '$(date +%s)'"
+
+    run sudo SUDO_USER=testuser bash "$PROJECT_DIR/install.sh" --update --skip-build
+    echo "Update output: $output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Selective rebuild needed: frontend"* ]]
+}
+
+@test "integration: update with backend dependency change selects backend service group" {
+    setup_fake_origin
+    push_synthetic_commit "backend/requirements.txt" "# test-marker $(date +%s)"
+
+    run sudo SUDO_USER=testuser bash "$PROJECT_DIR/install.sh" --update --skip-build
+    echo "Update output: $output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Selective rebuild needed: model-server api main"* ]]
+}
+
+@test "integration: update with unknown root file triggers full rebuild fallback" {
+    setup_fake_origin
+    push_synthetic_commit "unknown-update-trigger.txt" "marker $(date +%s)"
+
+    run sudo SUDO_USER=testuser bash "$PROJECT_DIR/install.sh" --update --skip-build
+    echo "Update output: $output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Full Docker rebuild needed"* ]]
 }

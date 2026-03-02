@@ -26,7 +26,10 @@
 - Fixed Home Assistant notifications defaulting to HTTPS instead of HTTP, causing failures on local HA instances
 - Fixed MQTT notifications silently disabled due to missing paho-mqtt dependency
 - Fixed notification placeholders to show IP address examples (`.local` hostnames don't resolve inside Docker)
+- Fixed test notification endpoint returning generic error messages; now surfaces specific details (hostname resolution, connection refused, timeout)
 - Removed incorrect `docker logs` commands from deployment README (correct form is `docker compose logs`)
+- Added selective Docker rebuild during updates — only rebuilds images whose inputs changed, skipping rebuild entirely for backend Python-only changes (volume-mounted)
+- Added `--services` and `--version-only` flags to `build.sh` for targeted builds
 
 ## [0.5.4] - 2026-02-19
 

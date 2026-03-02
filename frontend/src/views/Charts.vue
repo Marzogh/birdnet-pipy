@@ -1,6 +1,9 @@
 <template>
   <div class="charts-view p-4">
-    <div class="bg-white rounded-lg shadow p-4">
+    <div
+      class="bg-white rounded-lg shadow p-4 flex flex-col transition-[height] duration-500 ease-in-out overflow-hidden"
+      :style="{ height: activityChartHeight }"
+    >
       <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-4">
         <h2 class="text-lg font-semibold mb-2">
           Bird Activity Overview
@@ -84,10 +87,7 @@
         </div>
       </div>
 
-      <div
-        class="transition-[height] duration-500 ease-in-out overflow-hidden"
-        :style="{ height: activityChartHeight }"
-      >
+      <div class="flex-1 min-h-0">
         <div
           v-if="!isDataEmpty && !detailedBirdActivityError"
           class="flex h-full"
@@ -548,8 +548,8 @@ export default {
         const activityChartHeight = computed(() => {
             const speciesCount = limitedBirdActivityData.value.length
             const rowHeight = 35
-            const minHeight = 375
-            const height = Math.max(minHeight, speciesCount * rowHeight + 60)
+            const baseHeight = 375
+            const height = speciesCount <= 10 ? baseHeight : speciesCount * rowHeight + 100
             return `${height}px`
         })
 
@@ -619,8 +619,8 @@ export default {
         const createCharts = async () => {
             // Add small delay to ensure DOM is ready
             await nextTick()
-            await createTotalObsChart(totalObservationsChart, limitedBirdActivityData.value)
-            await createHeatmap(hourlyActivityHeatmap, limitedBirdActivityData.value)
+            await createTotalObsChart(totalObservationsChart, limitedBirdActivityData.value, { title: null })
+            await createHeatmap(hourlyActivityHeatmap, limitedBirdActivityData.value, { title: null })
         }
 
         const setSpeciesLimit = (limit) => {

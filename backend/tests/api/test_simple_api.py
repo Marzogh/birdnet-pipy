@@ -926,7 +926,7 @@ class TestSimpleAPI:
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.db.DatabaseManager') as MockDB, \
-                 patch('core.notification_service.send_test_notification', return_value=True) as mock_send:
+                 patch('core.notification_service.send_test_notification', return_value=(True, 'Test notification sent successfully')) as mock_send:
 
                 mock_db_instance = Mock()
                 MockDB.return_value = mock_db_instance

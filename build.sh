@@ -100,6 +100,7 @@ setup_build_swap() {
 }
 
 # Build images sequentially for low-memory systems
+# Optional args: space-separated service names to build (default: all)
 build_sequential() {
     print_status "Building images sequentially (low-memory mode)..."
 
@@ -110,10 +111,37 @@ build_sequential() {
 
     # Build order: smallest/fastest first, largest last
     # icecast is tiny, frontend is medium, backend is largest (pip install)
-    local services=("icecast" "frontend" "model-server")
+    local all_services=("icecast" "frontend" "model-server")
 
     # Note: model-server, api, and main share the same image (backend/Dockerfile)
     # Docker will use cached image for api and main after model-server is built
+
+    # Filter to requested services if specified
+    local services=()
+    if [ $# -gt 0 ]; then
+        local requested=" $* "
+        for svc in "${all_services[@]}"; do
+            if [[ "$requested" == *" $svc "* ]]; then
+                services+=("$svc")
+            fi
+        done
+        # Also include any requested services not in the default list
+        # (e.g., "api" or "main" — they share the backend image with model-server)
+        for svc in "$@"; do
+            local found=false
+            for existing in "${services[@]}"; do
+                if [ "$svc" = "$existing" ]; then
+                    found=true
+                    break
+                fi
+            done
+            if [ "$found" = false ]; then
+                services+=("$svc")
+            fi
+        done
+    else
+        services=("${all_services[@]}")
+    fi
 
     for service in "${services[@]}"; do
         print_status "Building $service..."
@@ -129,7 +157,7 @@ build_sequential() {
         docker image prune -f 2>/dev/null || true
     done
 
-    print_status "All unique images built (api/main share backend image)"
+    print_status "All requested images built"
 }
 
 # Function to generate version.json with git information
@@ -178,9 +206,11 @@ show_usage() {
     echo "Usage: ./build.sh [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --test        Run backend tests before building"
-    echo "  --low-memory  Force low-memory build mode (sequential, no BuildKit)"
-    echo "  --help        Show this help message"
+    echo "  --test                Run backend tests before building"
+    echo "  --low-memory          Force low-memory build mode (sequential, no BuildKit)"
+    echo "  --services SVC,...    Build only specified services (comma-separated)"
+    echo "  --version-only        Only generate version.json, skip Docker build"
+    echo "  --help                Show this help message"
     echo ""
     echo "Default: Builds all Docker images (no deployment)"
     echo ""
@@ -190,11 +220,16 @@ show_usage() {
     echo "Low-memory mode is auto-enabled on systems with <1GB RAM."
     echo "For Pi Zero 2W, run with sudo to enable automatic swap creation:"
     echo "  sudo ./build.sh"
+    echo ""
+    echo "Valid services for --services: model-server, api, main, icecast, frontend"
 }
 
 # Parse command line arguments
 RUN_TESTS=false
 FORCE_LOW_MEMORY=false
+BUILD_SERVICES=""
+SELECTED_SERVICES=()
+VERSION_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -204,6 +239,25 @@ while [[ $# -gt 0 ]]; do
             ;;
         --low-memory)
             FORCE_LOW_MEMORY=true
+            shift
+            ;;
+        --services)
+            if [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+                print_error "--services requires a comma-separated value"
+                show_usage
+                exit 1
+            fi
+            # Convert comma-separated to space-separated
+            BUILD_SERVICES="${2//,/ }"
+            if [ -z "${BUILD_SERVICES// }" ]; then
+                print_error "--services cannot be empty"
+                show_usage
+                exit 1
+            fi
+            shift 2
+            ;;
+        --version-only)
+            VERSION_ONLY=true
             shift
             ;;
         --help)
@@ -218,8 +272,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate and normalize selected services
+if [ -n "$BUILD_SERVICES" ]; then
+    read -r -a SELECTED_SERVICES <<< "$BUILD_SERVICES"
+    for svc in "${SELECTED_SERVICES[@]}"; do
+        case "$svc" in
+            model-server|api|main|icecast|frontend)
+                ;;
+            *)
+                print_error "Unknown service in --services: $svc"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+fi
+
 # Main build process
 print_status "Starting BirdNET-PiPy build process..."
+
+# Handle --version-only: just generate version.json and exit
+if [ "$VERSION_ONLY" = true ]; then
+    generate_version_info
+    print_status "Version info generated (--version-only mode)"
+    exit 0
+fi
 
 # Run tests if requested
 if [ "$RUN_TESTS" = true ]; then
@@ -239,6 +316,10 @@ RAM_KB=$(get_total_ram_kb)
 RAM_MB=$((RAM_KB / 1024))
 print_status "Detected RAM: ${RAM_MB}MB"
 
+if [ ${#SELECTED_SERVICES[@]} -gt 0 ]; then
+    print_status "Selective build requested: ${SELECTED_SERVICES[*]}"
+fi
+
 if is_low_memory || [ "$FORCE_LOW_MEMORY" = true ]; then
     if [ "$FORCE_LOW_MEMORY" = true ]; then
         print_status "Low-memory mode forced via --low-memory flag"
@@ -250,15 +331,23 @@ if is_low_memory || [ "$FORCE_LOW_MEMORY" = true ]; then
     # Try to set up swap for the build
     setup_build_swap || true
 
-    # Build sequentially
-    build_sequential
+    # Build sequentially (with optional service filter)
+    build_sequential "${SELECTED_SERVICES[@]}"
 else
     # Standard parallel build with BuildKit for cache mount support
     export DOCKER_BUILDKIT=1
-    print_status "Building Docker images..."
-    if ! docker compose build; then
-        print_error "Docker build failed!"
-        exit 1
+    if [ ${#SELECTED_SERVICES[@]} -gt 0 ]; then
+        print_status "Building Docker images: ${SELECTED_SERVICES[*]}"
+        if ! docker compose build "${SELECTED_SERVICES[@]}"; then
+            print_error "Docker build failed!"
+            exit 1
+        fi
+    else
+        print_status "Building Docker images..."
+        if ! docker compose build; then
+            print_error "Docker build failed!"
+            exit 1
+        fi
     fi
 
     # Prune dangling images left behind when 'latest' tag is reassigned
