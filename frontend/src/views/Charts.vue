@@ -9,7 +9,7 @@
           Bird Activity Overview
         </h2>
         <div class="flex flex-wrap items-stretch gap-2 justify-center lg:justify-end">
-          <div class="flex items-center bg-gray-100 rounded-full p-0.5">
+          <div class="hidden sm:flex items-center bg-gray-100 rounded-full p-0.5">
             <button
               v-for="opt in speciesLimitOptions"
               :key="opt.value"
@@ -110,7 +110,7 @@
           class="flex items-center justify-center h-full"
         >
           <p class="text-lg text-gray-500">
-            {{ detailedBirdActivityError || `No bird activity recorded for ${formattedDate}. Try selecting a different date.` }}
+            {{ detailedBirdActivityError || 'No bird activity recorded for this day.' }}
           </p>
         </div>
       </div>

@@ -2,34 +2,22 @@
 
 ## [Unreleased]
 
-- Added hot-apply settings — most settings take effect immediately without a service restart
-- Added runtime settings cache with mtime-based invalidation for efficient config reads
-- Added change classification that categorizes setting changes into hot-apply, component restart, or full restart
-- Added notification system via Apprise with guided service picker and built-in test
+## [0.5.5] - 2026-03-02
+
+- Added notification system via Apprise with guided service picker, built-in test, and immediate autosave
 - Added notification triggers: every detection (with per-species cooldown), first of day, and rare species
-- Added immediate autosave for notification settings (no restart required)
-- Added microphone volume adjustment instructions to docs
+- Added hot-apply settings — most settings take effect immediately without a service restart, with runtime cache and change classification
+- Added species limit selector (10/20/30/All) to Bird Activity Overview heatmap, defaulting to top 10
+- Added selective Docker rebuild during updates — only rebuilds images whose inputs changed; added `--services` and `--version-only` flags to `build.sh`
+- Changed Bird Activity Overview to show all species with dynamic chart height and smooth animated transitions
+- Changed recordings sort dropdown to pill-shaped toggle
+- Changed version display format to version(commit hash)
+- Fixed multiple notification issues: API returning 500 for malformed payloads, URL masking crash, Home Assistant defaulting to HTTPS, MQTT silently disabled due to missing dependency, placeholders using unresolvable `.local` hostnames, and generic test error messages
+- Fixed build pipeline: Docker build failures not detected, stale version.json kept on write failure, update loop stuck on "update available" after failed build
 - Fixed species filter modal not closing after successful hot-save
 - Fixed inference shape mismatch crash by skipping stale audio files
-- Fixed notification API returning 500 instead of 400 for malformed payloads
-- Fixed notification URL masking crash on edge-case URLs
-- Added species limit selector (10/20/30/All) to Bird Activity Overview heatmap, defaulting to top 10
-- Changed Bird Activity Overview on Charts page to show all species for the day instead of top/bottom 10
-- Changed chart height to scale dynamically based on species count with smooth animated transitions
-- Changed version display format to version(commit hash)
 - Fixed GitHub repository link to use remote URL from version info
-- Fixed build.sh not detecting Docker build failures (exit code was masked by subsequent prune command)
-- Fixed build.sh silently keeping stale version.json when write fails (disk full, permissions)
-- Fixed update loop where system stays stuck on "update available" after a failed build
-- Fixed build_application not propagating build.sh failures in conditional contexts
-- Fixed Home Assistant notification tests to match HTTP default scheme
-- Fixed Home Assistant notifications defaulting to HTTPS instead of HTTP, causing failures on local HA instances
-- Fixed MQTT notifications silently disabled due to missing paho-mqtt dependency
-- Fixed notification placeholders to show IP address examples (`.local` hostnames don't resolve inside Docker)
-- Fixed test notification endpoint returning generic error messages; now surfaces specific details (hostname resolution, connection refused, timeout)
-- Removed incorrect `docker logs` commands from deployment README (correct form is `docker compose logs`)
-- Added selective Docker rebuild during updates — only rebuilds images whose inputs changed, skipping rebuild entirely for backend Python-only changes (volume-mounted)
-- Added `--services` and `--version-only` flags to `build.sh` for targeted builds
+- Removed incorrect `docker logs` commands from deployment README
 
 ## [0.5.4] - 2026-02-19
 
