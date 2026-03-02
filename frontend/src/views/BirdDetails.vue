@@ -241,18 +241,22 @@
           <h2 class="text-lg font-semibold">
             Recordings
           </h2>
-          <select
-            v-model="recordingSort"
-            class="h-9 px-3 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
-            @change="onSortChange"
-          >
-            <option value="recent">
-              Most Recent
-            </option>
-            <option value="best">
-              Best Recordings
-            </option>
-          </select>
+          <div class="flex items-center bg-gray-100 rounded-full p-0.5">
+            <button
+              v-for="opt in recordingSortOptions"
+              :key="opt.value"
+              :class="[
+                'px-3 py-1 text-xs font-medium rounded-full transition-all duration-200',
+                recordingSort === opt.value
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              ]"
+              @click="setRecordingSort(opt.value)"
+            >
+              <span class="sm:hidden">{{ opt.shortLabel }}</span>
+              <span class="hidden sm:inline">{{ opt.label }}</span>
+            </button>
+          </div>
         </div>
 
         <!-- Recordings Grid (show 4 per page) -->
@@ -509,8 +513,15 @@ export default {
       }
     }
 
+    const recordingSortOptions = [
+      { label: 'Most Recent', shortLabel: 'Recent', value: 'recent' },
+      { label: 'Best Recordings', shortLabel: 'Best', value: 'best' }
+    ]
+
     // Handle sort change - re-fetch with new sort, reset to page 1
-    const onSortChange = () => {
+    const setRecordingSort = (value) => {
+      if (value === recordingSort.value) return
+      recordingSort.value = value
       fetchRecordings()
     }
 
@@ -789,10 +800,11 @@ export default {
       navigateNext,
       // Recordings section
       recordingSort,
+      recordingSortOptions,
       currentPage,
       totalPages,
       currentPageRecordings,
-      onSortChange,
+      setRecordingSort,
       // Spectrogram modal
       selectedSpectrogramUrl,
       openSpectrogram,
