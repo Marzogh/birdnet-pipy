@@ -28,6 +28,7 @@ vi.mock('@/composables/useServiceRestart', () => ({
 // Mock the useSystemUpdate composable to avoid extra fetch calls
 vi.mock('@/composables/useSystemUpdate', () => ({
   useSystemUpdate: () => ({
+    capabilities: { value: { runtime_mode: 'native', supports_channel_switch: true } },
     versionInfo: { value: null },
     updateInfo: { value: null },
     updateAvailable: { value: false },
@@ -42,6 +43,7 @@ vi.mock('@/composables/useSystemUpdate', () => ({
     restartMessage: { value: '' },
     restartError: { value: '' },
     isRestarting: { value: false },
+    loadCapabilities: vi.fn().mockResolvedValue({ runtime_mode: 'native', supports_channel_switch: true }),
     loadVersionInfo: vi.fn().mockResolvedValue({}),
     checkForUpdates: vi.fn().mockResolvedValue({}),
     triggerUpdate: vi.fn().mockResolvedValue({})

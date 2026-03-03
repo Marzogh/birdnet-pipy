@@ -873,21 +873,38 @@
             System
           </h2>
           <div
-            v-if="systemUpdate.versionInfo.value"
+            v-if="systemUpdate.versionInfo.value || runtimeModeBadgeLabel"
             class="flex items-center gap-2 text-xs text-gray-500"
           >
+            <span
+              v-if="runtimeModeBadgeLabel"
+              :class="runtimeModeBadgeClass"
+              class="px-1.5 py-0.5 rounded"
+            >
+              Mode: {{ runtimeModeBadgeLabel }}
+            </span>
             <a
-              :href="`${systemUpdate.versionInfo.value.remote_url}/blob/${systemUpdate.versionInfo.value.current_branch}/CHANGELOG.md`"
+              v-if="systemUpdate.versionInfo.value"
+              :href="versionChangelogUrl"
               target="_blank"
               rel="noopener noreferrer"
               class="font-mono hover:text-blue-600 transition-colors"
-            >{{ systemUpdate.versionInfo.value.version && systemUpdate.versionInfo.value.version !== 'unknown' ? `v${systemUpdate.versionInfo.value.version}` : '' }}({{ systemUpdate.versionInfo.value.current_commit }})</a>
-            <span class="px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">{{ systemUpdate.versionInfo.value.current_branch }}</span>
+            >
+              {{ systemUpdate.versionInfo.value.version && systemUpdate.versionInfo.value.version !== 'unknown' ? `v${systemUpdate.versionInfo.value.version}` : '' }}
+              <template v-if="!isHomeAssistantMode">({{ systemUpdate.versionInfo.value.current_commit }})</template>
+            </a>
+            <span
+              v-if="!isHomeAssistantMode && systemUpdate.versionInfo.value"
+              class="px-1.5 py-0.5 bg-gray-100 rounded text-gray-600"
+            >{{ systemUpdate.versionInfo.value.current_branch }}</span>
           </div>
         </div>
 
         <!-- Update Channel Toggle -->
-        <div class="flex items-center justify-between mb-4">
+        <div
+          v-if="supportsChannelSwitch"
+          class="flex items-center justify-between mb-4"
+        >
           <div>
             <label class="text-sm text-gray-600">Try Experimental Features</label>
             <p class="text-xs text-gray-400">
@@ -918,9 +935,7 @@
                 Update available
               </p>
               <p class="text-xs text-blue-600">
-                {{ systemUpdate.updateInfo.value.fresh_sync ? 'Major version' :
-                  systemUpdate.updateInfo.value.commits_behind === 0 ? `Switch to ${systemUpdate.updateInfo.value.channel} channel` :
-                  `${systemUpdate.updateInfo.value.commits_behind} new commits` }}
+                {{ getUpdateSummaryText() }}
               </p>
             </div>
             <button
@@ -965,7 +980,7 @@
 
         <!-- GitHub Repository Link -->
         <a
-          :href="systemUpdate.versionInfo.value?.remote_url || 'https://github.com/Suncuss/BirdNET-PiPy'"
+          :href="repositoryUrl"
           target="_blank"
           rel="noopener noreferrer"
           class="mt-2 w-full py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors flex items-center justify-center gap-2"
@@ -1252,6 +1267,8 @@ import AddNotificationModal from '@/components/AddNotificationModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import { SCHEME_TO_SERVICE_NAME } from '@/utils/notificationServices'
 
+const DEFAULT_REPOSITORY_URL = 'https://github.com/Suncuss/BirdNET-PiPy'
+
 export default {
   name: 'Settings',
   components: {
@@ -1418,6 +1435,49 @@ export default {
 
     // System update composable
     const systemUpdate = useSystemUpdate()
+    const supportsChannelSwitch = computed(
+      () => systemUpdate?.capabilities?.value?.supports_channel_switch !== false
+    )
+    const isHomeAssistantMode = computed(
+      () => systemUpdate?.capabilities?.value?.runtime_mode === 'ha'
+    )
+    const repositoryUrl = computed(
+      () => systemUpdate.versionInfo.value?.remote_url || DEFAULT_REPOSITORY_URL
+    )
+    const versionChangelogUrl = computed(() => {
+      const info = systemUpdate.versionInfo.value
+      if (!info) return repositoryUrl.value
+      if (isHomeAssistantMode.value) {
+        return repositoryUrl.value
+      }
+      const branch = info.current_branch || 'main'
+      return `${repositoryUrl.value}/blob/${branch}/CHANGELOG.md`
+    })
+    const runtimeModeBadgeLabel = computed(() => {
+      const mode = systemUpdate?.capabilities?.value?.runtime_mode
+      if (mode === 'ha') return 'Home Assistant'
+      if (mode === 'native') return 'Native'
+      return null
+    })
+    const runtimeModeBadgeClass = computed(() => {
+      const mode = systemUpdate?.capabilities?.value?.runtime_mode
+      if (mode === 'ha') return 'bg-teal-100 text-teal-700'
+      return 'bg-gray-100 text-gray-600'
+    })
+
+    const getUpdateSummaryText = () => {
+      const info = systemUpdate.updateInfo.value
+      if (!info) return ''
+      if (isHomeAssistantMode.value) {
+        if (info.current_version && info.latest_version && info.current_version !== info.latest_version) {
+          return `v${info.current_version} -> v${info.latest_version}`
+        }
+        return 'Home Assistant add-on update available'
+      }
+      if (info.fresh_sync) return 'Major version'
+      if (info.commits_behind === 0) return `Switch to ${info.channel} channel`
+      return `${info.commits_behind} new commits`
+    }
 
     // Load storage info
     const loadStorageInfo = async () => {
@@ -1578,6 +1638,10 @@ export default {
     // Toggle update channel between release and latest (saves immediately, no restart needed)
     const toggleUpdateChannel = async () => {
       if (updateChannelSaving.value) return
+      if (!supportsChannelSwitch.value) {
+        showStatus('info', 'Update channel switching is not available in this mode')
+        return
+      }
       try {
         updateChannelSaving.value = true
         // Toggle the channel
@@ -1986,10 +2050,11 @@ export default {
     })
 
     // Load settings on component mount
-    onMounted(() => {
+    onMounted(async () => {
       loadSettings()
       loadStorageInfo()
       loadSpeciesList()
+      void systemUpdate.loadCapabilities()
       systemUpdate.loadVersionInfo()
       auth.checkAuthStatus()
       window.addEventListener('beforeunload', handleBeforeUnload)
@@ -2011,6 +2076,13 @@ export default {
       exportCSV,
       saveSettings,
       toggleUpdateChannel,
+      supportsChannelSwitch,
+      isHomeAssistantMode,
+      repositoryUrl,
+      versionChangelogUrl,
+      runtimeModeBadgeLabel,
+      runtimeModeBadgeClass,
+      getUpdateSummaryText,
       toggleMetricUnits,
       onRecordingModeChange,
       limitDecimals,

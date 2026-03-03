@@ -11,6 +11,7 @@ const checking = ref(false)
 const updating = ref(false)
 const statusMessage = ref(null)
 const statusType = ref(null) // 'success', 'error', 'info'
+const capabilities = ref(null)
 
 // Dismissal state - stores expiry timestamp (when to show again)
 const DISMISS_STORAGE_KEY = 'birdnet_update_dismissed_until'
@@ -41,6 +42,24 @@ export function useSystemUpdate() {
     const expiry = Date.now() + DISMISS_DURATION_MS
     dismissedUntil.value = expiry
     localStorage.setItem(DISMISS_STORAGE_KEY, String(expiry))
+  }
+
+  /**
+   * Load runtime capabilities from backend
+   */
+  const loadCapabilities = async () => {
+    try {
+      const { data } = await api.get('/system/capabilities')
+      capabilities.value = data
+      return data
+    } catch (error) {
+      logger.warn('Failed to load system capabilities; defaulting to native behavior', error)
+      capabilities.value = {
+        runtime_mode: 'native',
+        supports_channel_switch: true
+      }
+      return capabilities.value
+    }
   }
 
   /**
@@ -184,6 +203,7 @@ export function useSystemUpdate() {
 
   return {
     // State
+    capabilities,
     versionInfo,
     updateInfo,
     updateAvailable,
@@ -199,6 +219,7 @@ export function useSystemUpdate() {
     restartError: serviceRestart.restartError,
     isRestarting: serviceRestart.isRestarting,
     // Methods
+    loadCapabilities,
     loadVersionInfo,
     checkForUpdates,
     triggerUpdate

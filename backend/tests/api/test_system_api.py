@@ -234,6 +234,140 @@ class TestSystemAPI:
             data = response.get_json()
             assert 'Version information not available' in data['error']
 
+    def test_get_capabilities_native_mode(self, api_client):
+        """Test system capabilities endpoint in native mode."""
+        with patch('core.api.get_runtime_mode_info') as mock_mode_info:
+            mock_mode_info.return_value = {
+                'mode': 'native',
+                'token_present': False,
+                'supervisor_available': False,
+                'probe_status': None,
+                'probe_error': 'SUPERVISOR_TOKEN is not set',
+            }
+
+            response = api_client.get('/api/system/capabilities')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['runtime_mode'] == 'native'
+            assert data['supports_channel_switch'] is True
+            assert data['supports_supervisor_update'] is False
+            assert data['lifecycle_provider'] == 'native_service_flags'
+
+    def test_get_capabilities_ha_mode(self, api_client):
+        """Test system capabilities endpoint in Home Assistant mode."""
+        with patch('core.api.get_runtime_mode_info') as mock_mode_info, \
+             patch('core.api.is_home_assistant_mode') as mock_is_ha:
+            mock_mode_info.return_value = {
+                'mode': 'ha',
+                'token_present': True,
+                'supervisor_available': True,
+                'probe_status': 200,
+                'probe_error': None,
+            }
+            mock_is_ha.return_value = True
+
+            response = api_client.get('/api/system/capabilities')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['runtime_mode'] == 'ha'
+            assert data['supports_channel_switch'] is False
+            assert data['supports_supervisor_update'] is True
+            assert data['lifecycle_provider'] == 'home_assistant_supervisor'
+
+    def test_get_version_info_ha_mode(self, api_client):
+        """Test GET /api/system/version in Home Assistant mode."""
+        with patch('core.api.is_home_assistant_mode') as mock_is_ha, \
+             patch('core.api.get_self_addon_info') as mock_addon_info:
+            mock_is_ha.return_value = True
+            mock_addon_info.return_value = {
+                'version': '1.2.3',
+                'version_latest': '1.2.4',
+                'update_available': True,
+                'repository': 'alexbelgium/hassio-addons',
+            }
+
+            response = api_client.get('/api/system/version')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['version'] == '1.2.3'
+            assert data['latest_version'] == '1.2.4'
+            assert data['update_available'] is True
+            assert data['runtime_mode'] == 'ha'
+            assert data['lifecycle_provider'] == 'home_assistant_supervisor'
+
+    def test_check_for_updates_ha_mode(self, api_client):
+        """Test update check in Home Assistant mode."""
+        with patch('core.api.is_home_assistant_mode') as mock_is_ha, \
+             patch('core.api.get_self_addon_info') as mock_addon_info:
+            mock_is_ha.return_value = True
+            mock_addon_info.return_value = {
+                'version': '1.2.3',
+                'version_latest': '1.2.5',
+                'update_available': True,
+            }
+
+            response = api_client.get('/api/system/update-check')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['runtime_mode'] == 'ha'
+            assert data['lifecycle_provider'] == 'home_assistant_supervisor'
+            assert data['channel'] == 'ha'
+            assert data['current_version'] == '1.2.3'
+            assert data['latest_version'] == '1.2.5'
+            assert data['update_available'] is True
+
+    def test_trigger_update_ha_mode(self, api_client):
+        """Test POST /api/system/update uses supervisor in Home Assistant mode."""
+        with patch('core.api.is_home_assistant_mode') as mock_is_ha, \
+             patch('core.api.update_self_addon') as mock_update:
+            mock_is_ha.return_value = True
+
+            response = api_client.post('/api/system/update')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['status'] == 'update_triggered'
+            assert data['runtime_mode'] == 'ha'
+            assert data['lifecycle_provider'] == 'home_assistant_supervisor'
+            mock_update.assert_called_once()
+
+    def test_trigger_restart_native_mode(self, api_client):
+        """Test POST /api/system/restart writes flag in native mode."""
+        with patch('core.api.is_home_assistant_mode') as mock_is_ha, \
+             patch('core.api.write_flag') as mock_flag:
+            mock_is_ha.return_value = False
+
+            response = api_client.post('/api/system/restart')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['status'] == 'restart_requested'
+            assert data['runtime_mode'] == 'native'
+            assert data['lifecycle_provider'] == 'native_service_flags'
+            mock_flag.assert_called_once_with('restart-backend')
+
+    def test_trigger_restart_ha_mode(self, api_client):
+        """Test POST /api/system/restart uses supervisor in Home Assistant mode."""
+        with patch('core.api.is_home_assistant_mode') as mock_is_ha, \
+             patch('core.api.restart_self_addon') as mock_restart:
+            mock_is_ha.return_value = True
+
+            response = api_client.post('/api/system/restart')
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['status'] == 'restart_requested'
+            assert data['runtime_mode'] == 'ha'
+            assert data['lifecycle_provider'] == 'home_assistant_supervisor'
+            mock_restart.assert_called_once()
+
+    def test_update_channel_rejected_in_ha_mode(self, api_client):
+        """Test channel switch endpoint is disabled in Home Assistant mode."""
+        with patch('core.api.is_home_assistant_mode') as mock_is_ha:
+            mock_is_ha.return_value = True
+
+            response = api_client.put('/api/settings/channel', json={'channel': 'latest'})
+            assert response.status_code == 400
+            data = response.get_json()
+            assert 'not supported in Home Assistant mode' in data['error']
+
     def test_version_constant_exists(self):
         """Test that version module exists and has required attributes"""
         import version

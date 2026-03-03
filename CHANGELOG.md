@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Home Assistant add-on lifecycle support — auto-detects HA runtime via Supervisor API, delegates update/restart to Supervisor, hides channel toggle, and shows runtime mode badge in Settings
+
 ## [0.5.5] - 2026-03-02
 
 - Added notification system via Apprise with guided service picker, built-in test, and immediate autosave
