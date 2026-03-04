@@ -15,7 +15,9 @@ vi.mock('@/services/api', () => ({
 
 // Mock the useServiceRestart composable (expose waitForRestart for assertions)
 const mockWaitForRestart = vi.hoisted(() => vi.fn().mockResolvedValue(true))
+const mockRequestRestart = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 vi.mock('@/composables/useServiceRestart', () => ({
+  requestRestart: mockRequestRestart,
   useServiceRestart: () => ({
     isRestarting: { value: false },
     restartMessage: { value: '' },
@@ -28,7 +30,6 @@ vi.mock('@/composables/useServiceRestart', () => ({
 // Mock the useSystemUpdate composable to avoid extra fetch calls
 vi.mock('@/composables/useSystemUpdate', () => ({
   useSystemUpdate: () => ({
-    capabilities: { value: { runtime_mode: 'native', supports_channel_switch: true } },
     versionInfo: { value: null },
     updateInfo: { value: null },
     updateAvailable: { value: false },
@@ -43,7 +44,6 @@ vi.mock('@/composables/useSystemUpdate', () => ({
     restartMessage: { value: '' },
     restartError: { value: '' },
     isRestarting: { value: false },
-    loadCapabilities: vi.fn().mockResolvedValue({ runtime_mode: 'native', supports_channel_switch: true }),
     loadVersionInfo: vi.fn().mockResolvedValue({}),
     checkForUpdates: vi.fn().mockResolvedValue({}),
     triggerUpdate: vi.fn().mockResolvedValue({})
@@ -490,7 +490,7 @@ describe('Settings', () => {
           model: expect.objectContaining({ type: 'birdnet_v3' })
         })
       )
-      expect(mockApi.post).toHaveBeenCalledWith('/system/restart')
+      expect(mockRequestRestart).toHaveBeenCalled()
       expect(mockWaitForRestart).toHaveBeenCalledWith(expect.objectContaining({
         autoReload: true,
         message: 'Applying settings changes'
@@ -688,7 +688,7 @@ describe('Settings', () => {
       await flushPromises()
 
       expect(mockApi.put).toHaveBeenCalledWith('/settings', expect.any(Object))
-      expect(mockApi.post).toHaveBeenCalledWith('/system/restart')
+      expect(mockRequestRestart).toHaveBeenCalled()
       expect(mockWaitForRestart).toHaveBeenCalledWith(expect.objectContaining({
         autoReload: true,
         message: 'Applying settings changes'

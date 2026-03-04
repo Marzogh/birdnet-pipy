@@ -219,7 +219,7 @@
 
 <script>
 import { ref, computed } from 'vue'
-import { useServiceRestart } from '@/composables/useServiceRestart'
+import { requestRestart, useServiceRestart } from '@/composables/useServiceRestart'
 import { limitDecimals } from '@/utils/inputHelpers'
 import api from '@/services/api'
 
@@ -324,7 +324,7 @@ export default {
 
         if (needsFullRestart) {
           // Trigger container restart so TZ env is reloaded in all services.
-          await api.post('/system/restart')
+          await requestRestart()
           await serviceRestart.waitForRestart({
             autoReload: true,
             message: 'Applying location and timezone settings'

@@ -62,7 +62,7 @@ from core.auth import (
     setup_password,
 )
 from core.db import DatabaseManager
-from core.ha_mode import MODE_HOME_ASSISTANT, get_runtime_mode, get_runtime_mode_info
+from core.ha_mode import get_runtime_mode, is_home_assistant_mode
 from core.logging_config import get_logger, log_api_request, setup_logging
 from core.migration import (
     BirdNETPiMigrator,
@@ -93,12 +93,6 @@ from core.runtime_config import (
     invalidate_runtime_settings_cache,
 )
 from core.storage_manager import delete_detection_files
-from core.supervisor_client import (
-    SupervisorClientError,
-    get_self_addon_info,
-    restart_self_addon,
-    update_self_addon,
-)
 from model_service.label_utils import parse_v3_labels
 from version import DISPLAY_NAME, __version__
 
@@ -117,17 +111,6 @@ _tz_finder_lock = threading.Lock()
 def load_user_settings():
     """Compatibility wrapper around runtime settings loader."""
     return get_runtime_settings(force_reload=True)
-
-
-def is_home_assistant_mode(force_refresh: bool = False) -> bool:
-    """True when running as a Home Assistant add-on with reachable Supervisor."""
-    return get_runtime_mode(force_refresh=force_refresh) == MODE_HOME_ASSISTANT
-
-
-def _get_lifecycle_provider(mode: str | None = None) -> str:
-    if mode is None:
-        return "home_assistant_supervisor" if is_home_assistant_mode() else "native_service_flags"
-    return "home_assistant_supervisor" if mode == MODE_HOME_ASSISTANT else "native_service_flags"
 
 
 def _get_timezone_finder() -> TimezoneFinder:
@@ -1042,11 +1025,13 @@ def get_available_species():
     })
 
 @api.route('/api/stream/config', methods=['GET'])
+@log_api_request
 @require_auth
+@handle_api_errors
 def get_stream_config():
     """Provide stream configuration for frontend based on recording mode"""
     settings = load_user_settings()
-    audio = settings.get('audio', {})
+    audio = settings.get('audio') or {}
     recording_mode = audio.get('recording_mode', RecordingMode.PULSEAUDIO)
     rtsp_url = audio.get('rtsp_url')
     stream_url = audio.get('stream_url')
@@ -1138,6 +1123,8 @@ def write_flag(flag_name, content=None):
 GITHUB_OWNER = "Suncuss"
 GITHUB_REPO = "BirdNET-PiPy"
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+HA_SOURCE_COMMIT_ENV = "BIRDNET_PIPY_SOURCE_COMMIT"
+HA_SOURCE_COMMIT_FILE = os.path.join(BASE_DIR, "birdnet_pipy_source_commit.txt")
 
 def load_version_info():
     """Load version information from version.json"""
@@ -1153,6 +1140,28 @@ def load_version_info():
     except Exception as e:
         logger.error("Failed to load version.json", extra={'error': str(e)})
         return None
+
+
+def load_ha_source_commit():
+    """Load BirdNET-PiPy source commit baked into HA add-on image."""
+    commit_from_env = os.environ.get(HA_SOURCE_COMMIT_ENV, "").strip()
+    if commit_from_env:
+        return commit_from_env
+
+    if not os.path.exists(HA_SOURCE_COMMIT_FILE):
+        return None
+
+    try:
+        with open(HA_SOURCE_COMMIT_FILE) as f:
+            commit = f.read().strip()
+            return commit or None
+    except Exception as e:
+        logger.warning("Failed to load Home Assistant source commit", extra={
+            'path': HA_SOURCE_COMMIT_FILE,
+            'error': str(e),
+        })
+        return None
+
 
 def call_github_api(endpoint, timeout=10):
     """Call GitHub API and return JSON response"""
@@ -1652,27 +1661,6 @@ def test_notification():
         return jsonify({'error': str(e)}), 500
 
 
-@api.route('/api/system/capabilities', methods=['GET'])
-@log_api_request
-@handle_api_errors
-def get_system_capabilities():
-    """Return runtime capabilities for lifecycle behavior."""
-    mode_info = get_runtime_mode_info()
-    mode = str(mode_info.get('mode', 'native'))
-    is_ha = mode == MODE_HOME_ASSISTANT
-    return jsonify({
-        'runtime_mode': mode,
-        'lifecycle_provider': _get_lifecycle_provider(mode),
-        'supports_channel_switch': not is_ha,
-        'supports_supervisor_update': is_ha,
-        'supports_inapp_update': True,
-        'supports_inapp_restart': True,
-        'supervisor_available': bool(mode_info.get('supervisor_available', False)),
-        'supervisor_probe_status': mode_info.get('probe_status'),
-        'supervisor_probe_error': mode_info.get('probe_error'),
-    }), 200
-
-
 @api.route('/api/system/storage', methods=['GET'])
 @log_api_request
 @handle_api_errors
@@ -1714,30 +1702,20 @@ def get_system_storage():
 def get_system_version():
     """Get current system version info for native or HA mode."""
     try:
-        if is_home_assistant_mode():
-            addon_info = get_self_addon_info()
-            current_version = addon_info.get('version', 'unknown')
-            latest_version = addon_info.get('version_latest', current_version)
-            update_available = bool(addon_info.get('update_available', latest_version != current_version))
-            remote_url = addon_info.get('url')
-            if not remote_url:
-                repository = addon_info.get('repository')
-                if repository and '/' in repository:
-                    remote_url = f'https://github.com/{repository}'
-            if not remote_url:
-                remote_url = f'https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}'
+        response = {}
+        runtime_mode = get_runtime_mode()
 
-            return jsonify({
-                'version': current_version,
-                'current_commit': current_version,
+        if runtime_mode == 'ha':
+            app_source_commit = load_ha_source_commit()
+            response = {
+                'version': os.environ.get('BUILD_VERSION', 'unknown'),
+                'current_commit': app_source_commit or 'unknown',
                 'current_commit_date': 'unknown',
                 'current_branch': 'home_assistant',
-                'remote_url': remote_url,
-                'latest_version': latest_version,
-                'update_available': update_available,
-                'runtime_mode': 'ha',
-                'lifecycle_provider': _get_lifecycle_provider(),
-            }), 200
+                'remote_url': f'https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}',
+                'runtime_mode': runtime_mode,
+            }
+            return jsonify(response), 200
 
         version_info = load_version_info()
 
@@ -1752,15 +1730,8 @@ def get_system_version():
             'current_commit_date': version_info.get('commit_date', 'unknown'),
             'current_branch': version_info.get('branch', 'unknown'),
             'remote_url': version_info.get('remote_url', f'https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}'),
-            'runtime_mode': 'native',
-            'lifecycle_provider': _get_lifecycle_provider(),
+            'runtime_mode': runtime_mode,
         }), 200
-    except SupervisorClientError as e:
-        logger.error("Failed to fetch Home Assistant add-on version info", extra={
-            'error': str(e),
-            'status_code': e.status_code,
-        })
-        return jsonify({'error': f'Failed to query Home Assistant Supervisor: {str(e)}'}), 502
     except Exception as e:
         return jsonify({'error': f'Failed to get version info: {str(e)}'}), 500
 
@@ -1797,33 +1768,13 @@ def check_for_updates():
     - force: Set to 'true' to bypass cache (used by manual "Check for Updates" button)
     """
     try:
-        force = request.args.get('force', 'false').lower() == 'true'
-
         if is_home_assistant_mode():
-            addon_info = get_self_addon_info()
-            current_version = addon_info.get('version', 'unknown')
-            latest_version = addon_info.get('version_latest', current_version)
-            update_available = bool(addon_info.get('update_available', latest_version != current_version))
+            return jsonify({
+                'update_available': False,
+                'message': 'Updates are managed by Home Assistant'
+            }), 200
 
-            result = _build_update_check_result(
-                update_available=update_available,
-                current_commit=current_version,
-                remote_commit=latest_version,
-                commits_behind=None,
-                current_branch='home_assistant',
-                target_branch='home_assistant',
-                channel='ha',
-                preview_commits=[],
-                fresh_sync=False,
-                update_note=None,
-            )
-            result.update({
-                'current_version': current_version,
-                'latest_version': latest_version,
-                'runtime_mode': 'ha',
-                'lifecycle_provider': _get_lifecycle_provider(),
-            })
-            return jsonify(result), 200
+        force = request.args.get('force', 'false').lower() == 'true'
 
         # Load current version info
         version_info = load_version_info()
@@ -1907,10 +1858,6 @@ def check_for_updates():
                     channel=channel, preview_commits=[],  # No history available
                     fresh_sync=fresh_sync, update_note=update_note
                 )
-                result.update({
-                    'runtime_mode': 'native',
-                    'lifecycle_provider': _get_lifecycle_provider(),
-                })
                 return _cache_and_return_update_result(result, cache_key, now)
             else:
                 # Do NOT cache error responses - let them retry
@@ -1959,18 +1906,8 @@ def check_for_updates():
             commits_behind, current_branch, target_branch,
             channel, comparison['commits'], fresh_sync, update_note
         )
-        result.update({
-            'runtime_mode': 'native',
-            'lifecycle_provider': _get_lifecycle_provider(),
-        })
         return _cache_and_return_update_result(result, cache_key, now)
 
-    except SupervisorClientError as e:
-        logger.error("Failed to check updates via Home Assistant Supervisor", extra={
-            'error': str(e),
-            'status_code': e.status_code,
-        })
-        return jsonify({'error': f'Failed to check for updates: {str(e)}'}), 502
     except Exception as e:
         # Do NOT cache error responses - let them retry
         return jsonify({'error': f'Failed to check for updates: {str(e)}'}), 500
@@ -1980,27 +1917,17 @@ def check_for_updates():
 @log_api_request
 @handle_api_errors
 def trigger_system_update():
-    """Trigger system update by lifecycle provider.
+    """Trigger system update by writing flag file.
 
-    Native mode:
-      - writes update flag for service script
-    Home Assistant mode:
-      - calls Supervisor add-on update API
+    Writes the target branch name to the flag file so the service script
+    knows which branch to update to:
+    - release channel: writes 'main'
+    - latest channel: writes 'staging'
+
+    Note: Update availability is already verified by frontend via /api/system/update-check
+    before this endpoint is called. No need to re-check here.
     """
     try:
-        if is_home_assistant_mode():
-            update_self_addon()
-            logger.info("Home Assistant add-on update triggered")
-            return jsonify({
-                'status': 'update_triggered',
-                'message': 'Home Assistant add-on update initiated. The add-on will restart shortly.',
-                'estimated_downtime': '2-5 minutes',
-                'channel': 'ha',
-                'target_branch': 'home_assistant',
-                'runtime_mode': 'ha',
-                'lifecycle_provider': _get_lifecycle_provider(),
-            }), 200
-
         # Load current version info for logging
         version_info = load_version_info()
 
@@ -2026,17 +1953,9 @@ def trigger_system_update():
             'message': 'System update initiated. Services will restart shortly.',
             'estimated_downtime': '2-5 minutes',
             'channel': channel,
-            'target_branch': target_branch,
-            'runtime_mode': 'native',
-            'lifecycle_provider': _get_lifecycle_provider(),
+            'target_branch': target_branch
         }), 200
 
-    except SupervisorClientError as e:
-        logger.error("Failed to trigger Home Assistant add-on update", extra={
-            'error': str(e),
-            'status_code': e.status_code,
-        })
-        return jsonify({'error': f'Failed to trigger update: {str(e)}'}), 502
     except Exception as e:
         return jsonify({'error': f'Failed to trigger update: {str(e)}'}), 500
 
@@ -2047,33 +1966,32 @@ def trigger_system_update():
 @handle_api_errors
 def trigger_service_restart():
     """Trigger service restart for native mode or HA add-on mode."""
-    try:
-        if is_home_assistant_mode():
-            restart_self_addon()
-            logger.info("Home Assistant add-on restart triggered via API")
-            return jsonify({
-                'status': 'restart_requested',
-                'message': 'Home Assistant add-on restart initiated. Services will restart shortly.',
-                'estimated_downtime': '10-30 seconds',
-                'runtime_mode': 'ha',
-                'lifecycle_provider': _get_lifecycle_provider(),
-            }), 200
-
-        write_flag('restart-backend')
-        logger.info("Service restart triggered via API")
+    if is_home_assistant_mode():
+        token = os.environ.get('SUPERVISOR_TOKEN', '')
+        try:
+            resp = requests.post(
+                "http://supervisor/addons/self/restart",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            logger.error("Failed to restart HA add-on", extra={'error': str(e)})
+            return jsonify({'error': 'Failed to restart Home Assistant add-on'}), 502
+        logger.info("Home Assistant add-on restart triggered via API")
         return jsonify({
             'status': 'restart_requested',
-            'message': 'Service restart initiated. Services will restart shortly.',
+            'message': 'Home Assistant add-on restart initiated. Services will restart shortly.',
             'estimated_downtime': '10-30 seconds',
-            'runtime_mode': 'native',
-            'lifecycle_provider': _get_lifecycle_provider(),
         }), 200
-    except SupervisorClientError as e:
-        logger.error("Failed to trigger Home Assistant add-on restart", extra={
-            'error': str(e),
-            'status_code': e.status_code,
-        })
-        return jsonify({'error': f'Failed to trigger restart: {str(e)}'}), 502
+
+    write_flag('restart-backend')
+    logger.info("Service restart triggered via API")
+    return jsonify({
+        'status': 'restart_requested',
+        'message': 'Service restart initiated. Services will restart shortly.',
+        'estimated_downtime': '10-30 seconds'
+    }), 200
 
 
 # =============================================================================

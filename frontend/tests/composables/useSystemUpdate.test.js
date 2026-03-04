@@ -35,8 +35,7 @@ describe('useSystemUpdate', () => {
     vi.useFakeTimers()
 
     // Reset singleton state between tests
-    const { capabilities, versionInfo, updateInfo, updateAvailable, checking, updating, statusMessage, statusType } = useSystemUpdate()
-    capabilities.value = null
+    const { versionInfo, updateInfo, updateAvailable, checking, updating, statusMessage, statusType } = useSystemUpdate()
     versionInfo.value = null
     updateInfo.value = null
     updateAvailable.value = false
@@ -65,33 +64,6 @@ describe('useSystemUpdate', () => {
 
     expect(versionInfo.value.current_commit).toBe('1a081f5')
     expect(versionInfo.value.current_branch).toBe('develop')
-  })
-
-  it('loads capabilities successfully', async () => {
-    mockApi.get.mockResolvedValueOnce({
-      data: {
-        runtime_mode: 'ha',
-        supports_channel_switch: false
-      }
-    })
-
-    const { loadCapabilities, capabilities } = useSystemUpdate()
-    await loadCapabilities()
-
-    expect(mockApi.get).toHaveBeenCalledWith('/system/capabilities')
-    expect(capabilities.value.runtime_mode).toBe('ha')
-    expect(capabilities.value.supports_channel_switch).toBe(false)
-  })
-
-  it('falls back to native capabilities when loading fails', async () => {
-    mockApi.get.mockRejectedValueOnce(new Error('Unavailable'))
-
-    const { loadCapabilities, capabilities } = useSystemUpdate()
-    const result = await loadCapabilities()
-
-    expect(result.runtime_mode).toBe('native')
-    expect(result.supports_channel_switch).toBe(true)
-    expect(capabilities.value.runtime_mode).toBe('native')
   })
 
   it('handles version info load failure', async () => {

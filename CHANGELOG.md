@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
-- Added Home Assistant add-on lifecycle support — auto-detects HA runtime via Supervisor API, delegates update/restart to Supervisor, hides channel toggle, and shows runtime mode badge in Settings
+## [0.5.6] - 2026-03-04
+
+- Added Home Assistant add-on lifecycle support with restart resilience
+- Added HA addon repository link on Settings page in HA mode
+- Added source commit display in HA mode, hidden manual update check
+- Fixed HA lifecycle provider detection fallback
+- Fixed HA ingress stream config and default bird placeholder URLs
 
 ## [0.5.5] - 2026-03-02
 

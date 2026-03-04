@@ -266,7 +266,6 @@ export default {
         streamType.value = config.stream_type || 'none'
         streamDescription.value = config.description || ''
 
-        // Update status message based on stream availability
         if (!streamUrl.value || streamType.value === 'none') {
           statusMessage.value = 'No audio stream configured'
         }
@@ -277,7 +276,6 @@ export default {
     }
 
     const initWebSocket = () => {
-      // Use relative path for Socket.IO - nginx will proxy to the API server
       socket = io()
 
       socket.on('connect', () => {})

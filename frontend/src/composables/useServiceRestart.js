@@ -3,6 +3,40 @@ import api from '@/services/api'
 import { useLogger } from './useLogger'
 
 /**
+ * Detect errors that likely mean restart was accepted but HTTP response was cut off.
+ */
+export function isLikelyRestartInProgressError(error) {
+  const status = error?.response?.status
+  if (status === 502 || status === 504) return true
+
+  const code = `${error?.code || ''}`.toUpperCase()
+  if (code === 'ECONNABORTED' || code === 'ERR_NETWORK') return true
+
+  const message = `${error?.message || ''}`.toLowerCase()
+  return (
+    message.includes('network error') ||
+    message.includes('timeout') ||
+    message.includes('upstream prematurely closed connection') ||
+    message.includes('status code 502') ||
+    message.includes('status code 504')
+  )
+}
+
+/**
+ * Post restart request, tolerating connection errors that indicate the restart was accepted.
+ */
+export async function requestRestart() {
+  try {
+    await api.post('/system/restart')
+  } catch (error) {
+    if (!isLikelyRestartInProgressError(error)) {
+      throw error
+    }
+    console.warn('Restart request connection dropped; waiting for reconnection anyway', error)
+  }
+}
+
+/**
  * Composable for monitoring service restart and reconnection
  * Used after settings changes or system updates that trigger a restart
  */
