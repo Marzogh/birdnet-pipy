@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed RTSP stream timestamp errors causing "Error starting audio playback" by adding wallclock timestamp correction to ffmpeg
+
 ## [0.5.6] - 2026-03-04
 
 - Added Home Assistant add-on lifecycle support with restart resilience
