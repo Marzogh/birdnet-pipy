@@ -49,6 +49,16 @@ from core.api_utils import (
     validate_date_param,
     validate_limit_param,
 )
+from core.bird_name_utils import (
+    DEFAULT_BIRD_NAME_LANGUAGE,
+    SUPPORTED_BIRD_NAME_LANGUAGES,
+    add_display_common_name,
+    add_display_species,
+    clear_bird_name_caches,
+    get_bird_name_language,
+    get_localized_common_name,
+    get_localized_common_name_from_english,
+)
 from core.auth import (
     authenticate,
     change_password,
@@ -96,7 +106,7 @@ from core.runtime_config import (
     invalidate_runtime_settings_cache,
 )
 from core.storage_manager import delete_detection_files
-from model_service.label_utils import parse_v3_labels
+from model_service.label_utils import parse_v2_labels, parse_v3_labels
 from version import DISPLAY_NAME, __version__
 
 # Setup logging
@@ -436,11 +446,21 @@ def get_recent_observations():
 @log_api_request
 @handle_api_errors
 def get_observation_summary():
+    settings = load_user_settings()
     summary = {
-        'today': db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
-        'week': db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
-        'month': db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
-        'allTime': db_manager.get_summary_stats()
+        'today': _localize_summary(
+            db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
+            settings=settings,
+        ),
+        'week': _localize_summary(
+            db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
+            settings=settings,
+        ),
+        'month': _localize_summary(
+            db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
+            settings=settings,
+        ),
+        'allTime': _localize_summary(db_manager.get_summary_stats(), settings=settings)
     }
     log_data_metrics('get_observation_summary', summary, {
         'today_count': summary.get('today', {}).get('totalObservations', 0),
@@ -472,7 +492,9 @@ def get_activity_overview():
     order = request.args.get('order', default='most')
     if order not in ('most', 'least'):
         order = 'most'
+    settings = load_user_settings()
     overview = db_manager.get_activity_overview(date, order=order)
+    overview = _localize_activity_items(overview, settings=settings)
     log_data_metrics('get_activity_overview', overview, {
         'date': date,
         'species_count': len(overview) if overview else 0
@@ -485,25 +507,40 @@ def get_activity_overview():
 def get_dashboard():
     """Consolidated dashboard endpoint — all DB data in one request."""
     today = datetime.now().strftime('%Y-%m-%d')
+    settings = load_user_settings()
 
     recent = db_manager.get_latest_detections(7)
+    recent = _localize_detection_list(recent, settings=settings)
     latest = recent[0] if recent else None
 
     summary = {
-        'today': db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
-        'week': db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
-        'month': db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
-        'allTime': db_manager.get_summary_stats()
+        'today': _localize_summary(
+            db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
+            settings=settings,
+        ),
+        'week': _localize_summary(
+            db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
+            settings=settings,
+        ),
+        'month': _localize_summary(
+            db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
+            settings=settings,
+        ),
+        'allTime': _localize_summary(db_manager.get_summary_stats(), settings=settings)
     }
 
     hourly_activity = db_manager.get_hourly_activity(today)
+    activity_overview = _localize_activity_overview(
+        db_manager.get_activity_overview_both(today),
+        settings=settings,
+    )
 
     return jsonify({
         'latestObservation': latest,
         'recentObservations': recent,
         'summary': summary,
         'hourlyActivity': hourly_activity,
-        'activityOverview': db_manager.get_activity_overview_both(today)
+        'activityOverview': activity_overview
     })
 
 @api.route('/api/sightings/unique', methods=['GET'])
@@ -512,8 +549,10 @@ def get_dashboard():
 @handle_api_errors
 def get_unique_detections():
     date_str = request.args.get('date')
+    settings = load_user_settings()
     # Get the unique detections from the database
     unique_detections = db_manager.get_detections_by_date_range(date_str, date_str, unique=True)
+    unique_detections = _localize_detection_list(unique_detections, settings=settings)
     log_data_metrics('get_unique_detections', unique_detections, {
         'date': date_str,
         'unique_species': len(unique_detections)
@@ -533,6 +572,7 @@ def get_sightings():
     sighting_type = request.args.get('type', 'frequent')
     limit = request.args.get('limit', default=12, type=int)
 
+    settings = load_user_settings()
     if sighting_type == 'frequent':
         sightings = db_manager.get_species_sightings(limit=limit, most_frequent=True)
     elif sighting_type == 'rare':
@@ -540,6 +580,7 @@ def get_sightings():
     else:
         return jsonify({"error": "Invalid sighting type. Use 'frequent' or 'rare'"}), 400
 
+    sightings = _localize_detection_list(sightings, settings=settings)
     return jsonify(sightings)
 
 
@@ -554,8 +595,10 @@ def serve_spectrogram(filename):
 @api.route('/api/bird/<species_name>', methods=['GET'])
 @log_api_request
 def get_bird_details(species_name):
+    settings = load_user_settings()
     details = db_manager.get_bird_details(species_name)
     if details:
+        details = _localize_detection(details, settings=settings)
         logger.debug("Bird details retrieved", extra={
             'species': species_name,
             'total_detections': details.get('detectionCount', 0)
@@ -640,7 +683,11 @@ def get_bird_recordings(species_name):
     if sort not in ['recent', 'best']:
         return jsonify({"error": "Sort must be 'recent' or 'best'"}), 400
 
-    recordings = db_manager.get_bird_recordings(species_name, sort, limit)
+    settings = load_user_settings()
+    recordings = _localize_detection_list(
+        db_manager.get_bird_recordings(species_name, sort, limit),
+        settings=settings,
+    )
     logger.debug("Bird recordings retrieved", extra={
         'species': species_name,
         'sort': sort,
@@ -663,7 +710,10 @@ def get_detection_distribution(species_name):
 @handle_api_errors
 def get_all_species():
     """Get all unique bird species ever detected"""
-    species_list = db_manager.get_all_unique_species()
+    species_list = _localize_species_list(
+        db_manager.get_all_unique_species(),
+        settings=load_user_settings(),
+    )
     log_data_metrics('get_all_species', species_list)
     return jsonify(species_list)
 
@@ -745,16 +795,40 @@ def get_detections():
 
     # Cap per_page at 100 (same as db method)
     per_page = min(max(1, per_page), 100)
+    settings = load_user_settings()
+    bird_name_language = get_bird_name_language(settings)
 
-    detections, total_count = db_manager.get_paginated_detections(
-        page=page,
-        per_page=per_page,
-        start_date=start_date,
-        end_date=end_date,
-        species=species,
-        sort=sort,
-        order=order
-    )
+    if sort == 'common_name' and bird_name_language != DEFAULT_BIRD_NAME_LANGUAGE:
+        # Sort the fully localized labels in memory so the rendered order matches
+        # what the user sees, even across paginated results.
+        detections = _localize_detection_list(
+            db_manager.get_all_detections(
+                start_date=start_date,
+                end_date=end_date,
+                species=species,
+            ),
+            settings=settings,
+        )
+        detections.sort(
+            key=lambda detection: (
+                detection.get('display_common_name', detection.get('common_name', '')).casefold()
+            ),
+            reverse=order.lower() != 'asc',
+        )
+        total_count = len(detections)
+        offset = (page - 1) * per_page
+        detections = detections[offset:offset + per_page]
+    else:
+        detections, total_count = db_manager.get_paginated_detections(
+            page=page,
+            per_page=per_page,
+            start_date=start_date,
+            end_date=end_date,
+            species=species,
+            sort=sort,
+            order=order
+        )
+        detections = _localize_detection_list(detections, settings=settings)
 
     total_pages = (total_count + per_page - 1) // per_page if per_page > 0 else 0
 
@@ -948,8 +1022,61 @@ def delete_detections_batch():
 _available_species_cache = {}
 
 
-def _get_configured_model_type() -> str:
-    return load_user_settings().get('model', {}).get('type', MODEL_TYPE)
+def _get_configured_model_type(settings=None) -> str:
+    settings_data = settings or load_user_settings()
+    return settings_data.get('model', {}).get('type', MODEL_TYPE)
+
+
+def _localize_detection(detection, settings=None):
+    return add_display_common_name(
+        detection,
+        model_type=_get_configured_model_type(settings),
+        language=get_bird_name_language(settings),
+        settings=settings,
+    )
+
+
+def _localize_detection_list(detections, settings=None):
+    return [_localize_detection(detection, settings=settings) for detection in detections]
+
+
+def _localize_species_list(species_list, settings=None):
+    localized = [_localize_detection(species, settings=settings) for species in species_list]
+    localized.sort(key=lambda species: species.get('display_common_name', species.get('common_name', '')))
+    return localized
+
+
+def _localize_summary(summary, settings=None):
+    localized_summary = dict(summary)
+
+    for key in ('mostCommonBird', 'rarestBird'):
+        bird_name = localized_summary.get(key)
+        localized_summary[f'{key}Display'] = (
+            get_localized_common_name_from_english(
+                bird_name,
+                model_type=_get_configured_model_type(settings),
+                language=get_bird_name_language(settings),
+                settings=settings,
+            )
+            if bird_name and bird_name != 'N/A'
+            else bird_name
+        )
+
+    return localized_summary
+
+
+def _localize_activity_overview(activity_overview, settings=None):
+    if not activity_overview:
+        return activity_overview
+
+    return {
+        key: [add_display_species(item, settings=settings) for item in items]
+        for key, items in activity_overview.items()
+    }
+
+
+def _localize_activity_items(items, settings=None):
+    return [add_display_species(item, settings=settings) for item in items]
 
 
 def load_available_species():
@@ -973,20 +1100,10 @@ def load_available_species():
             ]
             labels_path = LABELS_V3_PATH
         else:
-            # V2.4: plain text, "SciName_CommonName" per line
-            with open(LABELS_PATH) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    parts = line.split('_')
-                    if len(parts) >= 2:
-                        scientific_name = parts[0]
-                        common_name = parts[1]
-                        species_list.append({
-                            'scientific_name': scientific_name,
-                            'common_name': common_name
-                        })
+            species_list = [
+                {'scientific_name': sci, 'common_name': com}
+                for sci, com in parse_v2_labels(LABELS_PATH)
+            ]
             labels_path = LABELS_PATH
 
         # Sort by common name for easier browsing
@@ -1015,14 +1132,19 @@ def get_available_species():
     Returns list of {scientific_name, common_name} sorted by common_name.
     Species count depends on model type: ~6K for V2.4, ~11K for V3.0.
     """
+    settings = load_user_settings()
     search = request.args.get('search', '').lower()
-    species_list = load_available_species()
+    species_list = _localize_species_list(load_available_species(), settings=settings)
 
     # Filter by search term if provided
     if search:
         species_list = [
             s for s in species_list
-            if search in s['scientific_name'].lower() or search in s['common_name'].lower()
+            if (
+                search in s['scientific_name'].lower()
+                or search in s['common_name'].lower()
+                or search in s.get('display_common_name', '').lower()
+            )
         ]
 
     return jsonify({
@@ -1571,6 +1693,15 @@ def update_settings():
             if model_type and model_type not in VALID_MODEL_TYPES:
                 return jsonify({'error': f'Invalid model type. Must be one of: {", ".join(VALID_MODEL_TYPES)}'}), 400
 
+        # Validate display settings
+        if 'display' in incoming_settings:
+            bird_name_language = new_settings.get('display', {}).get('bird_name_language')
+            if bird_name_language and bird_name_language not in SUPPORTED_BIRD_NAME_LANGUAGES:
+                supported = ', '.join(sorted(SUPPORTED_BIRD_NAME_LANGUAGES))
+                return jsonify({
+                    'error': f'Invalid bird_name_language. Must be one of: {supported}'
+                }), 400
+
         # Validate notification settings
         if 'notifications' in incoming_settings:
             error = _validate_notification_settings(incoming_settings['notifications'])
@@ -1605,9 +1736,10 @@ def update_settings():
         changed_paths = get_setting_differences(current_settings, new_settings)
         change_plan = classify_setting_changes(changed_paths, current_settings, new_settings)
 
-        # Save settings to JSON file and clear cache
+        # Save settings to JSON file and clear caches
         save_user_settings(new_settings)
         invalidate_runtime_settings_cache()
+        clear_bird_name_caches()
 
         logger.info("Settings updated", extra={
             'changed_sections': list(incoming_settings.keys()),
@@ -2857,10 +2989,11 @@ def broadcast_detection(detection_data):
     """Function to broadcast detection to all connected clients"""
     global socketio
     if socketio:
-        socketio.emit('bird_detected', detection_data)
+        detection_payload = _localize_detection(detection_data)
+        socketio.emit('bird_detected', detection_payload)
         logger.debug("Detection broadcasted to WebSocket clients", extra={
-            'species': detection_data.get('common_name', 'Unknown'),
-            'confidence': detection_data.get('confidence')
+            'species': detection_payload.get('common_name', 'Unknown'),
+            'confidence': detection_payload.get('confidence')
         })
 
 if __name__ == '__main__':

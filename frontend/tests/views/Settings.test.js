@@ -295,7 +295,8 @@ describe('Settings', () => {
 
       expect(wrapper.text()).not.toContain('General Settings')
       expect(wrapper.text()).not.toContain('Timezone')
-      expect(wrapper.text()).not.toContain('Language')
+      expect(wrapper.text()).toContain('Personalization')
+      expect(wrapper.text()).toContain('Bird Name Language')
     })
   })
 
@@ -518,6 +519,33 @@ describe('Settings', () => {
         })
       )
       expect(mockApi.post).not.toHaveBeenCalled()
+      expect(mockWaitForRestart).not.toHaveBeenCalled()
+    })
+
+    it('reloads species names after saving bird name language changes', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      expect(mockApi.get.mock.calls.filter(call => call[0] === '/species/available')).toHaveLength(1)
+
+      mockApi.put.mockResolvedValueOnce({
+        data: {
+          status: 'updated',
+          message: 'Settings saved. Changes applied immediately.',
+          changes: {
+            changed_paths: ['display.bird_name_language'],
+            full_restart_required: false
+          }
+        }
+      })
+
+      wrapper.vm.settings.display = { bird_name_language: 'de' }
+      await wrapper.vm.$nextTick()
+
+      await wrapper.vm.saveSettings()
+      await flushPromises()
+
+      expect(mockApi.get.mock.calls.filter(call => call[0] === '/species/available')).toHaveLength(2)
       expect(mockWaitForRestart).not.toHaveBeenCalled()
     })
   })

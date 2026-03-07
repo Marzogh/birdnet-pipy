@@ -745,6 +745,93 @@ class TestSimpleAPI:
                 assert 'American Robin' in species_names
                 assert 'Blue Jay' in species_names
 
+    def test_available_species_v24_localized_display_names(self):
+        """Test /api/species/available adds localized display names for V2.4."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            labels_dir = os.path.join(tmpdir, 'labels')
+            os.makedirs(labels_dir)
+
+            labels_en = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_en.txt')
+            labels_de = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_de.txt')
+
+            with open(labels_en, 'w', encoding='utf-8') as f:
+                f.write('Turdus migratorius_American Robin\n')
+                f.write('Cyanocitta cristata_Blue Jay\n')
+
+            with open(labels_de, 'w', encoding='utf-8') as f:
+                f.write('Turdus migratorius_Amsel\n')
+                f.write('Cyanocitta cristata_Blauhaeher\n')
+
+            with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
+                 patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
+                 patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
+                 patch('core.db.DatabaseManager'), \
+                 patch('core.api.load_user_settings', return_value={
+                     'model': {'type': 'birdnet'},
+                     'display': {'bird_name_language': 'de'}
+                 }), \
+                 patch('core.api.LABELS_PATH', labels_en), \
+                 patch('core.bird_name_utils.LABELS_PATH', labels_en), \
+                 patch('core.api._available_species_cache', {}):
+
+                from core.bird_name_utils import clear_bird_name_caches
+                from core.api import create_app
+                clear_bird_name_caches()
+                app, _ = create_app()
+                client = app.test_client()
+
+                response = client.get('/api/species/available')
+                assert response.status_code == 200
+                data = response.get_json()
+                assert data['total'] == 2
+                assert data['species'][0]['display_common_name'] == 'Amsel'
+                assert data['species'][1]['display_common_name'] == 'Blauhaeher'
+
+    def test_activity_overview_localized_display_species(self):
+        """Test /api/activity/overview adds localized display labels for charting."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            labels_dir = os.path.join(tmpdir, 'labels')
+            os.makedirs(labels_dir)
+
+            labels_en = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_en.txt')
+            labels_de = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_de.txt')
+
+            with open(labels_en, 'w', encoding='utf-8') as f:
+                f.write('Turdus migratorius_American Robin\n')
+
+            with open(labels_de, 'w', encoding='utf-8') as f:
+                f.write('Turdus migratorius_Amsel\n')
+
+            with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
+                 patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
+                 patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
+                 patch('core.api.load_user_settings', return_value={
+                     'model': {'type': 'birdnet'},
+                     'display': {'bird_name_language': 'de'}
+                 }), \
+                 patch('core.bird_name_utils.LABELS_PATH', labels_en):
+
+                mock_db_instance = Mock()
+                mock_db_instance.get_activity_overview.return_value = [{
+                    'species': 'American Robin',
+                    'hourlyActivity': [1] * 24,
+                    'totalObservations': 24
+                }]
+
+                from core.bird_name_utils import clear_bird_name_caches
+                from core.api import create_app
+                clear_bird_name_caches()
+                app, _ = create_app()
+                client = app.test_client()
+
+                with patch('core.api.db_manager', mock_db_instance):
+                    response = client.get('/api/activity/overview?date=2025-11-24')
+
+                assert response.status_code == 200
+                data = response.get_json()
+                assert data[0]['species'] == 'American Robin'
+                assert data[0]['displaySpecies'] == 'Amsel'
+
     def test_available_species_v3(self):
         """Test /api/species/available returns V3.0 species when model type is 'birdnet_v3'."""
         with tempfile.TemporaryDirectory() as tmpdir:

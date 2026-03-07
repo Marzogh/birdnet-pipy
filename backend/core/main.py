@@ -31,6 +31,7 @@ from config.settings import (
     TIMEZONE,
 )
 from core.audio_manager import BaseRecorder, create_recorder
+from core.bird_name_utils import get_localized_common_name, get_spectrogram_common_name
 from core.birdweather_service import get_birdweather_service
 from core.db import DatabaseManager
 from core.logging_config import get_logger, setup_logging
@@ -281,7 +282,11 @@ def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str
     step_seconds = detection.get('step_seconds', analysis_chunk_length)
     spectrogram_path = os.path.join(SPECTROGRAM_DIR, detection['spectrogram_file_name'])
 
-    title = f"{detection['common_name']} ({detection['confidence']:.2f}) - {detection['timestamp']}"
+    display_name = get_spectrogram_common_name(
+        detection.get('scientific_name'),
+        detection.get('common_name'),
+    )
+    title = f"{display_name} ({detection['confidence']:.2f}) - {detection['timestamp']}"
     start_time = step_seconds * detection['chunk_index']
     end_time = start_time + analysis_chunk_length
 
@@ -319,9 +324,14 @@ def broadcast_detection(detection: dict[str, Any], thread_logger) -> None:
         thread_logger: Logger instance for this thread
     """
     try:
+        display_name = get_localized_common_name(
+            detection.get('scientific_name'),
+            detection.get('common_name'),
+        )
         detection_data = {
             'timestamp': detection['timestamp'],
             'common_name': detection['common_name'],
+            'display_common_name': display_name,
             'scientific_name': detection['scientific_name'],
             'confidence': detection['confidence'],
             'bird_song_file_name': detection['bird_song_file_name'].replace('.wav', '.mp3'),

@@ -7,6 +7,28 @@ by both the model service and the API server.
 import csv
 
 
+def parse_v2_labels(path: str) -> list[tuple[str, str]]:
+    """Parse V2.4 text labels file.
+
+    Text format: SciName_CommonName
+
+    Returns:
+        List of (scientific_name, common_name) tuples.
+    """
+    labels = []
+    with open(path, encoding='utf-8-sig') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            scientific_name, separator, common_name = line.partition('_')
+            if scientific_name and separator and common_name:
+                labels.append((scientific_name.strip(), common_name.strip()))
+
+    return labels
+
+
 def parse_v3_labels(path: str) -> list[tuple[str, str]]:
     """Parse V3.0 semicolon-delimited CSV labels file.
 

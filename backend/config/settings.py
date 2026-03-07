@@ -43,7 +43,8 @@ DEFAULT_SETTINGS = {
         "type": "birdnet"  # "birdnet" (v2.4, 6K species) or "birdnet_v3" (v3.0, 11K species)
     },
     "display": {
-        "use_metric_units": True
+        "use_metric_units": True,
+        "bird_name_language": "en"
     },
     "birdweather": {
         "id": None  # Station token from birdweather.com

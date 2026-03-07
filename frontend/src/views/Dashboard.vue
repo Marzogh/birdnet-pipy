@@ -121,7 +121,7 @@
               <div class="relative">
                 <img
                   :src="latestObservationimageUrl"
-                  :alt="latestObservationData.common_name"
+                  :alt="getDisplayCommonName(latestObservationData)"
                   class="w-[68px] h-[68px] object-cover rounded-full group-hover:opacity-80 transition-opacity duration-300"
                 >
                 <div
@@ -140,8 +140,7 @@
                 class="group flex items-center hover:text-blue-600 transition-colors duration-300"
               >
                 <h3 class="text-[15px] font-medium group-hover:underline lg:truncate lg:max-w-[160px]">
-                  {{ latestObservationData.common_name
-                  }}
+                  {{ getDisplayCommonName(latestObservationData) }}
                 </h3>
                 <font-awesome-icon
                   icon="fas fa-external-link-alt"
@@ -236,22 +235,22 @@
             </nav>
           </div>
           <ul
-            v-if="currentPeriodSummary && Object.keys(currentPeriodSummary).length"
+            v-if="summaryEntries.length"
             class="space-y-1 text-sm"
           >
             <li
-              v-for="(value, key) in currentPeriodSummary"
-              :key="key"
+              v-for="entry in summaryEntries"
+              :key="entry.key"
             >
-              <span class="font-medium">{{ formatSummaryKey(key) }}: </span> 
+              <span class="font-medium">{{ formatSummaryKey(entry.key) }}: </span> 
               <router-link
-                v-if="(key === 'mostCommonBird' || key === 'rarestBird') && value !== 'N/A'"
-                :to="{ name: 'BirdDetails', params: { name: value } }"
+                v-if="(entry.key === 'mostCommonBird' || entry.key === 'rarestBird') && entry.value !== 'N/A'"
+                :to="{ name: 'BirdDetails', params: { name: entry.value } }"
                 class="font-medium hover:text-blue-600 hover:underline transition-colors duration-300"
               >
-                {{ value }}
+                {{ getSummaryBirdDisplay(currentPeriodSummary, entry.key) }}
               </router-link>
-              <span v-else>{{ formatSummaryValue(key, value) }}</span>
+              <span v-else>{{ formatSummaryValue(entry.key, entry.value) }}</span>
             </li>
           </ul>
           <p
@@ -296,7 +295,7 @@
                 :to="{ name: 'BirdDetails', params: { name: observation.common_name } }"
                 class="font-medium hover:text-blue-600 hover:underline transition-colors duration-300"
               >
-                {{ observation.common_name }}
+                {{ getDisplayCommonName(observation) }}
               </router-link>
               <span class="text-xs text-gray-500 ml-2">{{ formatTimestamp(observation.timestamp) }}</span>
               <span class="text-xs text-gray-500 ml-2 hidden lg:inline">
@@ -393,10 +392,11 @@ import { faPlay, faPause, faCircleInfo, faExternalLinkAlt } from '@fortawesome/f
 	import { useBirdCharts } from '@/composables/useBirdCharts';
 	import { useAudioPlayer } from '@/composables/useAudioPlayer';
 	import { useAppStatus } from '@/composables/useAppStatus';
-	import { useSystemUpdate } from '@/composables/useSystemUpdate';
-	import SpectrogramModal from '@/components/SpectrogramModal.vue';
-	import CenteredMessage from '@/components/CenteredMessage.vue';
-	import { getAudioUrl, getSpectrogramUrl } from '@/services/media'
+import { useSystemUpdate } from '@/composables/useSystemUpdate';
+import SpectrogramModal from '@/components/SpectrogramModal.vue';
+import CenteredMessage from '@/components/CenteredMessage.vue';
+import { getAudioUrl, getSpectrogramUrl } from '@/services/media'
+import { getDisplayCommonName } from '@/utils/birdNames'
 
 library.add(faPlay, faPause, faCircleInfo, faExternalLinkAlt);
 Chart.register(MatrixController, MatrixElement)
@@ -664,6 +664,12 @@ export default {
                 : {}
         })
 
+        const summaryEntries = computed(() => (
+            Object.entries(currentPeriodSummary.value || {})
+                .filter(([key]) => !key.endsWith('Display'))
+                .map(([key, value]) => ({ key, value }))
+        ))
+
         const isDataEmpty = computed(() =>
             detailedBirdActivityData.value.length === 0 ||
             detailedBirdActivityData.value.every(bird => bird.hourlyActivity.every(count => count === 0))
@@ -797,6 +803,10 @@ export default {
             return typeof value === 'number' ? value.toLocaleString() : value
         }
 
+        const getSummaryBirdDisplay = (summary, key) => {
+            return summary?.[`${key}Display`] || summary?.[key] || ''
+        }
+
 	        const showSpectrogram = (spectrogramFileName) => {
 	            currentSpectrogramUrl.value = getSpectrogramUrl(spectrogramFileName)
 	            isSpectrogramModalVisible.value = true
@@ -830,12 +840,15 @@ export default {
             currentSummaryPeriod,
             summaryPeriods,
             currentPeriodSummary,
+            summaryEntries,
             hourlyActivityChart,
             isSpectrogramModalVisible,
             currentSpectrogramUrl,
             formatTimestamp,
             formatSummaryKey,
             formatSummaryValue,
+            getDisplayCommonName,
+            getSummaryBirdDisplay,
             formatConfidence,
             showSpectrogram,
             hourlyBirdActivityData,

@@ -154,7 +154,11 @@ class TestBroadcastDetection:
             broadcast_detection(test_data)
 
             # Should emit to 'bird_detected' event
-            mock_socketio.emit.assert_called_once_with('bird_detected', test_data)
+            mock_socketio.emit.assert_called_once_with('bird_detected', {
+                'common_name': 'Test Bird',
+                'confidence': 0.95,
+                'display_common_name': 'Test Bird'
+            })
 
     def test_broadcast_detection_no_socketio(self):
         """Test broadcasting when socketio is None."""

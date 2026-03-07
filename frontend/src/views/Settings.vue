@@ -793,24 +793,59 @@
         title="Personalization"
         subtitle="Units and display preferences"
       >
-        <div class="flex items-center justify-between">
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-600">Use Metric Units</label>
+              <p class="text-xs text-gray-400">
+                Show weather in °C, km/h, mm (off for °F, mph, in)
+              </p>
+            </div>
+            <button
+              :disabled="metricUnitsSaving"
+              :class="settings.display?.use_metric_units !== false ? 'bg-green-600' : 'bg-gray-200'"
+              class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              @click="toggleMetricUnits"
+            >
+              <span
+                :class="settings.display?.use_metric_units !== false ? 'translate-x-6' : 'translate-x-1'"
+                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+              />
+            </button>
+          </div>
+
           <div>
-            <label class="text-sm text-gray-600">Use Metric Units</label>
-            <p class="text-xs text-gray-400">
-              Show weather in °C, km/h, mm (off for °F, mph, in)
+            <label
+              for="birdNameLanguage"
+              class="block text-sm text-gray-600 mb-1"
+            >Bird Name Language</label>
+            <select
+              id="birdNameLanguage"
+              v-model="settings.display.bird_name_language"
+              :disabled="settings.model?.type === 'birdnet_v3'"
+              class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <option
+                v-for="option in birdNameLanguageOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+            <p
+              v-if="settings.model?.type === 'birdnet_v3'"
+              class="text-xs text-amber-600 mt-1"
+            >
+              Localized bird names are not yet available for BirdNET v3.
+            </p>
+            <p
+              v-else
+              class="text-xs text-gray-400 mt-1"
+            >
+              Used for bird names shown across the app. Save to apply.
             </p>
           </div>
-          <button
-            :disabled="metricUnitsSaving"
-            :class="settings.display?.use_metric_units !== false ? 'bg-green-600' : 'bg-gray-200'"
-            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            @click="toggleMetricUnits"
-          >
-            <span
-              :class="settings.display?.use_metric_units !== false ? 'translate-x-6' : 'translate-x-1'"
-              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-            />
-          </button>
         </div>
       </CollapsibleSection>
 
@@ -1351,6 +1386,35 @@ export default {
       description: '',
       list: []
     })
+    const birdNameLanguageOptions = [
+      { value: 'en', label: 'English (US)' },
+      { value: 'en_uk', label: 'English (UK)' },
+      { value: 'de', label: 'German' },
+      { value: 'fr', label: 'French' },
+      { value: 'es', label: 'Spanish' },
+      { value: 'it', label: 'Italian' },
+      { value: 'nl', label: 'Dutch' },
+      { value: 'pt', label: 'Portuguese' },
+      { value: 'sv', label: 'Swedish' },
+      { value: 'da', label: 'Danish' },
+      { value: 'no', label: 'Norwegian' },
+      { value: 'fi', label: 'Finnish' },
+      { value: 'pl', label: 'Polish' },
+      { value: 'cs', label: 'Czech' },
+      { value: 'sk', label: 'Slovak' },
+      { value: 'sl', label: 'Slovenian' },
+      { value: 'hu', label: 'Hungarian' },
+      { value: 'ro', label: 'Romanian' },
+      { value: 'ru', label: 'Russian' },
+      { value: 'uk', label: 'Ukrainian' },
+      { value: 'tr', label: 'Turkish' },
+      { value: 'af', label: 'Afrikaans' },
+      { value: 'ar', label: 'Arabic' },
+      { value: 'ja', label: 'Japanese' },
+      { value: 'ko', label: 'Korean' },
+      { value: 'th', label: 'Thai' },
+      { value: 'zh', label: 'Chinese' }
+    ]
 
     // Auth-related state
     const authLoading = ref(false)
@@ -1414,6 +1478,7 @@ export default {
         blocked_species: s.species_filter?.blocked_species || []
       },
       model: { type: s.model?.type },
+      display: { bird_name_language: s.display?.bird_name_language || 'en' },
       birdweather: { id: s.birdweather?.id }
     })
 
@@ -1463,11 +1528,12 @@ export default {
     const loadSpeciesList = async () => {
       try {
         const { data } = await api.get('/species/available')
-        speciesList.value = data.species
+        const species = Array.isArray(data?.species) ? data.species : []
+        speciesList.value = species
         // Build name map for display
         const map = {}
-        for (const species of data.species) {
-          map[species.scientific_name] = species.common_name
+        for (const speciesItem of species) {
+          map[speciesItem.scientific_name] = speciesItem.display_common_name || speciesItem.common_name
         }
         speciesNameMap.value = map
       } catch (error) {
@@ -1487,7 +1553,9 @@ export default {
         const { data } = await api.get('/settings')
         // Ensure required objects exist before assigning (prevents template errors)
         if (!data.updates) data.updates = { channel: 'release' }
-        if (!data.display) data.display = { use_metric_units: true }
+        if (!data.display) data.display = { use_metric_units: true, bird_name_language: 'en' }
+        if (data.display.use_metric_units === undefined) data.display.use_metric_units = true
+        if (!data.display.bird_name_language) data.display.bird_name_language = 'en'
         if (!data.model) data.model = { type: 'birdnet' }
         if (!data.notifications) data.notifications = {}
         if (!data.access) data.access = { charts_public: false, table_public: false, live_feed_public: false }
@@ -1511,6 +1579,9 @@ export default {
           try {
             const { data } = await api.get('/settings/defaults')
             if (!data.model) data.model = { type: 'birdnet' }
+            if (!data.display) data.display = { use_metric_units: true, bird_name_language: 'en' }
+            if (data.display.use_metric_units === undefined) data.display.use_metric_units = true
+            if (!data.display.bird_name_language) data.display.bird_name_language = 'en'
             settings.value = data
             recordingMode.value = data.audio?.recording_mode || 'pulseaudio'
             // Take snapshot for unsaved changes tracking
@@ -1589,6 +1660,9 @@ export default {
       if (result) {
         const restartTriggered = await triggerRestartIfRequired(result, 'Applying settings changes')
         if (!restartTriggered) {
+          if (result?.changes?.changed_paths?.includes('display.bird_name_language')) {
+            await loadSpeciesList()
+          }
           showStatus('success', result?.message || 'Settings saved')
         }
       }
@@ -1636,7 +1710,7 @@ export default {
         metricUnitsSaving.value = true
         // Ensure display object exists
         if (!settings.value.display) {
-          settings.value.display = { use_metric_units: true }
+          settings.value.display = { use_metric_units: true, bird_name_language: 'en' }
         }
         const newValue = settings.value.display.use_metric_units === false
 
@@ -2093,6 +2167,7 @@ export default {
       showSpeciesFilterModal,
       speciesFilterModalConfig,
       speciesList,
+      birdNameLanguageOptions,
       openFilterModal,
       closeFilterModal,
       updateFilterList,

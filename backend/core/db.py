@@ -956,6 +956,52 @@ class DatabaseManager:
 
         return detections, total_count
 
+    def get_all_detections(self, start_date=None, end_date=None, species=None):
+        """Get all matching detections with normalized fields and filenames.
+
+        Used for in-memory localized sorting where database ordering no longer
+        matches the names rendered in the UI.
+        """
+        where_clause, params = self._build_detection_filters(start_date, end_date, species)
+
+        query = f"""
+        SELECT
+            id,
+            timestamp,
+            group_timestamp,
+            scientific_name,
+            common_name,
+            confidence,
+            latitude,
+            longitude,
+            cutoff,
+            sensitivity,
+            overlap,
+            week,
+            extra
+        FROM detections
+        WHERE {where_clause}
+        ORDER BY timestamp DESC, id DESC
+        """
+
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+        detections = [self._normalize_detection(row, include_filenames=True) for row in rows]
+
+        logger.debug("All detections retrieved", extra={
+            'count': len(detections),
+            'filters': {
+                'start_date': start_date,
+                'end_date': end_date,
+                'species': species
+            }
+        })
+
+        return detections
+
     def get_all_detections_for_export(self, start_date=None, end_date=None, species=None):
         """Get all detection records for CSV export.
 

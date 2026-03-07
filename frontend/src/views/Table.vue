@@ -52,7 +52,7 @@
             <input
               v-model="speciesSearchQuery"
               type="text"
-              :placeholder="selectedSpecies || 'All species'"
+              :placeholder="selectedSpeciesLabel || 'All species'"
               class="w-full h-10 px-3 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent pr-8"
               @focus="showSpeciesDropdown = true"
             >
@@ -87,7 +87,7 @@
               class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
               @mousedown.prevent="selectSpecies(species)"
             >
-              <span class="font-medium text-gray-800">{{ species.common_name }}</span>
+              <span class="font-medium text-gray-800">{{ getDisplayCommonName(species) }}</span>
               <span class="text-xs text-gray-500 italic ml-2">{{ species.scientific_name }}</span>
             </button>
           </div>
@@ -271,7 +271,7 @@
                     :to="{ name: 'BirdDetails', params: { name: detection.common_name } }"
                     class="font-medium text-gray-900 hover:text-green-600 transition-colors"
                   >
-                    {{ detection.common_name }}
+                    {{ getDisplayCommonName(detection) }}
                   </router-link>
                   <p class="text-xs text-gray-500 italic">
                     {{ detection.scientific_name }}
@@ -364,7 +364,7 @@
                     class="group"
                   >
                     <div class="text-sm font-medium text-gray-900 group-hover:text-green-600 transition-colors">
-                      {{ detection.common_name }}
+                      {{ getDisplayCommonName(detection) }}
                     </div>
                     <div class="text-xs text-gray-500 italic">
                       {{ detection.scientific_name }}
@@ -538,7 +538,7 @@
               Delete <strong>{{ selectedCount }}</strong> selected detection{{ selectedCount === 1 ? '' : 's' }}? This cannot be undone.
             </template>
             <template v-else>
-              Delete this <strong>{{ detectionToDelete?.common_name }}</strong> detection from {{ formatDate(detectionToDelete?.timestamp) }}?
+              Delete this <strong>{{ getDisplayCommonName(detectionToDelete) }}</strong> detection from {{ formatDate(detectionToDelete?.timestamp) }}?
             </template>
           </p>
           <div class="flex justify-end gap-3">
@@ -574,6 +574,7 @@
 	import { useTableData } from '@/composables/useTableData'
 	import { useAudioPlayer } from '@/composables/useAudioPlayer'
 	import { useAuth } from '@/composables/useAuth'
+	import { getDisplayCommonName, matchesBirdQuery } from '@/utils/birdNames'
 	import DetectionActions from '@/components/DetectionActions.vue'
 	import SpectrogramModal from '@/components/SpectrogramModal.vue'
 import DetectionInfoModal from '@/components/DetectionInfoModal.vue'
@@ -658,11 +659,12 @@ const { isAuthenticated } = useAuth()
 	  const query = speciesSearchQuery.value.trim().toLowerCase()
 	  if (!query) return speciesList.value
 
-	  return speciesList.value.filter((species) => {
-	    const commonName = (species?.common_name || '').toLowerCase()
-	    const scientificName = (species?.scientific_name || '').toLowerCase()
-	    return commonName.includes(query) || scientificName.includes(query)
-	  })
+	  return speciesList.value.filter(species => matchesBirdQuery(species, query))
+	})
+	const selectedSpeciesLabel = computed(() => {
+	  if (!selectedSpecies.value) return ''
+	  const species = speciesList.value.find(item => item.common_name === selectedSpecies.value)
+	  return getDisplayCommonName(species) || selectedSpecies.value
 	})
 
 // Modals
@@ -716,7 +718,7 @@ const getConfidenceColor = (confidence) => {
 	  try {
 	    const response = await api.get('/species/all')
 	    const list = Array.isArray(response.data) ? response.data : []
-	    list.sort((a, b) => (a?.common_name || '').localeCompare(b?.common_name || ''))
+	    list.sort((a, b) => getDisplayCommonName(a).localeCompare(getDisplayCommonName(b)))
 	    speciesList.value = list
 	  } catch (err) {
 	    console.error('Failed to fetch species list:', err)

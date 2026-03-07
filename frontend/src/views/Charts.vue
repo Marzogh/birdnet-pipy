@@ -303,7 +303,7 @@
                     @mousedown="selectSpecies(species)"
                   >
                     <div class="font-medium">
-                      {{ species.common_name }}
+                      {{ getDisplayCommonName(species) }}
                     </div>
                     <div class="text-xs text-gray-500">
                       {{ species.scientific_name }}
@@ -439,6 +439,7 @@ import { useChartHelpers } from '@/composables/useChartHelpers'
 import api from '@/services/api'
 import AppButton from '@/components/AppButton.vue'
 import AppDatePicker from '@/components/AppDatePicker.vue'
+import { getDisplayCommonName, matchesBirdQuery } from '@/utils/birdNames'
 
 Chart.register(MatrixController, MatrixElement)
 
@@ -647,16 +648,14 @@ export default {
         }
 
         const filterSpecies = () => {
-            const query = searchQuery.value.toLowerCase()
             filteredSpecies.value = allSpecies.value.filter(species =>
-                species.common_name.toLowerCase().includes(query) ||
-                species.scientific_name.toLowerCase().includes(query)
+                matchesBirdQuery(species, searchQuery.value)
             )
         }
 
         const selectSpecies = (species) => {
             selectedSpecies.value = species
-            searchQuery.value = species.common_name
+            searchQuery.value = getDisplayCommonName(species)
             showDropdown.value = false
             speciesChartError.value = null
             updateSpeciesChart()
@@ -675,7 +674,7 @@ export default {
             setTimeout(() => {
                 showDropdown.value = false
                 if (selectedSpecies.value) {
-                    searchQuery.value = selectedSpecies.value.common_name
+                    searchQuery.value = getDisplayCommonName(selectedSpecies.value)
                 }
             }, 200)
         }
@@ -750,7 +749,7 @@ export default {
                         legend: { display: false },
                         title: {
                             display: true,
-                            text: `${selectedSpecies.value.common_name} - ${viewLabel} View`,
+                            text: `${getDisplayCommonName(selectedSpecies.value)} - ${viewLabel} View`,
                             font: { size: 14 },
                             color: colorPalette.text
                         }
@@ -1011,6 +1010,7 @@ export default {
             searchQuery,
             showDropdown,
             isLoadingSpecies,
+            getDisplayCommonName,
             speciesView,
             speciesChart,
             speciesChartError,
