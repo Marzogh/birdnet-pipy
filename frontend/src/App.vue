@@ -31,6 +31,27 @@
             </svg>
             Logout
           </button>
+          <button
+            v-else-if="auth.needsLogin.value"
+            class="text-sm text-green-200 hover:text-white flex items-center gap-1"
+            title="Log in"
+            @click="showLoginModal = true"
+          >
+            <svg
+              class="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width="1.5"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9"
+              />
+            </svg>
+            Login
+          </button>
         </div>
         <div class="flex flex-wrap gap-4">
           <router-link
@@ -98,7 +119,7 @@
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useLogger } from '@/composables/useLogger'
 import { useAuth } from '@/composables/useAuth'
@@ -176,33 +197,21 @@ export default {
 
     const onLoginCancel = () => {
       showLoginModal.value = false
+      sessionStorage.removeItem('authRedirect')
       logger.info('Login cancelled')
     }
 
     const handleLogout = async () => {
       await auth.logout()
-      // If on a protected page, redirect to dashboard
+      // If on a protected page, redirect to dashboard (unless the feature is public)
       if (route.meta.requiresAuth) {
-        router.push('/')
+        const feature = route.meta.feature
+        const isPublic = feature && auth.authStatus.value.publicFeatures.includes(feature)
+        if (!isPublic) {
+          router.push('/')
+        }
       }
     }
-
-    // Watch for auth requirement from router
-    watch(
-      () => route.query.auth,
-      async (authQuery) => {
-        if (authQuery === 'required') {
-          // Refresh auth status and show login modal
-          await auth.checkAuthStatus()
-          if (auth.needsLogin.value) {
-            showLoginModal.value = true
-          }
-          // Clear the query parameter
-          router.replace({ query: {} })
-        }
-      },
-      { immediate: true }
-    )
 
     // Check auth status on mount
     onMounted(async () => {

@@ -56,6 +56,11 @@ DEFAULT_SETTINGS = {
         "rare_species": False,
         "rare_threshold": 3,
         "rare_window_days": 7
+    },
+    "access": {
+        "charts_public": False,
+        "table_public": False,
+        "live_feed_public": False
     }
 }
 

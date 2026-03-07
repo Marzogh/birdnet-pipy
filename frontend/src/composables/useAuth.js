@@ -8,7 +8,8 @@ import { useLogger } from './useLogger'
 const authStatus = ref({
   authEnabled: false,
   setupComplete: false,
-  authenticated: false
+  authenticated: false,
+  publicFeatures: []
 })
 const loading = ref(false)
 const error = ref('')
@@ -41,7 +42,8 @@ export function useAuth() {
         authStatus.value = {
           authEnabled: data.auth_enabled,
           setupComplete: data.setup_complete,
-          authenticated: data.authenticated
+          authenticated: data.authenticated,
+          publicFeatures: data.public_features || []
         }
         error.value = ''
         logger.debug('Auth status checked', authStatus.value)
@@ -219,6 +221,36 @@ export function useAuth() {
   }
 
   /**
+   * Save per-feature access settings
+   * @param {Object} accessSettings - Partial access settings to save (e.g. {charts_public: true})
+   * @returns {Promise<boolean>} - True if save successful
+   */
+  const saveAccessSettings = async (accessSettings) => {
+    try {
+      const response = await fetch('/api/settings/access', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(accessSettings)
+      })
+
+      if (response.ok) {
+        await checkAuthStatus()
+        logger.info('Access settings saved', accessSettings)
+        return true
+      } else {
+        const data = await response.json()
+        error.value = data.error || 'Failed to save access settings'
+        logger.warn('Access settings save failed', { error: error.value })
+        return false
+      }
+    } catch (err) {
+      error.value = 'Connection error'
+      logger.error('Save access settings error', err)
+      return false
+    }
+  }
+
+  /**
    * Clear error state
    */
   const clearError = () => {
@@ -232,7 +264,8 @@ export function useAuth() {
     authStatus.value = {
       authEnabled: false,
       setupComplete: false,
-      authenticated: false
+      authenticated: false,
+      publicFeatures: []
     }
     loading.value = false
     error.value = ''
@@ -255,6 +288,7 @@ export function useAuth() {
     setup,
     toggleAuth,
     changePassword,
+    saveAccessSettings,
     clearError,
     resetState
   }

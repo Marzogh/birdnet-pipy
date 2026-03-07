@@ -252,7 +252,7 @@
           <div>
             <label class="text-sm text-gray-600">Require Authentication</label>
             <p class="text-xs text-gray-400">
-              Protect settings and audio stream with password
+              Protect features with password
             </p>
           </div>
           <button
@@ -268,18 +268,63 @@
           </button>
         </div>
 
-        <!-- Change Password (when auth enabled and setup complete) -->
+        <!-- Auth Sub-settings (when auth enabled) -->
         <div
-          v-if="auth.authStatus.value.authEnabled && auth.authStatus.value.setupComplete"
-          class="mb-3"
+          v-if="auth.authStatus.value.authEnabled"
+          class="mb-4 bg-gray-50 rounded-lg p-3 space-y-3"
         >
           <button
-            class="text-sm text-blue-600 hover:text-blue-800"
-            @click="showChangePassword = true"
+            class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+            @click="showAccessOptions = !showAccessOptions"
           >
-            Change Password
+            <svg
+              class="h-3.5 w-3.5 transition-transform"
+              :class="showAccessOptions ? 'rotate-90' : ''"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M9 5l7 7-7 7"
+              />
+            </svg>
+            Customize public access...
           </button>
+          <div
+            v-if="showAccessOptions"
+            class="space-y-2"
+          >
+            <div
+              v-for="feature in accessFeatures"
+              :key="feature.key"
+              class="flex items-center justify-between"
+            >
+              <label class="text-sm text-gray-600">{{ feature.label }}</label>
+              <button
+                :class="settings.access[feature.key] ? 'bg-green-600' : 'bg-gray-200'"
+                class="relative inline-flex flex-shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                @click="toggleFeatureAccess(feature.key)"
+              >
+                <span
+                  :class="settings.access[feature.key] ? 'translate-x-5' : 'translate-x-0.5'"
+                  class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+                />
+              </button>
+            </div>
+          </div>
         </div>
+
+        <!-- Change Password (when auth enabled and setup complete) -->
+        <button
+          v-if="auth.authStatus.value.authEnabled && auth.authStatus.value.setupComplete"
+          class="text-sm text-blue-600 hover:text-blue-800 mb-3"
+          @click="showChangePassword = true"
+        >
+          Change Password
+        </button>
 
         <!-- Auth Error Message -->
         <div
@@ -296,547 +341,478 @@
         </p>
       </div>
 
-      <!-- Notifications (Collapsible) -->
-      <div class="bg-white rounded-lg shadow-sm border border-gray-100">
-        <button
-          class="w-full p-5 flex items-center justify-between text-left hover:bg-gray-50 transition-colors rounded-lg"
-          @click="showNotifications = !showNotifications"
-        >
-          <div>
-            <h2 class="text-base font-medium text-gray-800">
-              Notifications
-            </h2>
-            <p class="text-xs text-gray-400 mt-0.5">
-              Get alerts when birds are detected
-            </p>
-          </div>
-          <svg
-            class="w-5 h-5 text-gray-400 transition-transform duration-200"
-            :class="{ 'rotate-180': showNotifications }"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+      <!-- Detection (Collapsible) -->
+      <CollapsibleSection
+        title="Detection"
+        subtitle="Model, sensitivity, and recording settings"
+        body-class="border-t border-gray-100 p-5 space-y-6"
+      >
+        <!-- Model Selection -->
+        <div>
+          <label
+            for="modelType"
+            class="block text-sm text-gray-600 mb-1"
+          >Detection Model</label>
+          <select
+            id="modelType"
+            v-model="settings.model.type"
+            class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
           >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 9l-7 7-7-7"
-            />
-          </svg>
-        </button>
-
-        <div
-          v-show="showNotifications"
-          class="border-t border-gray-100 p-5"
-        >
-          <!-- Apprise URLs -->
-          <div class="mb-4">
-            <label class="block text-sm text-gray-600 mb-1">Notification Services</label>
-
-            <!-- Existing URLs list -->
-            <ul
-              v-if="settings.notifications.apprise_urls?.length"
-              class="mb-2 space-y-1"
+            <option
+              v-for="m in modelTypeOptions"
+              :key="m.value"
+              :value="m.value"
             >
-              <li
-                v-for="(url, index) in settings.notifications.apprise_urls"
-                :key="index"
-                class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg border border-gray-200"
-              >
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">
-                    {{ appriseServiceName(url) }}
-                  </span>
-                  <span class="truncate text-xs text-gray-400 font-mono">{{ maskAppriseUrl(url) }}</span>
-                </div>
-                <button
-                  class="flex-shrink-0 ml-2 text-gray-400 hover:text-red-500 transition-colors"
-                  title="Remove"
-                  @click="removeAppriseUrl(index)"
-                >
-                  <svg
-                    class="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
-                </button>
-              </li>
-            </ul>
+              {{ m.label }}
+            </option>
+          </select>
+          <p class="text-xs text-gray-400 mt-1">
+            V3.0 is a developer preview with 11K species. Model will be downloaded on first use (~541 MB).
+          </p>
+        </div>
 
-            <!-- Add Service button -->
-            <button
-              class="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 border border-dashed border-gray-200 rounded-lg transition-colors"
-              @click="showAddNotificationModal = true"
-            >
-              <svg
-                class="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke-width="2"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
-                />
-              </svg>
-              Add Service
-            </button>
-            <p class="text-xs text-gray-400 mt-1">
-              Powered by <a
-                href="https://appriseit.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="text-blue-500 hover:underline"
-              >Apprise</a> — supports 100+ services
-            </p>
-          </div>
-
-          <!-- Trigger: Every Detection -->
-          <div class="flex items-center justify-between py-2 border-t border-gray-100">
+        <!-- Sensitivity & Confidence -->
+        <div class="pt-4 border-t border-gray-100">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label class="text-sm text-gray-600">Every Detection</label>
-              <p class="text-xs text-gray-400">
-                Alert on each detection
+              <div class="flex justify-between items-center mb-2">
+                <label
+                  for="sensitivity"
+                  class="text-sm text-gray-600"
+                >Sensitivity</label>
+                <span class="text-sm font-medium text-gray-800">{{ settings.detection.sensitivity }}</span>
+              </div>
+              <input
+                id="sensitivity"
+                v-model.number="settings.detection.sensitivity"
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.05"
+                class="w-full h-2 rounded-lg cursor-pointer"
+              >
+              <p class="text-xs text-gray-400 mt-1">
+                Higher = more detections
               </p>
             </div>
-            <button
-              :class="settings.notifications.every_detection ? 'bg-green-600' : 'bg-gray-200'"
-              class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-              @click="toggleNotificationSetting('every_detection')"
+            <div>
+              <div class="flex justify-between items-center mb-2">
+                <label
+                  for="cutoff"
+                  class="text-sm text-gray-600"
+                >Confidence Threshold</label>
+                <span class="text-sm font-medium text-gray-800">{{ settings.detection.cutoff }}</span>
+              </div>
+              <input
+                id="cutoff"
+                v-model.number="settings.detection.cutoff"
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.05"
+                class="w-full h-2 rounded-lg cursor-pointer"
+              >
+              <p class="text-xs text-gray-400 mt-1">
+                Minimum confidence to report
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recording Settings -->
+        <div class="pt-4 border-t border-gray-100">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label
+                for="recordingLength"
+                class="block text-sm text-gray-600 mb-1"
+              >Chunk Length</label>
+              <select
+                id="recordingLength"
+                v-model.number="settings.audio.recording_length"
+                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+              >
+                <option
+                  v-for="len in recordingLengthOptions"
+                  :key="len.value"
+                  :value="len.value"
+                >
+                  {{ len.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label
+                for="overlap"
+                class="block text-sm text-gray-600 mb-1"
+              >Overlap</label>
+              <select
+                id="overlap"
+                v-model.number="settings.audio.overlap"
+                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+              >
+                <option
+                  v-for="ov in overlapOptions"
+                  :key="ov.value"
+                  :value="ov.value"
+                >
+                  {{ ov.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </CollapsibleSection>
+
+      <!-- Species Filter (Collapsible) -->
+      <CollapsibleSection
+        title="Species Filter"
+        subtitle="Allowed and blocked species lists"
+      >
+        <div class="space-y-3">
+          <!-- Allowed Species -->
+          <div class="border border-gray-200 rounded-lg p-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h4 class="text-sm font-medium text-gray-700">
+                  Allowed Species
+                </h4>
+                <p class="text-xs text-gray-400">
+                  Only detect these species (leave empty for all)
+                </p>
+              </div>
+              <button
+                class="px-3 py-1.5 text-xs bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"
+                @click="openFilterModal('allowed')"
+              >
+                Edit
+              </button>
+            </div>
+            <div
+              v-if="settings.species_filter?.allowed_species?.length"
+              class="flex flex-wrap gap-1.5 mt-2"
             >
               <span
-                :class="settings.notifications.every_detection ? 'translate-x-6' : 'translate-x-1'"
-                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-              />
-            </button>
+                v-for="species in settings.species_filter.allowed_species.slice(0, 5)"
+                :key="species"
+                class="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full"
+              >
+                {{ getCommonName(species) }}
+              </span>
+              <span
+                v-if="settings.species_filter.allowed_species.length > 5"
+                class="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full"
+              >
+                +{{ settings.species_filter.allowed_species.length - 5 }} more
+              </span>
+            </div>
+            <p
+              v-else
+              class="text-xs text-gray-400 mt-2 italic"
+            >
+              All species for your location
+            </p>
           </div>
 
-          <!-- Rate Limit (visible when Every Detection is on) -->
-          <div
-            v-if="settings.notifications.every_detection"
-            class="pl-4 pb-2"
+          <!-- Blocked Species -->
+          <div class="border border-gray-200 rounded-lg p-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h4 class="text-sm font-medium text-gray-700">
+                  Blocked Species
+                </h4>
+                <p class="text-xs text-gray-400">
+                  Never detect these species
+                </p>
+              </div>
+              <button
+                class="px-3 py-1.5 text-xs bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"
+                @click="openFilterModal('blocked')"
+              >
+                Edit
+              </button>
+            </div>
+            <div
+              v-if="settings.species_filter?.blocked_species?.length"
+              class="flex flex-wrap gap-1.5 mt-2"
+            >
+              <span
+                v-for="species in settings.species_filter.blocked_species.slice(0, 5)"
+                :key="species"
+                class="px-2 py-0.5 text-xs bg-red-100 text-red-700 rounded-full"
+              >
+                {{ getCommonName(species) }}
+              </span>
+              <span
+                v-if="settings.species_filter.blocked_species.length > 5"
+                class="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full"
+              >
+                +{{ settings.species_filter.blocked_species.length - 5 }} more
+              </span>
+            </div>
+            <p
+              v-else
+              class="text-xs text-gray-400 mt-2 italic"
+            >
+              No species blocked
+            </p>
+          </div>
+        </div>
+      </CollapsibleSection>
+
+      <!-- Notifications (Collapsible) -->
+      <CollapsibleSection
+        title="Notifications"
+        subtitle="Get alerts when birds are detected"
+      >
+        <!-- Apprise URLs -->
+        <div class="mb-4">
+          <label class="block text-sm text-gray-600 mb-1">Notification Services</label>
+
+          <!-- Existing URLs list -->
+          <ul
+            v-if="settings.notifications.apprise_urls?.length"
+            class="mb-2 space-y-1"
           >
-            <label class="block text-xs text-gray-500 mb-1.5">Cooldown per species</label>
+            <li
+              v-for="(url, index) in settings.notifications.apprise_urls"
+              :key="index"
+              class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg border border-gray-200"
+            >
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">
+                  {{ appriseServiceName(url) }}
+                </span>
+                <span class="truncate text-xs text-gray-400 font-mono">{{ maskAppriseUrl(url) }}</span>
+              </div>
+              <button
+                class="flex-shrink-0 ml-2 text-gray-400 hover:text-red-500 transition-colors"
+                title="Remove"
+                @click="removeAppriseUrl(index)"
+              >
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </li>
+          </ul>
+
+          <!-- Add Service button -->
+          <button
+            class="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 border border-dashed border-gray-200 rounded-lg transition-colors"
+            @click="showAddNotificationModal = true"
+          >
+            <svg
+              class="w-3.5 h-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width="2"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
+            </svg>
+            Add Service
+          </button>
+          <p class="text-xs text-gray-400 mt-1">
+            Powered by <a
+              href="https://appriseit.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-blue-500 hover:underline"
+            >Apprise</a> — supports 100+ services
+          </p>
+        </div>
+
+        <!-- Trigger: Every Detection -->
+        <div class="flex items-center justify-between py-2 border-t border-gray-100">
+          <div>
+            <label class="text-sm text-gray-600">Every Detection</label>
+            <p class="text-xs text-gray-400">
+              Alert on each detection
+            </p>
+          </div>
+          <button
+            :class="settings.notifications.every_detection ? 'bg-green-600' : 'bg-gray-200'"
+            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+            @click="toggleNotificationSetting('every_detection')"
+          >
+            <span
+              :class="settings.notifications.every_detection ? 'translate-x-6' : 'translate-x-1'"
+              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+            />
+          </button>
+        </div>
+
+        <!-- Rate Limit (visible when Every Detection is on) -->
+        <div
+          v-if="settings.notifications.every_detection"
+          class="pl-4 pb-2"
+        >
+          <label class="block text-xs text-gray-500 mb-1.5">Cooldown per species</label>
+          <div class="flex flex-wrap gap-1.5">
+            <button
+              v-for="opt in rateLimitOptions"
+              :key="opt.value"
+              :class="settings.notifications.rate_limit_seconds === opt.value
+                ? 'bg-blue-100 text-blue-700 border-blue-200'
+                : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'"
+              class="px-2.5 py-1 text-xs rounded-full border transition-colors"
+              @click="setRateLimit(opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Trigger: First of Day -->
+        <div class="flex items-center justify-between py-2 border-t border-gray-100">
+          <div>
+            <label class="text-sm text-gray-600">First of Day</label>
+            <p class="text-xs text-gray-400">
+              First sighting of each species per day
+            </p>
+          </div>
+          <button
+            :class="settings.notifications.first_of_day ? 'bg-green-600' : 'bg-gray-200'"
+            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+            @click="toggleNotificationSetting('first_of_day')"
+          >
+            <span
+              :class="settings.notifications.first_of_day ? 'translate-x-6' : 'translate-x-1'"
+              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+            />
+          </button>
+        </div>
+
+        <!-- Trigger: Rare Species -->
+        <div class="flex items-center justify-between py-2 border-t border-gray-100">
+          <div>
+            <label class="text-sm text-gray-600">Rare Species</label>
+            <p class="text-xs text-gray-400">
+              Uncommon species for your area
+            </p>
+          </div>
+          <button
+            :class="settings.notifications.rare_species ? 'bg-green-600' : 'bg-gray-200'"
+            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+            @click="toggleNotificationSetting('rare_species')"
+          >
+            <span
+              :class="settings.notifications.rare_species ? 'translate-x-6' : 'translate-x-1'"
+              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+            />
+          </button>
+        </div>
+
+        <!-- Rare Species Options (visible when Rare Species is on) -->
+        <div
+          v-if="settings.notifications.rare_species"
+          class="pl-4 pb-2 space-y-2"
+        >
+          <div>
+            <label class="block text-xs text-gray-500 mb-1.5">Fewer than N sightings</label>
             <div class="flex flex-wrap gap-1.5">
               <button
-                v-for="opt in rateLimitOptions"
-                :key="opt.value"
-                :class="settings.notifications.rate_limit_seconds === opt.value
+                v-for="opt in rareThresholdOptions"
+                :key="opt"
+                :class="settings.notifications.rare_threshold === opt
                   ? 'bg-blue-100 text-blue-700 border-blue-200'
                   : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'"
                 class="px-2.5 py-1 text-xs rounded-full border transition-colors"
-                @click="setRateLimit(opt.value)"
+                @click="setRareThreshold(opt)"
+              >
+                {{ opt }}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1.5">In the past</label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="opt in rareWindowOptions"
+                :key="opt.value"
+                :class="settings.notifications.rare_window_days === opt.value
+                  ? 'bg-blue-100 text-blue-700 border-blue-200'
+                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'"
+                class="px-2.5 py-1 text-xs rounded-full border transition-colors"
+                @click="setRareWindow(opt.value)"
               >
                 {{ opt.label }}
               </button>
             </div>
           </div>
-
-          <!-- Trigger: First of Day -->
-          <div class="flex items-center justify-between py-2 border-t border-gray-100">
-            <div>
-              <label class="text-sm text-gray-600">First of Day</label>
-              <p class="text-xs text-gray-400">
-                First sighting of each species per day
-              </p>
-            </div>
-            <button
-              :class="settings.notifications.first_of_day ? 'bg-green-600' : 'bg-gray-200'"
-              class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-              @click="toggleNotificationSetting('first_of_day')"
-            >
-              <span
-                :class="settings.notifications.first_of_day ? 'translate-x-6' : 'translate-x-1'"
-                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-              />
-            </button>
-          </div>
-
-          <!-- Trigger: Rare Species -->
-          <div class="flex items-center justify-between py-2 border-t border-gray-100">
-            <div>
-              <label class="text-sm text-gray-600">Rare Species</label>
-              <p class="text-xs text-gray-400">
-                Uncommon species for your area
-              </p>
-            </div>
-            <button
-              :class="settings.notifications.rare_species ? 'bg-green-600' : 'bg-gray-200'"
-              class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-              @click="toggleNotificationSetting('rare_species')"
-            >
-              <span
-                :class="settings.notifications.rare_species ? 'translate-x-6' : 'translate-x-1'"
-                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-              />
-            </button>
-          </div>
-
-          <!-- Rare Species Options (visible when Rare Species is on) -->
-          <div
-            v-if="settings.notifications.rare_species"
-            class="pl-4 pb-2 space-y-2"
-          >
-            <div>
-              <label class="block text-xs text-gray-500 mb-1.5">Fewer than N sightings</label>
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  v-for="opt in rareThresholdOptions"
-                  :key="opt"
-                  :class="settings.notifications.rare_threshold === opt
-                    ? 'bg-blue-100 text-blue-700 border-blue-200'
-                    : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'"
-                  class="px-2.5 py-1 text-xs rounded-full border transition-colors"
-                  @click="setRareThreshold(opt)"
-                >
-                  {{ opt }}
-                </button>
-              </div>
-            </div>
-            <div>
-              <label class="block text-xs text-gray-500 mb-1.5">In the past</label>
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  v-for="opt in rareWindowOptions"
-                  :key="opt.value"
-                  :class="settings.notifications.rare_window_days === opt.value
-                    ? 'bg-blue-100 text-blue-700 border-blue-200'
-                    : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'"
-                  class="px-2.5 py-1 text-xs rounded-full border transition-colors"
-                  @click="setRareWindow(opt.value)"
-                >
-                  {{ opt.label }}
-                </button>
-              </div>
-            </div>
-          </div>
         </div>
-      </div>
+      </CollapsibleSection>
 
-      <!-- Advanced Settings (Collapsible) -->
-      <div class="bg-white rounded-lg shadow-sm border border-gray-100">
-        <button
-          class="w-full p-5 flex items-center justify-between text-left hover:bg-gray-50 transition-colors rounded-lg"
-          @click="showAdvancedSettings = !showAdvancedSettings"
-        >
+      <!-- Integrations (Collapsible) -->
+      <CollapsibleSection
+        title="Integrations"
+        subtitle="External service connections"
+      >
+        <!-- BirdWeather -->
+        <div>
+          <label
+            for="birdweatherId"
+            class="block text-sm text-gray-600 mb-1"
+          >BirdWeather Station ID</label>
+          <input
+            id="birdweatherId"
+            type="text"
+            :value="settings.birdweather?.id || ''"
+            class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+            placeholder="your-station-token"
+            @input="updateBirdweatherId($event.target.value)"
+          >
+          <p class="text-xs text-gray-400 mt-1">
+            Share detections with <a
+              href="https://app.birdweather.com/account/stations"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-blue-500 hover:underline"
+            >BirdWeather.com</a>
+          </p>
+        </div>
+      </CollapsibleSection>
+
+      <!-- Personalization (Collapsible) -->
+      <CollapsibleSection
+        title="Personalization"
+        subtitle="Units and display preferences"
+      >
+        <div class="flex items-center justify-between">
           <div>
-            <h2 class="text-base font-medium text-gray-800">
-              Advanced Settings
-            </h2>
-            <p class="text-xs text-gray-400 mt-0.5">
-              Detection, recording, and species filters
+            <label class="text-sm text-gray-600">Use Metric Units</label>
+            <p class="text-xs text-gray-400">
+              Show weather in °C, km/h, mm (off for °F, mph, in)
             </p>
           </div>
-          <svg
-            class="w-5 h-5 text-gray-400 transition-transform duration-200"
-            :class="{ 'rotate-180': showAdvancedSettings }"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+          <button
+            :disabled="metricUnitsSaving"
+            :class="settings.display?.use_metric_units !== false ? 'bg-green-600' : 'bg-gray-200'"
+            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            @click="toggleMetricUnits"
           >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 9l-7 7-7-7"
+            <span
+              :class="settings.display?.use_metric_units !== false ? 'translate-x-6' : 'translate-x-1'"
+              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
             />
-          </svg>
-        </button>
-
-        <div
-          v-show="showAdvancedSettings"
-          class="border-t border-gray-100 p-5 space-y-6"
-        >
-          <!-- Model Selection -->
-          <div>
-            <h3 class="text-sm font-medium text-gray-700 mb-3">
-              Model
-            </h3>
-            <div>
-              <label
-                for="modelType"
-                class="block text-sm text-gray-600 mb-1"
-              >Detection Model</label>
-              <select
-                id="modelType"
-                v-model="settings.model.type"
-                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-              >
-                <option
-                  v-for="m in modelTypeOptions"
-                  :key="m.value"
-                  :value="m.value"
-                >
-                  {{ m.label }}
-                </option>
-              </select>
-              <p class="text-xs text-gray-400 mt-1">
-                V3.0 is a developer preview with 11K species. Model will be downloaded on first use (~541 MB).
-              </p>
-            </div>
-          </div>
-
-          <!-- Detection Settings -->
-          <div>
-            <h3 class="text-sm font-medium text-gray-700 mb-3">
-              Detection
-            </h3>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <div class="flex justify-between items-center mb-2">
-                  <label
-                    for="sensitivity"
-                    class="text-sm text-gray-600"
-                  >Sensitivity</label>
-                  <span class="text-sm font-medium text-gray-800">{{ settings.detection.sensitivity }}</span>
-                </div>
-                <input
-                  id="sensitivity"
-                  v-model.number="settings.detection.sensitivity"
-                  type="range"
-                  min="0.1"
-                  max="1.0"
-                  step="0.05"
-                  class="w-full h-2 rounded-lg cursor-pointer"
-                >
-                <p class="text-xs text-gray-400 mt-1">
-                  Higher = more detections
-                </p>
-              </div>
-              <div>
-                <div class="flex justify-between items-center mb-2">
-                  <label
-                    for="cutoff"
-                    class="text-sm text-gray-600"
-                  >Confidence Threshold</label>
-                  <span class="text-sm font-medium text-gray-800">{{ settings.detection.cutoff }}</span>
-                </div>
-                <input
-                  id="cutoff"
-                  v-model.number="settings.detection.cutoff"
-                  type="range"
-                  min="0.1"
-                  max="1.0"
-                  step="0.05"
-                  class="w-full h-2 rounded-lg cursor-pointer"
-                >
-                <p class="text-xs text-gray-400 mt-1">
-                  Minimum confidence to report
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <!-- Recording Settings -->
-          <div class="pt-4 border-t border-gray-100">
-            <h3 class="text-sm font-medium text-gray-700 mb-3">
-              Recording
-            </h3>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label
-                  for="recordingLength"
-                  class="block text-sm text-gray-600 mb-1"
-                >Chunk Length</label>
-                <select
-                  id="recordingLength"
-                  v-model.number="settings.audio.recording_length"
-                  class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                >
-                  <option
-                    v-for="len in recordingLengthOptions"
-                    :key="len.value"
-                    :value="len.value"
-                  >
-                    {{ len.label }}
-                  </option>
-                </select>
-              </div>
-              <div>
-                <label
-                  for="overlap"
-                  class="block text-sm text-gray-600 mb-1"
-                >Overlap</label>
-                <select
-                  id="overlap"
-                  v-model.number="settings.audio.overlap"
-                  class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                >
-                  <option
-                    v-for="ov in overlapOptions"
-                    :key="ov.value"
-                    :value="ov.value"
-                  >
-                    {{ ov.label }}
-                  </option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <!-- Display Settings -->
-          <div class="pt-4 border-t border-gray-100">
-            <h3 class="text-sm font-medium text-gray-700 mb-3">
-              Display
-            </h3>
-            <div class="flex items-center justify-between">
-              <div>
-                <label class="text-sm text-gray-600">Use Metric Units</label>
-                <p class="text-xs text-gray-400">
-                  Show weather in °C, km/h, mm (off for °F, mph, in)
-                </p>
-              </div>
-              <button
-                :disabled="metricUnitsSaving"
-                :class="settings.display?.use_metric_units !== false ? 'bg-green-600' : 'bg-gray-200'"
-                class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                @click="toggleMetricUnits"
-              >
-                <span
-                  :class="settings.display?.use_metric_units !== false ? 'translate-x-6' : 'translate-x-1'"
-                  class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                />
-              </button>
-            </div>
-          </div>
-
-          <!-- Species Filter Settings -->
-          <div class="pt-4 border-t border-gray-100">
-            <h3 class="text-sm font-medium text-gray-700 mb-3">
-              Species Filter
-            </h3>
-            <div class="space-y-3">
-              <!-- Allowed Species -->
-              <div class="border border-gray-200 rounded-lg p-3">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h4 class="text-sm font-medium text-gray-700">
-                      Allowed Species
-                    </h4>
-                    <p class="text-xs text-gray-400">
-                      Only detect these species (leave empty for all)
-                    </p>
-                  </div>
-                  <button
-                    class="px-3 py-1.5 text-xs bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"
-                    @click="openFilterModal('allowed')"
-                  >
-                    Edit
-                  </button>
-                </div>
-                <div
-                  v-if="settings.species_filter?.allowed_species?.length"
-                  class="flex flex-wrap gap-1.5 mt-2"
-                >
-                  <span
-                    v-for="species in settings.species_filter.allowed_species.slice(0, 5)"
-                    :key="species"
-                    class="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full"
-                  >
-                    {{ getCommonName(species) }}
-                  </span>
-                  <span
-                    v-if="settings.species_filter.allowed_species.length > 5"
-                    class="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full"
-                  >
-                    +{{ settings.species_filter.allowed_species.length - 5 }} more
-                  </span>
-                </div>
-                <p
-                  v-else
-                  class="text-xs text-gray-400 mt-2 italic"
-                >
-                  All species for your location
-                </p>
-              </div>
-
-              <!-- Blocked Species -->
-              <div class="border border-gray-200 rounded-lg p-3">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h4 class="text-sm font-medium text-gray-700">
-                      Blocked Species
-                    </h4>
-                    <p class="text-xs text-gray-400">
-                      Never detect these species
-                    </p>
-                  </div>
-                  <button
-                    class="px-3 py-1.5 text-xs bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"
-                    @click="openFilterModal('blocked')"
-                  >
-                    Edit
-                  </button>
-                </div>
-                <div
-                  v-if="settings.species_filter?.blocked_species?.length"
-                  class="flex flex-wrap gap-1.5 mt-2"
-                >
-                  <span
-                    v-for="species in settings.species_filter.blocked_species.slice(0, 5)"
-                    :key="species"
-                    class="px-2 py-0.5 text-xs bg-red-100 text-red-700 rounded-full"
-                  >
-                    {{ getCommonName(species) }}
-                  </span>
-                  <span
-                    v-if="settings.species_filter.blocked_species.length > 5"
-                    class="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full"
-                  >
-                    +{{ settings.species_filter.blocked_species.length - 5 }} more
-                  </span>
-                </div>
-                <p
-                  v-else
-                  class="text-xs text-gray-400 mt-2 italic"
-                >
-                  No species blocked
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <!-- BirdWeather Integration -->
-          <div class="pt-4 border-t border-gray-100">
-            <h3 class="text-sm font-medium text-gray-700 mb-3">
-              BirdWeather
-            </h3>
-            <div>
-              <label
-                for="birdweatherId"
-                class="block text-sm text-gray-600 mb-1"
-              >Station ID</label>
-              <input
-                id="birdweatherId"
-                type="text"
-                :value="settings.birdweather?.id || ''"
-                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                placeholder="your-station-token"
-                @input="updateBirdweatherId($event.target.value)"
-              >
-              <p class="text-xs text-gray-400 mt-1">
-                Share detections with <a
-                  href="https://app.birdweather.com/account/stations"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="text-blue-500 hover:underline"
-                >BirdWeather.com</a>
-              </p>
-            </div>
-          </div>
+          </button>
         </div>
-      </div>
+      </CollapsibleSection>
 
       <!-- Data Management -->
       <div class="bg-white rounded-lg shadow-sm border border-gray-100 p-5">
@@ -1284,6 +1260,7 @@ import UnsavedChangesModal from '@/components/UnsavedChangesModal.vue'
 import MigrationModal from '@/components/MigrationModal.vue'
 import AddNotificationModal from '@/components/AddNotificationModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import { SCHEME_TO_SERVICE_NAME } from '@/utils/notificationServices'
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Suncuss/BirdNET-PiPy'
@@ -1297,7 +1274,8 @@ export default {
     UnsavedChangesModal,
     MigrationModal,
     AddNotificationModal,
-    ConfirmModal
+    ConfirmModal,
+    CollapsibleSection
   },
   setup() {
     // Composables
@@ -1362,10 +1340,6 @@ export default {
     const speciesList = ref([])
     const speciesNameMap = ref({})
 
-    // Collapsible section toggles
-    const showNotifications = ref(false)
-    const showAdvancedSettings = ref(false)
-
     // Migration modal state
     const showMigrationModal = ref(false)
 
@@ -1380,6 +1354,7 @@ export default {
 
     // Auth-related state
     const authLoading = ref(false)
+    const showAccessOptions = ref(false)
     const showChangePassword = ref(false)
     const showSetupPassword = ref(false)
     const currentPassword = ref('')
@@ -1414,7 +1389,8 @@ export default {
       model: { type: 'birdnet' },
       display: {},
       birdweather: { id: null },
-      notifications: { apprise_urls: [] }
+      notifications: { apprise_urls: [] },
+      access: { charts_public: false, table_public: false, live_feed_public: false }
     })
 
     // Unsaved changes tracking
@@ -1514,6 +1490,7 @@ export default {
         if (!data.display) data.display = { use_metric_units: true }
         if (!data.model) data.model = { type: 'birdnet' }
         if (!data.notifications) data.notifications = {}
+        if (!data.access) data.access = { charts_public: false, table_public: false, live_feed_public: false }
         // Normalize old "stable" channel to "release" for backward compatibility
         if (data.updates.channel === 'stable') data.updates.channel = 'release'
         settings.value = data
@@ -1901,6 +1878,21 @@ export default {
     }
 
     // Handle auth toggle
+    const accessFeatures = [
+      { key: 'charts_public', label: 'Charts' },
+      { key: 'table_public', label: 'Table' },
+      { key: 'live_feed_public', label: 'Live Feed' }
+    ]
+
+    const toggleFeatureAccess = async (featureKey) => {
+      const newValue = !settings.value.access[featureKey]
+      settings.value.access[featureKey] = newValue
+      const success = await auth.saveAccessSettings({ [featureKey]: newValue })
+      if (!success) {
+        settings.value.access[featureKey] = !newValue
+      }
+    }
+
     const handleAuthToggle = async () => {
       const newState = !auth.authStatus.value.authEnabled
 
@@ -2079,11 +2071,10 @@ export default {
       dismissSettingsError,
       updateChannelSaving,
       metricUnitsSaving,
-      // Advanced settings
-      showAdvancedSettings,
       // Auth
       auth,
       authLoading,
+      showAccessOptions,
       showChangePassword,
       showSetupPassword,
       currentPassword,
@@ -2096,6 +2087,8 @@ export default {
       handleAuthToggle,
       handleChangePassword,
       handleSetupPassword,
+      accessFeatures,
+      toggleFeatureAccess,
       // Species filter
       showSpeciesFilterModal,
       speciesFilterModalConfig,
@@ -2119,7 +2112,6 @@ export default {
       // Migration
       showMigrationModal,
       // Notifications
-      showNotifications,
       showAddNotificationModal,
       handleAddNotificationUrl,
       removeAppriseUrl,

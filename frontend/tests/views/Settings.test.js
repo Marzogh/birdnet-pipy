@@ -189,11 +189,11 @@ describe('Settings', () => {
   })
 
   describe('Recording Settings Section', () => {
-    it('displays "Recording" heading', async () => {
+    it('displays recording settings within Detection section', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      expect(wrapper.text()).toContain('Recording')
+      expect(wrapper.text()).toContain('Chunk Length')
     })
 
     it('shows recording length dropdown with correct options', async () => {
@@ -769,20 +769,12 @@ describe('Settings', () => {
         rare_threshold: 3,
         rare_window_days: 7
       }
-      wrapper.vm.showNotifications = true
       await wrapper.vm.$nextTick()
 
       expect(wrapper.text()).toContain('Add Service')
       expect(wrapper.text()).toContain('Every Detection')
       expect(wrapper.text()).toContain('First of Day')
       expect(wrapper.text()).toContain('Rare Species')
-    })
-
-    it('notification section is collapsed by default', async () => {
-      const wrapper = mountSettings()
-      await flushPromises()
-
-      expect(wrapper.vm.showNotifications).toBe(false)
     })
 
     it('handleAddNotificationUrl adds URL, closes modal, and saves immediately', async () => {

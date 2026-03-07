@@ -153,8 +153,12 @@ build_sequential() {
             exit 1
         fi
 
-        # Optional: prune dangling images (not build cache) to free disk space
-        docker image prune -f 2>/dev/null || true
+        # Prune dangling images to free disk space
+        local img_reclaimed=$(docker image prune -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
+        print_status "Cleanup: reclaimed ${img_reclaimed:-0B} from dangling images"
+        # Prune build cache older than 7 days to prevent unbounded growth
+        local cache_reclaimed=$(docker builder prune --filter "until=168h" -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
+        print_status "Cleanup: reclaimed ${cache_reclaimed:-0B} from build cache"
     done
 
     print_status "All requested images built"
@@ -352,7 +356,11 @@ else
 
     # Prune dangling images left behind when 'latest' tag is reassigned
     # (low-memory path already does this between builds)
-    docker image prune -f 2>/dev/null || true
+    IMG_RECLAIMED=$(docker image prune -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
+    print_status "Cleanup: reclaimed ${IMG_RECLAIMED:-0B} from dangling images"
+    # Prune build cache older than 7 days to prevent unbounded growth
+    CACHE_RECLAIMED=$(docker builder prune --filter "until=168h" -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
+    print_status "Cleanup: reclaimed ${CACHE_RECLAIMED:-0B} from build cache"
 fi
 
 print_status "Docker images built successfully!"

@@ -169,11 +169,14 @@ export default {
         // Check if it might be an auth error (nginx returns 401 for unauthenticated requests)
         if (error.name === 'NotAllowedError' || error.message?.includes('401')) {
           showError('Authentication required')
-          window.location.href = '/?auth=required'
+          window.dispatchEvent(new Event('auth:required'))
         } else {
           // Probe the stream URL to diagnose why playback failed
           const userMessage = await probeStreamError()
           showError(userMessage)
+          if (userMessage === 'Authentication required') {
+            window.dispatchEvent(new Event('auth:required'))
+          }
         }
         return false
       } finally {

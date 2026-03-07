@@ -53,11 +53,14 @@ from core.auth import (
     authenticate,
     change_password,
     configure_session,
+    get_public_features,
     is_auth_enabled,
     is_authenticated,
+    is_feature_public,
     is_setup_complete,
     logout,
     require_auth,
+    require_feature,
     set_auth_enabled,
     setup_password,
 )
@@ -447,6 +450,7 @@ def get_observation_summary():
 
 @api.route('/api/activity/hourly', methods=['GET'])
 @log_api_request
+@require_feature('charts')
 @validate_date_param()
 @handle_api_errors
 def get_hourly_activity():
@@ -460,6 +464,7 @@ def get_hourly_activity():
 
 @api.route('/api/activity/overview', methods=['GET'])
 @log_api_request
+@require_feature('charts')
 @validate_date_param()
 @handle_api_errors
 def get_activity_overview():
@@ -665,6 +670,7 @@ def get_all_species():
 
 @api.route('/api/detections/trends', methods=['GET'])
 @log_api_request
+@require_feature('charts')
 @handle_api_errors
 def get_detection_trends():
     """Get daily detection counts for trend visualization.
@@ -707,6 +713,7 @@ def get_detection_trends():
 
 @api.route('/api/detections', methods=['GET'])
 @log_api_request
+@require_feature('table')
 @handle_api_errors
 def get_detections():
     """Get paginated bird detections with optional filtering.
@@ -1026,7 +1033,7 @@ def get_available_species():
 
 @api.route('/api/stream/config', methods=['GET'])
 @log_api_request
-@require_auth
+@require_feature('live_feed')
 @handle_api_errors
 def get_stream_config():
     """Provide stream configuration for frontend based on recording mode"""
@@ -2001,10 +2008,13 @@ def trigger_service_restart():
 @api.route('/api/auth/status', methods=['GET'])
 def get_auth_status():
     """Get authentication status for frontend."""
+    auth_enabled = is_auth_enabled()
+    public_features = sorted(get_public_features()) if auth_enabled else []
     return jsonify({
-        'auth_enabled': is_auth_enabled(),
+        'auth_enabled': auth_enabled,
         'setup_complete': is_setup_complete(),
-        'authenticated': is_authenticated()
+        'authenticated': is_authenticated(),
+        'public_features': public_features
     }), 200
 
 
@@ -2075,6 +2085,9 @@ def auth_verify():
     """Internal endpoint for nginx auth_request. Returns 200 or 401."""
     if is_authenticated():
         return '', 200
+    original_uri = request.headers.get('X-Original-URI', '')
+    if original_uri.startswith('/stream/') and is_feature_public('live_feed'):
+        return '', 200
     return '', 401
 
 
@@ -2105,6 +2118,40 @@ def auth_toggle():
     except Exception as e:
         logger.error("Toggle auth error", extra={'error': str(e)})
         return jsonify({'error': 'Failed to toggle authentication'}), 500
+
+
+@api.route('/api/settings/access', methods=['PUT'])
+@log_api_request
+@require_auth
+@handle_api_errors
+def save_access_settings():
+    """Save per-feature access settings with merge semantics.
+
+    Accepts partial payloads — only provided keys are updated.
+    Valid keys: charts_public, table_public, live_feed_public (all booleans).
+    """
+    data = request.json
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    valid_keys = {'charts_public', 'table_public', 'live_feed_public'}
+    for key, value in data.items():
+        if key not in valid_keys:
+            return jsonify({'error': f'Unknown key: {key}'}), 400
+        if not isinstance(value, bool):
+            return jsonify({'error': f'{key} must be a boolean'}), 400
+
+    current_settings = load_user_settings()
+    if 'access' not in current_settings:
+        current_settings['access'] = get_default_settings()['access']
+    current_settings['access'].update(data)
+    save_user_settings(current_settings)
+    invalidate_runtime_settings_cache()
+
+    return jsonify({
+        'success': True,
+        'access': current_settings['access']
+    }), 200
 
 
 @api.route('/api/auth/change-password', methods=['POST'])
@@ -2795,6 +2842,8 @@ def create_app():
     # WebSocket event handlers
     @socketio.on('connect')
     def handle_connect():
+        if not is_feature_public('live_feed') and not session.get('authenticated', False):
+            return False  # Reject connection
         logger.info('WebSocket client connected')
         emit('status', {'message': 'Connected to live detection feed'})
 

@@ -198,7 +198,7 @@
 
         <!-- Batch Action Bar -->
         <div
-          v-if="selectedCount > 0"
+          v-if="isAuthenticated && selectedCount > 0"
           class="flex items-center justify-between px-4 py-3 bg-blue-50 border-b border-blue-200"
         >
           <span class="text-sm font-medium text-blue-800">
@@ -259,6 +259,7 @@
           >
             <div class="flex items-start gap-3">
               <input
+                v-if="isAuthenticated"
                 type="checkbox"
                 :checked="isSelected(detection.id)"
                 class="mt-1 h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
@@ -289,6 +290,7 @@
                   <DetectionActions
                     :detection="detection"
                     :is-playing="currentPlayingId === detection.id"
+                    :hide-delete="!isAuthenticated"
                     @toggle-play="togglePlayAudio"
                     @spectrogram="showSpectrogram"
                     @show-info="showDetectionInfo"
@@ -305,7 +307,10 @@
           <table class="min-w-full">
             <thead class="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th class="w-12 px-4 py-3">
+                <th
+                  v-if="isAuthenticated"
+                  class="w-12 px-4 py-3"
+                >
                   <input
                     type="checkbox"
                     :checked="allSelected"
@@ -334,7 +339,10 @@
                 class="hover:bg-gray-50 transition-colors"
                 :class="{ 'bg-blue-50': isSelected(detection.id) }"
               >
-                <td class="w-12 px-4 py-4">
+                <td
+                  v-if="isAuthenticated"
+                  class="w-12 px-4 py-4"
+                >
                   <input
                     type="checkbox"
                     :checked="isSelected(detection.id)"
@@ -375,6 +383,7 @@
                   <DetectionActions
                     :detection="detection"
                     :is-playing="currentPlayingId === detection.id"
+                    :hide-delete="!isAuthenticated"
                     container-class="justify-end w-full"
                     @toggle-play="togglePlayAudio"
                     @spectrogram="showSpectrogram"
@@ -564,6 +573,7 @@
 	import { getAudioUrl, getSpectrogramUrl } from '@/services/media'
 	import { useTableData } from '@/composables/useTableData'
 	import { useAudioPlayer } from '@/composables/useAudioPlayer'
+	import { useAuth } from '@/composables/useAuth'
 	import DetectionActions from '@/components/DetectionActions.vue'
 	import SpectrogramModal from '@/components/SpectrogramModal.vue'
 import DetectionInfoModal from '@/components/DetectionInfoModal.vue'
@@ -619,6 +629,8 @@ const {
   currentPlayingId,
   togglePlay
 } = useAudioPlayer()
+
+const { isAuthenticated } = useAuth()
 
 // --- State ---
 
