@@ -241,86 +241,53 @@
         </p>
       </div>
 
-      <!-- Security Settings -->
-      <div class="bg-white rounded-lg shadow-sm border border-gray-100 p-5">
-        <h2 class="text-base font-medium text-gray-800 mb-3">
-          Security
-        </h2>
-
+      <!-- Security (Collapsible) -->
+      <CollapsibleSection
+        title="Security"
+        subtitle="Authentication and public access controls"
+        body-class="border-t border-gray-100 p-5 space-y-4"
+      >
         <!-- Auth Toggle -->
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between">
           <div>
             <label class="text-sm text-gray-600">Require Authentication</label>
             <p class="text-xs text-gray-400">
               Protect features with password
             </p>
           </div>
-          <button
+          <ToggleSwitch
+            :model-value="auth.authStatus.value.authEnabled"
             :disabled="authLoading"
-            :class="auth.authStatus.value.authEnabled ? 'bg-green-600' : 'bg-gray-200'"
-            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-            @click="handleAuthToggle"
-          >
-            <span
-              :class="auth.authStatus.value.authEnabled ? 'translate-x-6' : 'translate-x-1'"
-              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-            />
-          </button>
+            @update:model-value="handleAuthToggle"
+          />
         </div>
 
-        <!-- Auth Sub-settings (when auth enabled) -->
+        <!-- Public Access Options (when auth enabled) -->
         <div
           v-if="auth.authStatus.value.authEnabled"
-          class="mb-4 bg-gray-50 rounded-lg p-3 space-y-3"
+          class="bg-gray-50 rounded-lg p-3 space-y-2"
         >
-          <button
-            class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
-            @click="showAccessOptions = !showAccessOptions"
-          >
-            <svg
-              class="h-3.5 w-3.5 transition-transform"
-              :class="showAccessOptions ? 'rotate-90' : ''"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M9 5l7 7-7 7"
-              />
-            </svg>
-            Customize public access...
-          </button>
+          <p class="text-xs text-gray-500">
+            Public access (no login required)
+          </p>
           <div
-            v-if="showAccessOptions"
-            class="space-y-2"
+            v-for="feature in accessFeatures"
+            :key="feature.key"
+            class="flex items-center justify-between"
           >
-            <div
-              v-for="feature in accessFeatures"
-              :key="feature.key"
-              class="flex items-center justify-between"
-            >
-              <label class="text-sm text-gray-600">{{ feature.label }}</label>
-              <button
-                :class="settings.access[feature.key] ? 'bg-green-600' : 'bg-gray-200'"
-                class="relative inline-flex flex-shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-                @click="toggleFeatureAccess(feature.key)"
-              >
-                <span
-                  :class="settings.access[feature.key] ? 'translate-x-5' : 'translate-x-0.5'"
-                  class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
-                />
-              </button>
-            </div>
+            <label class="text-sm text-gray-600">{{ feature.label }}</label>
+            <ToggleSwitch
+              :model-value="settings.access[feature.key]"
+              size="sm"
+              @update:model-value="toggleFeatureAccess(feature.key)"
+            />
           </div>
         </div>
 
         <!-- Change Password (when auth enabled and setup complete) -->
         <button
           v-if="auth.authStatus.value.authEnabled && auth.authStatus.value.setupComplete"
-          class="text-sm text-blue-600 hover:text-blue-800 mb-3"
+          class="text-sm text-blue-600 hover:text-blue-800"
           @click="showChangePassword = true"
         >
           Change Password
@@ -329,7 +296,7 @@
         <!-- Auth Error Message -->
         <div
           v-if="auth.error.value"
-          class="mb-3 p-2 bg-red-50 text-red-600 text-xs rounded-lg"
+          class="p-2 bg-red-50 text-red-600 text-xs rounded-lg"
         >
           {{ auth.error.value }}
         </div>
@@ -339,7 +306,7 @@
           Forgot password? Create a file named <code class="bg-gray-100 px-1 rounded">RESET_PASSWORD</code>
           in <code class="bg-gray-100 px-1 rounded">data/config/</code> on your Pi to reset.
         </p>
-      </div>
+      </CollapsibleSection>
 
       <!-- Detection (Collapsible) -->
       <CollapsibleSection
@@ -645,16 +612,10 @@
               Alert on each detection
             </p>
           </div>
-          <button
-            :class="settings.notifications.every_detection ? 'bg-green-600' : 'bg-gray-200'"
-            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-            @click="toggleNotificationSetting('every_detection')"
-          >
-            <span
-              :class="settings.notifications.every_detection ? 'translate-x-6' : 'translate-x-1'"
-              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-            />
-          </button>
+          <ToggleSwitch
+            :model-value="settings.notifications.every_detection"
+            @update:model-value="toggleNotificationSetting('every_detection')"
+          />
         </div>
 
         <!-- Rate Limit (visible when Every Detection is on) -->
@@ -686,16 +647,10 @@
               First sighting of each species per day
             </p>
           </div>
-          <button
-            :class="settings.notifications.first_of_day ? 'bg-green-600' : 'bg-gray-200'"
-            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-            @click="toggleNotificationSetting('first_of_day')"
-          >
-            <span
-              :class="settings.notifications.first_of_day ? 'translate-x-6' : 'translate-x-1'"
-              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-            />
-          </button>
+          <ToggleSwitch
+            :model-value="settings.notifications.first_of_day"
+            @update:model-value="toggleNotificationSetting('first_of_day')"
+          />
         </div>
 
         <!-- Trigger: Rare Species -->
@@ -706,16 +661,10 @@
               Uncommon species for your area
             </p>
           </div>
-          <button
-            :class="settings.notifications.rare_species ? 'bg-green-600' : 'bg-gray-200'"
-            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-            @click="toggleNotificationSetting('rare_species')"
-          >
-            <span
-              :class="settings.notifications.rare_species ? 'translate-x-6' : 'translate-x-1'"
-              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-            />
-          </button>
+          <ToggleSwitch
+            :model-value="settings.notifications.rare_species"
+            @update:model-value="toggleNotificationSetting('rare_species')"
+          />
         </div>
 
         <!-- Rare Species Options (visible when Rare Species is on) -->
@@ -792,60 +741,71 @@
       <CollapsibleSection
         title="Personalization"
         subtitle="Units and display preferences"
+        body-class="border-t border-gray-100 p-5 space-y-6"
       >
-        <div class="space-y-4">
-          <div class="flex items-center justify-between">
-            <div>
-              <label class="text-sm text-gray-600">Use Metric Units</label>
-              <p class="text-xs text-gray-400">
-                Show weather in °C, km/h, mm (off for °F, mph, in)
-              </p>
-            </div>
-            <button
-              :disabled="metricUnitsSaving"
-              :class="settings.display?.use_metric_units !== false ? 'bg-green-600' : 'bg-gray-200'"
-              class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              @click="toggleMetricUnits"
-            >
-              <span
-                :class="settings.display?.use_metric_units !== false ? 'translate-x-6' : 'translate-x-1'"
-                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-              />
-            </button>
-          </div>
+        <div>
+          <label
+            for="stationName"
+            class="block text-sm text-gray-600 mb-1"
+          >Station Name</label>
+          <input
+            id="stationName"
+            v-model="settings.display.station_name"
+            type="text"
+            maxlength="40"
+            placeholder="e.g. Backyard, Cabin, Rooftop"
+            class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+          >
+          <p class="text-xs text-gray-400 mt-1">
+            Shown in the navbar to identify this station. Save to apply.
+          </p>
+        </div>
 
+        <div class="pt-4 border-t border-gray-100">
+          <label
+            for="birdNameLanguage"
+            class="block text-sm text-gray-600 mb-1"
+          >Bird Name Language</label>
+          <select
+            id="birdNameLanguage"
+            v-model="settings.display.bird_name_language"
+            :disabled="settings.model?.type === 'birdnet_v3'"
+            class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <option
+              v-for="option in birdNameLanguageOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+          <p
+            v-if="settings.model?.type === 'birdnet_v3'"
+            class="text-xs text-amber-600 mt-1"
+          >
+            Localized bird names are not yet available for BirdNET v3.
+          </p>
+          <p
+            v-else
+            class="text-xs text-gray-400 mt-1"
+          >
+            Used for bird names shown across the app. Save to apply.
+          </p>
+        </div>
+
+        <div class="pt-4 border-t border-gray-100 flex items-center justify-between">
           <div>
-            <label
-              for="birdNameLanguage"
-              class="block text-sm text-gray-600 mb-1"
-            >Bird Name Language</label>
-            <select
-              id="birdNameLanguage"
-              v-model="settings.display.bird_name_language"
-              :disabled="settings.model?.type === 'birdnet_v3'"
-              class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <option
-                v-for="option in birdNameLanguageOptions"
-                :key="option.value"
-                :value="option.value"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-            <p
-              v-if="settings.model?.type === 'birdnet_v3'"
-              class="text-xs text-amber-600 mt-1"
-            >
-              Localized bird names are not yet available for BirdNET v3.
-            </p>
-            <p
-              v-else
-              class="text-xs text-gray-400 mt-1"
-            >
-              Used for bird names shown across the app. Save to apply.
+            <label class="text-sm text-gray-600">Use Metric Units</label>
+            <p class="text-xs text-gray-400">
+              Show weather in °C, km/h, mm (off for °F, mph, in)
             </p>
           </div>
+          <ToggleSwitch
+            :model-value="settings.display?.use_metric_units !== false"
+            :disabled="metricUnitsSaving"
+            @update:model-value="toggleMetricUnits"
+          />
         </div>
       </CollapsibleSection>
 
@@ -922,17 +882,11 @@
               Get newest features before stable release
             </p>
           </div>
-          <button
+          <ToggleSwitch
+            :model-value="settings.updates?.channel === 'latest'"
             :disabled="updateChannelSaving"
-            :class="settings.updates?.channel === 'latest' ? 'bg-green-600' : 'bg-gray-200'"
-            class="relative inline-flex flex-shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            @click="toggleUpdateChannel"
-          >
-            <span
-              :class="settings.updates?.channel === 'latest' ? 'translate-x-6' : 'translate-x-1'"
-              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-            />
-          </button>
+            @update:model-value="toggleUpdateChannel"
+          />
         </div>
 
         <!-- Update Available -->
@@ -1286,6 +1240,7 @@ import { useSystemUpdate } from '@/composables/useSystemUpdate'
 import { requestRestart, useServiceRestart } from '@/composables/useServiceRestart'
 import { useAuth } from '@/composables/useAuth'
 import { useUnitSettings } from '@/composables/useUnitSettings'
+import { useAppStatus } from '@/composables/useAppStatus'
 import { limitDecimals } from '@/utils/inputHelpers'
 import api, { createLongRequest } from '@/services/api'
 import SpeciesFilterModal from '@/components/SpeciesFilterModal.vue'
@@ -1296,6 +1251,7 @@ import MigrationModal from '@/components/MigrationModal.vue'
 import AddNotificationModal from '@/components/AddNotificationModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import CollapsibleSection from '@/components/CollapsibleSection.vue'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import { SCHEME_TO_SERVICE_NAME } from '@/utils/notificationServices'
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Suncuss/BirdNET-PiPy'
@@ -1310,13 +1266,15 @@ export default {
     MigrationModal,
     AddNotificationModal,
     ConfirmModal,
-    CollapsibleSection
+    CollapsibleSection,
+    ToggleSwitch
   },
   setup() {
     // Composables
     const serviceRestart = useServiceRestart()
     const auth = useAuth()
     const unitSettings = useUnitSettings()
+    const appStatus = useAppStatus()
 
     // Dropdown options (static configuration)
     const recordingModeOptions = [
@@ -1418,7 +1376,6 @@ export default {
 
     // Auth-related state
     const authLoading = ref(false)
-    const showAccessOptions = ref(false)
     const showChangePassword = ref(false)
     const showSetupPassword = ref(false)
     const currentPassword = ref('')
@@ -1478,7 +1435,7 @@ export default {
         blocked_species: s.species_filter?.blocked_species || []
       },
       model: { type: s.model?.type },
-      display: { bird_name_language: s.display?.bird_name_language || 'en' },
+      display: { bird_name_language: s.display?.bird_name_language || 'en', station_name: s.display?.station_name || '' },
       birdweather: { id: s.birdweather?.id }
     })
 
@@ -1546,21 +1503,25 @@ export default {
       return speciesNameMap.value[scientificName] || scientificName
     }
 
+    // Ensure settings data has all required objects with sensible defaults
+    const normalizeSettingsData = (data) => {
+      if (!data.updates) data.updates = { channel: 'release' }
+      if (!data.display) data.display = { use_metric_units: true, bird_name_language: 'en', station_name: '' }
+      if (data.display.use_metric_units === undefined) data.display.use_metric_units = true
+      if (!data.display.bird_name_language) data.display.bird_name_language = 'en'
+      if (data.display.station_name === undefined) data.display.station_name = ''
+      if (!data.model) data.model = { type: 'birdnet' }
+      if (!data.notifications) data.notifications = {}
+      if (!data.access) data.access = { charts_public: false, table_public: false, live_feed_public: false }
+      if (data.updates.channel === 'stable') data.updates.channel = 'release'
+    }
+
     // Load settings from API with retry and fallback to defaults
     const loadSettings = async (retryCount = 0) => {
       try {
         loading.value = true
         const { data } = await api.get('/settings')
-        // Ensure required objects exist before assigning (prevents template errors)
-        if (!data.updates) data.updates = { channel: 'release' }
-        if (!data.display) data.display = { use_metric_units: true, bird_name_language: 'en' }
-        if (data.display.use_metric_units === undefined) data.display.use_metric_units = true
-        if (!data.display.bird_name_language) data.display.bird_name_language = 'en'
-        if (!data.model) data.model = { type: 'birdnet' }
-        if (!data.notifications) data.notifications = {}
-        if (!data.access) data.access = { charts_public: false, table_public: false, live_feed_public: false }
-        // Normalize old "stable" channel to "release" for backward compatibility
-        if (data.updates.channel === 'stable') data.updates.channel = 'release'
+        normalizeSettingsData(data)
         settings.value = data
         recordingMode.value = data.audio?.recording_mode || 'pulseaudio'
         unitSettings.setUseMetricUnits(settings.value.display.use_metric_units ?? true)
@@ -1578,10 +1539,7 @@ export default {
           // Fallback to defaults on failure
           try {
             const { data } = await api.get('/settings/defaults')
-            if (!data.model) data.model = { type: 'birdnet' }
-            if (!data.display) data.display = { use_metric_units: true, bird_name_language: 'en' }
-            if (data.display.use_metric_units === undefined) data.display.use_metric_units = true
-            if (!data.display.bird_name_language) data.display.bird_name_language = 'en'
+            normalizeSettingsData(data)
             settings.value = data
             recordingMode.value = data.audio?.recording_mode || 'pulseaudio'
             // Take snapshot for unsaved changes tracking
@@ -1658,6 +1616,7 @@ export default {
 
       const result = await saveSettingsOnly()
       if (result) {
+        appStatus.setStationName(settings.value.display?.station_name)
         const restartTriggered = await triggerRestartIfRequired(result, 'Applying settings changes')
         if (!restartTriggered) {
           if (result?.changes?.changed_paths?.includes('display.bird_name_language')) {
@@ -1708,10 +1667,7 @@ export default {
       if (metricUnitsSaving.value) return
       try {
         metricUnitsSaving.value = true
-        // Ensure display object exists
-        if (!settings.value.display) {
-          settings.value.display = { use_metric_units: true, bird_name_language: 'en' }
-        }
+        normalizeSettingsData(settings.value)
         const newValue = settings.value.display.use_metric_units === false
 
         // Save immediately via dedicated endpoint (no restart needed)
@@ -2148,7 +2104,6 @@ export default {
       // Auth
       auth,
       authLoading,
-      showAccessOptions,
       showChangePassword,
       showSetupPassword,
       currentPassword,

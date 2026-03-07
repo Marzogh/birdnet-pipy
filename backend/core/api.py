@@ -49,16 +49,6 @@ from core.api_utils import (
     validate_date_param,
     validate_limit_param,
 )
-from core.bird_name_utils import (
-    DEFAULT_BIRD_NAME_LANGUAGE,
-    SUPPORTED_BIRD_NAME_LANGUAGES,
-    add_display_common_name,
-    add_display_species,
-    clear_bird_name_caches,
-    get_bird_name_language,
-    get_localized_common_name,
-    get_localized_common_name_from_english,
-)
 from core.auth import (
     authenticate,
     change_password,
@@ -73,6 +63,15 @@ from core.auth import (
     require_feature,
     set_auth_enabled,
     setup_password,
+)
+from core.bird_name_utils import (
+    DEFAULT_BIRD_NAME_LANGUAGE,
+    SUPPORTED_BIRD_NAME_LANGUAGES,
+    add_display_common_name,
+    add_display_species,
+    clear_bird_name_caches,
+    get_bird_name_language,
+    get_localized_common_name_from_english,
 )
 from core.db import DatabaseManager
 from core.ha_mode import get_runtime_mode, is_home_assistant_mode
@@ -331,7 +330,7 @@ def fetch_wikimedia_image(species_name):
             "action": "query",
             "format": "json",
             "list": "search",
-            "srsearch": f"{species_name} filetype:bitmap",
+            "srsearch": f"{species_name} filetype:bitmap -egg -skeleton",
             "srnamespace": "6",  # File namespace
             "srlimit": "1"  # Limit to one result
         }

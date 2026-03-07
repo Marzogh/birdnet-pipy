@@ -44,7 +44,8 @@ DEFAULT_SETTINGS = {
     },
     "display": {
         "use_metric_units": True,
-        "bird_name_language": "en"
+        "bird_name_language": "en",
+        "station_name": ""
     },
     "birdweather": {
         "id": None  # Station token from birdweather.com

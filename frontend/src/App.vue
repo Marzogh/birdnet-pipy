@@ -5,9 +5,15 @@
         <div class="flex items-center justify-between mb-4">
           <router-link
             to="/"
-            class="text-2xl font-bold hover:text-green-200"
+            class="hover:text-green-200 flex items-baseline gap-2"
           >
-            {{ DISPLAY_NAME }}
+            <span class="text-2xl font-bold">{{ DISPLAY_NAME }}</span>
+            <span
+              v-if="stationName"
+              class="text-base font-normal text-green-200"
+            >
+              {{ stationName }}
+            </span>
           </router-link>
           <!-- Auth indicator -->
           <button
@@ -119,7 +125,7 @@
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watchEffect, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useLogger } from '@/composables/useLogger'
 import { useAuth } from '@/composables/useAuth'
@@ -142,27 +148,33 @@ export default {
     const router = useRouter()
     const auth = useAuth()
     const unitSettings = useUnitSettings()
-    const appStatus = useAppStatus()
+    const { stationName, setStationName, setLocationConfigured } = useAppStatus()
 
     const showLocationSetup = ref(false)
     const showLoginModal = ref(false)
+
+    // Update browser tab title when station name changes
+    watchEffect(() => {
+      document.title = stationName.value ? `${DISPLAY_NAME} — ${stationName.value}` : DISPLAY_NAME
+    })
 
     const checkLocationSetup = async () => {
       try {
         const { data: settings } = await api.get('/settings')
         // Sync unit preference from settings
         unitSettings.setUseMetricUnits(settings.display?.use_metric_units ?? true)
+        setStationName(settings.display?.station_name)
         // Show setup modal if location or timezone has not been configured
         if (!settings.location?.configured || !settings.location?.timezone) {
           logger.info('Location or timezone not configured, showing setup modal')
-          appStatus.setLocationConfigured(false)
+          setLocationConfigured(false)
           showLocationSetup.value = true
         } else {
-          appStatus.setLocationConfigured(true)
+          setLocationConfigured(true)
         }
       } catch (error) {
         logger.error('Failed to check location setup', { error: error.message })
-        appStatus.setLocationConfigured(false)
+        setLocationConfigured(false)
       }
     }
 
@@ -232,7 +244,7 @@ export default {
       if (auth.needsLogin.value) {
         // Auth enabled means initial setup (including location) was already done
         // Allow dashboard to work without login (public access)
-        appStatus.setLocationConfigured(true)
+        setLocationConfigured(true)
       } else {
         checkLocationSetup()
       }
@@ -250,7 +262,8 @@ export default {
       onLoginSuccess,
       onLoginCancel,
       handleLogout,
-      auth
+      auth,
+      stationName
     }
   }
 }

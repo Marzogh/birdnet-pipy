@@ -774,8 +774,8 @@ class TestSimpleAPI:
                  patch('core.bird_name_utils.LABELS_PATH', labels_en), \
                  patch('core.api._available_species_cache', {}):
 
-                from core.bird_name_utils import clear_bird_name_caches
                 from core.api import create_app
+                from core.bird_name_utils import clear_bird_name_caches
                 clear_bird_name_caches()
                 app, _ = create_app()
                 client = app.test_client()
@@ -818,8 +818,8 @@ class TestSimpleAPI:
                     'totalObservations': 24
                 }]
 
-                from core.bird_name_utils import clear_bird_name_caches
                 from core.api import create_app
+                from core.bird_name_utils import clear_bird_name_caches
                 clear_bird_name_caches()
                 app, _ = create_app()
                 client = app.test_client()

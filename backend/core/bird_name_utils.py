@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from functools import cache
 
 from config.settings import LABELS_PATH, LABELS_V3_PATH
 from core.runtime_config import get_runtime_settings
@@ -86,7 +86,7 @@ def _get_v2_labels_path(language: str) -> str:
     )
 
 
-@lru_cache(maxsize=None)
+@cache
 def _load_model_labels(model_type: str, language: str) -> tuple[tuple[str, str], ...]:
     normalized_model_type = _normalize_model_type(model_type)
     normalized_language = normalize_bird_name_language(language)
@@ -101,7 +101,7 @@ def _load_model_labels(model_type: str, language: str) -> tuple[tuple[str, str],
     return tuple(parse_v2_labels(labels_path))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _get_scientific_to_localized_map(
     model_type: str,
     language: str,
@@ -112,7 +112,7 @@ def _get_scientific_to_localized_map(
     }
 
 
-@lru_cache(maxsize=None)
+@cache
 def _get_english_to_localized_map(
     model_type: str,
     language: str,

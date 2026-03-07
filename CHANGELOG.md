@@ -2,18 +2,22 @@
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-03-07
+
 - Added localized bird name support — display common names in 26 languages using BirdNET model labels, configurable in Settings
 - Added granular per-feature access control — Charts, Table, and Live Feed can each be set public or private independently
+- Added configurable station name for multi-system identification
 - Added login button in header when authentication is enabled but user is not logged in
-- Changed auth settings UI: replaced blockquote-style border with subtle background panel, added inline disclosure for per-feature access toggles, moved Change Password outside panel
-- Changed Settings page layout: reorganized into logical collapsible sections
-- Changed login modal to stay on the current page instead of redirecting to Dashboard
+- Fixed RTSP stream handling: skip video streams, regenerate audio timestamps, and discard corrupt packets to prevent non-monotonic DTS errors
+- Fixed Wikimedia image search returning non-bird images (eggs, skeletons) by excluding irrelevant terms
 - Fixed bird name language setting not taking effect until service restart (stale lru_cache)
 - Fixed language selector available for BirdNET v3 which has no localized labels — now disabled with explanation
-- Fixed stale auth redirect causing navigation to wrong page after login
 - Fixed LiveFeed auth error not showing login modal when 401 is discovered via stream probe
+- Fixed stale auth redirect causing navigation to wrong page after login
 - Fixed Docker build cache growing unbounded — now prunes cache older than 7 days after builds
-- Fixed RTSP stream handling: skip video streams, regenerate audio timestamps, and discard corrupt packets to prevent non-monotonic DTS errors
+- Changed Settings page layout: reorganized into logical collapsible sections with extracted ToggleSwitch component
+- Changed auth settings UI: replaced blockquote-style border with subtle background panel, added inline disclosure for per-feature access toggles, moved Change Password outside panel
+- Changed login modal to stay on the current page instead of redirecting to Dashboard
 - Improved LiveFeed error messages with specific diagnostics (stream unavailable vs server down vs decode error) and consistent console logging
 
 ## [0.5.6] - 2026-03-04
