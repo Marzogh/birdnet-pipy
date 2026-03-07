@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-- Fixed RTSP stream timestamp errors causing "Error starting audio playback" by adding wallclock timestamp correction to ffmpeg
+- Fixed RTSP stream handling: skip video streams, regenerate audio timestamps, and discard corrupt packets to prevent non-monotonic DTS errors
+- Improved LiveFeed error messages with specific diagnostics (stream unavailable vs server down vs decode error) and consistent console logging
 
 ## [0.5.6] - 2026-03-04
 

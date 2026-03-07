@@ -868,11 +868,24 @@ class TestRtspRecorderRecordChunk:
             assert 'tcp' in cmd
             assert '-timeout' in cmd
             assert '10000000' in cmd
+            assert '-allowed_media_types' in cmd
+            assert 'audio' in cmd
+            assert '-fflags' in cmd
+            assert '+genpts+discardcorrupt' in cmd
+            assert '-use_wallclock_as_timestamps' in cmd
+            assert '1' in cmd
             assert 'rtsp://192.168.1.100:554/stream' in cmd
+            assert '-map' in cmd
+            assert '0:a:0' in cmd
+            assert '-af' in cmd
+            assert 'aresample=async=1:first_pts=0' in cmd
             assert '-t' in cmd
             assert '3.0' in cmd
             assert '-ar' in cmd
             assert '48000' in cmd
+
+            assert cmd.index('-allowed_media_types') < cmd.index('-i')
+            assert cmd.index('-map') > cmd.index('-i')
 
     def test_record_chunk_success_returns_final_path(self, temp_output_dir):
         """Test successful recording returns the final file path."""

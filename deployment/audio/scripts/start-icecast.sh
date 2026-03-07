@@ -103,7 +103,8 @@ if [ -n "$RTSP_STREAM_URL" ]; then
     # Hide credentials in log output
     RTSP_DISPLAY_URL=$(echo "$RTSP_STREAM_URL" | sed 's/:[^:@]*@/:***@/')
     echo "  RTSP URL: $RTSP_DISPLAY_URL"
-    AUDIO_ARGS=(-rtsp_transport tcp -timeout 10000000 -use_wallclock_as_timestamps 1 -i "$RTSP_STREAM_URL")
+    # Ignore video streams and rebuild audio timestamps for cameras with unstable RTP timing.
+    AUDIO_ARGS=(-rtsp_transport tcp -timeout 10000000 -allowed_media_types audio -fflags +genpts+discardcorrupt -use_wallclock_as_timestamps 1 -i "$RTSP_STREAM_URL" -map 0:a:0 -af aresample=async=1:first_pts=0)
 else
     echo "  Audio source: PulseAudio (default)"
 

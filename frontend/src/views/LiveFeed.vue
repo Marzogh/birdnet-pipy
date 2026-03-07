@@ -131,6 +131,24 @@ export default {
       }
     }
 
+    const probeStreamError = async () => {
+      try {
+        const response = await fetch(streamUrl.value, { method: 'HEAD' })
+        console.error(`[LiveFeed] Stream probe: HTTP ${response.status} from ${streamUrl.value}`)
+        if (response.status === 404 || response.status === 403) {
+          return 'Audio stream is not available'
+        } else if (response.status === 401) {
+          return 'Authentication required'
+        } else if (response.status >= 500) {
+          return 'Stream server error'
+        }
+        return 'Could not start audio playback'
+      } catch (fetchError) {
+        console.error(`[LiveFeed] Stream probe failed: ${fetchError.message}`)
+        return 'Could not reach stream server'
+      }
+    }
+
     const startAudio = async () => {
       try {
         isLoading.value = true
@@ -147,13 +165,15 @@ export default {
         statusMessage.value = 'Icecast stream connected'
         return true
       } catch (error) {
-        console.error('Error starting audio playback:', error)
+        console.error(`[LiveFeed] Playback failed: ${error.name}: ${error.message}`)
         // Check if it might be an auth error (nginx returns 401 for unauthenticated requests)
         if (error.name === 'NotAllowedError' || error.message?.includes('401')) {
-          showError('Authentication required - please log in')
+          showError('Authentication required')
           window.location.href = '/?auth=required'
         } else {
-          showError('Error starting audio playback')
+          // Probe the stream URL to diagnose why playback failed
+          const userMessage = await probeStreamError()
+          showError(userMessage)
         }
         return false
       } finally {
@@ -166,8 +186,8 @@ export default {
         await audioElement.value.pause()
         statusMessage.value = 'Audio stopped'
       } catch (error) {
-        console.error('Error stopping audio playback:', error)
-        statusMessage.value = 'Error stopping audio playback'
+        console.error(`[LiveFeed] Stop failed: ${error.message}`)
+        statusMessage.value = 'Error stopping audio'
       }
     }
 
@@ -178,22 +198,30 @@ export default {
       }
 
       const error = event.target.error
-      console.error('Audio element error:', error)
+      const errorCodes = {
+        [MediaError.MEDIA_ERR_ABORTED]: 'MEDIA_ERR_ABORTED',
+        [MediaError.MEDIA_ERR_NETWORK]: 'MEDIA_ERR_NETWORK',
+        [MediaError.MEDIA_ERR_DECODE]: 'MEDIA_ERR_DECODE',
+        [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: 'MEDIA_ERR_SRC_NOT_SUPPORTED',
+      }
+      console.error(
+        `[LiveFeed] Audio error: code=${error?.code} (${errorCodes[error?.code] || 'unknown'}), message="${error?.message || 'none'}", src="${streamUrl.value}"`
+      )
 
-      let errorMessage = 'Stream error'
+      let errorMessage = 'Audio stream error'
       if (error) {
         switch (error.code) {
           case MediaError.MEDIA_ERR_ABORTED:
-            errorMessage = 'Stream aborted'
+            errorMessage = 'Audio stream was interrupted'
             break
           case MediaError.MEDIA_ERR_NETWORK:
-            errorMessage = 'Network error - stream unavailable'
+            errorMessage = 'Could not reach audio stream'
             break
           case MediaError.MEDIA_ERR_DECODE:
-            errorMessage = 'Stream decode error'
+            errorMessage = 'Audio stream interrupted'
             break
           case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-            errorMessage = 'Stream format not supported'
+            errorMessage = 'Audio stream is not available'
             break
         }
       }
@@ -204,7 +232,7 @@ export default {
     }
 
     const handleAudioBuffering = () => {
-      console.warn('Audio stream buffering')
+      console.log('[LiveFeed] Audio stream buffering')
       if (isPlaying.value) {
         statusMessage.value = 'Stream buffering...'
       }
@@ -217,7 +245,7 @@ export default {
     }
 
     const handleAudioEnded = () => {
-      console.warn('Audio stream ended')
+      console.log('[LiveFeed] Audio stream ended')
       statusMessage.value = 'Stream ended - click Start to reconnect'
       stopPlayback()
     }
@@ -270,17 +298,21 @@ export default {
           statusMessage.value = 'No audio stream configured'
         }
       } catch (error) {
-        console.error('Error fetching stream config:', error)
-        showError('Error loading stream configuration')
+        console.error(`[LiveFeed] Stream config fetch failed: ${error.message}`)
+        showError('Could not load stream settings')
       }
     }
 
     const initWebSocket = () => {
       socket = io()
 
-      socket.on('connect', () => {})
+      socket.on('connect', () => {
+        console.log('[LiveFeed] WebSocket connected')
+      })
 
-      socket.on('disconnect', () => {})
+      socket.on('disconnect', (reason) => {
+        console.log(`[LiveFeed] WebSocket disconnected: ${reason}`)
+      })
 
       socket.on('bird_detected', (detection) => {
         

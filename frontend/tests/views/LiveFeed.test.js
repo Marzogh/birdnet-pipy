@@ -161,7 +161,7 @@ describe('LiveFeed', () => {
       wrapper.vm.handleAudioError({ target: { error: { code: 2 } } }) // MEDIA_ERR_NETWORK
 
       expect(wrapper.vm.hasError).toBe(true)
-      expect(wrapper.vm.statusMessage).toBe('Network error - stream unavailable')
+      expect(wrapper.vm.statusMessage).toBe('Could not reach audio stream')
       expect(wrapper.vm.isPlaying).toBe(false)
     })
 

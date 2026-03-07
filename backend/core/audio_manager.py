@@ -291,17 +291,31 @@ class RtspRecorder(BaseRecorder):
         """RTSP needs longer delay for reconnection."""
         return 2.0
 
+    def _get_ffmpeg_rtsp_args(self) -> list:
+        """
+        Build RTSP ffmpeg arguments for unstable camera streams.
+
+        Restricting the demuxer to audio avoids unnecessary video parsing
+        errors, while regenerating/smoothing timestamps prevents broken
+        output when cameras emit non-monotonic RTP timing.
+        """
+        return [
+            '-rtsp_transport', 'tcp',
+            '-timeout', '10000000',  # 10 second connection timeout (microseconds)
+            '-allowed_media_types', 'audio',
+            '-fflags', '+genpts+discardcorrupt',
+            '-use_wallclock_as_timestamps', '1',
+            '-i', self.rtsp_url,
+            '-map', '0:a:0',
+            '-af', 'aresample=async=1:first_pts=0',
+        ]
+
     def _execute_recording(self, temp_path: str) -> bool:
         """
         Execute ffmpeg command for RTSP stream recording.
         Uses argument list to prevent shell injection.
         """
-        cmd = [
-            'ffmpeg',
-            '-rtsp_transport', 'tcp',
-            '-timeout', '10000000',  # 10 second connection timeout (microseconds)
-            '-i', self.rtsp_url,
-        ] + self._get_ffmpeg_output_args(temp_path)
+        cmd = ['ffmpeg'] + self._get_ffmpeg_rtsp_args() + self._get_ffmpeg_output_args(temp_path)
 
         result = subprocess.run(
             cmd,
