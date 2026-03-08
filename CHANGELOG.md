@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Added unique species toggle (All/Unique) to Dashboard recent observations — both lists fetched in a single API call for instant switching
+- Fixed unique species query returning too few results when one species dominates recent detections — falls back to unbounded query when pre-fetch window is insufficient
+- Fixed user toggle selections (activity overview, recent observations) resetting during in-flight dashboard fetches
+
 ## [0.5.7] - 2026-03-07
 
 - Added localized bird name support — display common names in 26 languages using BirdNET model labels, configurable in Settings

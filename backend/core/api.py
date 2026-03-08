@@ -437,7 +437,8 @@ def get_latest_observation():
 @log_api_request
 @handle_api_errors
 def get_recent_observations():
-    observations = db_manager.get_latest_detections(7)
+    unique = request.args.get('unique', 'false').lower() == 'true'
+    observations = db_manager.get_latest_detections(7, unique=unique)
     log_data_metrics('get_recent_observations', observations)
     return jsonify(observations)
 
@@ -508,9 +509,11 @@ def get_dashboard():
     today = datetime.now().strftime('%Y-%m-%d')
     settings = load_user_settings()
 
-    recent = db_manager.get_latest_detections(7)
-    recent = _localize_detection_list(recent, settings=settings)
-    latest = recent[0] if recent else None
+    recent_all = db_manager.get_latest_detections(7)
+    recent_unique = db_manager.get_latest_detections(7, unique=True)
+    recent_all = _localize_detection_list(recent_all, settings=settings)
+    recent_unique = _localize_detection_list(recent_unique, settings=settings)
+    latest = recent_all[0] if recent_all else None
 
     summary = {
         'today': _localize_summary(
@@ -536,7 +539,7 @@ def get_dashboard():
 
     return jsonify({
         'latestObservation': latest,
-        'recentObservations': recent,
+        'recentObservations': {'all': recent_all, 'unique': recent_unique},
         'summary': summary,
         'hourlyActivity': hourly_activity,
         'activityOverview': activity_overview

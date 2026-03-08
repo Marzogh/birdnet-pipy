@@ -168,6 +168,55 @@ class TestSimpleAPI:
         assert 'first_detected' in data or 'first_detection' in data
         assert 'last_detected' in data or 'last_detection' in data
 
+    def test_dashboard_returns_both_recent_modes(self, api_client, real_db_manager):
+        """Test /api/dashboard returns recentObservations with both 'all' and 'unique' lists."""
+        from datetime import timedelta
+        base_time = datetime(2024, 1, 15, 10, 0, 0)
+
+        # Insert 3 Robin detections and 2 Jay detections at different times
+        for i in range(3):
+            real_db_manager.insert_detection({
+                'timestamp': (base_time + timedelta(hours=i)).isoformat(),
+                'group_timestamp': (base_time + timedelta(hours=i)).isoformat(),
+                'common_name': 'American Robin',
+                'scientific_name': 'Turdus migratorius',
+                'confidence': 0.85,
+                'latitude': 40.7128, 'longitude': -74.0060,
+                'cutoff': 0.5, 'sensitivity': 0.75, 'overlap': 0.25
+            })
+        for i in range(2):
+            real_db_manager.insert_detection({
+                'timestamp': (base_time + timedelta(hours=i+3)).isoformat(),
+                'group_timestamp': (base_time + timedelta(hours=i+3)).isoformat(),
+                'common_name': 'Blue Jay',
+                'scientific_name': 'Cyanocitta cristata',
+                'confidence': 0.80,
+                'latitude': 40.7128, 'longitude': -74.0060,
+                'cutoff': 0.5, 'sensitivity': 0.75, 'overlap': 0.25
+            })
+
+        response = api_client.get('/api/dashboard')
+        assert response.status_code == 200
+        data = response.get_json()
+
+        # recentObservations should have both 'all' and 'unique' keys
+        recent = data['recentObservations']
+        assert 'all' in recent
+        assert 'unique' in recent
+
+        # 'all' mode: same species can appear multiple times
+        all_species = [r['common_name'] for r in recent['all']]
+        assert all_species.count('American Robin') == 3
+
+        # 'unique' mode: each species appears exactly once
+        unique_species = [r['common_name'] for r in recent['unique']]
+        assert len(unique_species) == len(set(unique_species))
+        assert 'American Robin' in unique_species
+        assert 'Blue Jay' in unique_species
+
+        # latestObservation is still the globally most recent
+        assert data['latestObservation'] is not None
+
     def test_file_serving_endpoints(self):
         """Test file serving with mocked paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -915,8 +964,12 @@ class TestSimpleAPI:
         assert data['latestObservation'] is not None
         assert 'common_name' in data['latestObservation']
 
-        # Recent observations
-        assert len(data['recentObservations']) >= 2
+        # Recent observations now expose both list modes
+        recent = data['recentObservations']
+        assert 'all' in recent
+        assert 'unique' in recent
+        assert len(recent['all']) >= 2
+        assert len(recent['unique']) >= 2
 
         # Summary periods
         assert 'today' in data['summary']
@@ -948,7 +1001,7 @@ class TestSimpleAPI:
         data = response.get_json()
 
         assert data['latestObservation'] is None
-        assert data['recentObservations'] == []
+        assert data['recentObservations'] == {'all': [], 'unique': []}
         assert 'today' in data['summary']
         assert len(data['hourlyActivity']) == 24
         assert data['activityOverview'] == {'most': [], 'least': []}

@@ -271,9 +271,27 @@
 
       <!-- Recent Observations -->
       <div class="bg-white rounded-lg shadow p-4 lg:col-span-2">
-        <h2 class="text-lg font-semibold mb-2">
-          Recent Observations
-        </h2>
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-lg font-semibold">
+            Recent Observations
+          </h2>
+          <div class="flex items-center bg-gray-100 rounded-full p-0.5">
+            <button
+              v-for="opt in recentObsFilterOptions"
+              :key="opt.label"
+              :class="[
+                'px-3 py-1 text-xs font-medium rounded-full transition-all duration-200',
+                showUniqueSpecies === opt.value
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              ]"
+              @click="toggleRecentObsFilter(opt.value)"
+            >
+              <span class="sm:hidden">{{ opt.shortLabel }}</span>
+              <span class="hidden sm:inline">{{ opt.label }}</span>
+            </button>
+          </div>
+        </div>
         <CenteredMessage
           v-if="!hasLoadedOnce"
           variant="loading"
@@ -430,7 +448,8 @@ export default {
 
             // Methods
             fetchDashboardData,
-            setActivityOrder
+            setActivityOrder,
+            setRecentObsMode
         } = useFetchBirdData();
 
         // Audio state
@@ -453,6 +472,15 @@ export default {
         const currentSummaryPeriod = ref('today')
         const showLeastCommon = ref(false)
         const isActivityUpdating = ref(false)
+
+        // Recent observations filter: false = All, true = Unique (one per species)
+        const showUniqueSpecies = ref(
+            localStorage.getItem('birdnet_recent_unique') === 'true'
+        )
+        const recentObsFilterOptions = [
+            { label: 'All', shortLabel: 'All', value: false },
+            { label: 'Unique', shortLabel: 'Uniq', value: true }
+        ]
 
         const isSpectrogramModalVisible = ref(false)
         const currentSpectrogramUrl = ref('')
@@ -494,6 +522,14 @@ export default {
         const systemUpdate = useSystemUpdate()
 
         const currentOrder = () => showLeastCommon.value ? 'least' : 'most'
+        const recentMode = () => showUniqueSpecies.value ? 'unique' : 'all'
+
+        const toggleRecentObsFilter = (value) => {
+            if (showUniqueSpecies.value === value) return
+            showUniqueSpecies.value = value
+            localStorage.setItem('birdnet_recent_unique', String(value))
+            setRecentObsMode(recentMode())
+        }
 
         // Single-in-flight poll loop: waits for the current fetch to
         // finish before scheduling the next one, so slow responses never
@@ -501,7 +537,7 @@ export default {
         const startPolling = () => {
             if (pollInterval) return
             const poll = async () => {
-                await fetchDashboardData(currentOrder())
+                await fetchDashboardData(currentOrder(), { recentMode: recentMode() })
                 if (!isActive) return
                 redrawCharts()
                 pollInterval = setTimeout(poll, POLL_INTERVAL)
@@ -526,7 +562,7 @@ export default {
                     if (document.hidden) {
                         stopPolling()
                     } else {
-                        await fetchDashboardData(currentOrder())
+                        await fetchDashboardData(currentOrder(), { recentMode: recentMode() })
                         if (!isActive) return
                         redrawCharts()
                         startPolling()
@@ -535,7 +571,7 @@ export default {
                 document.addEventListener('visibilitychange', visibilityHandler)
             }
 
-            await fetchDashboardData(currentOrder());
+            await fetchDashboardData(currentOrder(), { recentMode: recentMode() });
             if (!isActive) return  // Deactivated while fetching — bail out
             startPolling()
 
@@ -649,7 +685,7 @@ export default {
                 await redrawCharts(true)
 
                 // Fetch new data in background, then silently update.
-                await fetchDashboardData(currentOrder())
+                await fetchDashboardData(currentOrder(), { recentMode: recentMode() })
                 if (!isActive || myActivation !== activationId) return
                 startPolling()
                 await nextTick()
@@ -870,7 +906,10 @@ export default {
             showLeastCommon,
             toggleActivityOrder,
             isActivityUpdating,
-            hasLoadedOnce
+            hasLoadedOnce,
+            showUniqueSpecies,
+            recentObsFilterOptions,
+            toggleRecentObsFilter
         }
     }
 }

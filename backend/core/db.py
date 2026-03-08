@@ -97,12 +97,47 @@ class DatabaseManager:
             conn.commit()
             return cur.lastrowid
 
-    def get_latest_detections(self, limit=15):
-        # Use window function to get highest confidence detection per (group_timestamp, common_name)
-        # Previous query used WHERE (id, confidence) IN (SELECT id, MAX(confidence) ... GROUP BY)
-        # which has undefined behavior in SQLite - the non-aggregated 'id' column can return
-        # an arbitrary id that doesn't match the row with MAX(confidence), causing empty results.
-        query = """
+    def get_latest_detections(self, limit=15, unique=False):
+        # Use window function to deduplicate detections.
+        # unique=False (default): highest confidence per (group_timestamp, common_name)
+        # unique=True: most recent detection per species (one row per common_name)
+        if unique:
+            partition = "PARTITION BY common_name"
+            rank_order = "ORDER BY timestamp DESC"
+        else:
+            partition = "PARTITION BY group_timestamp, common_name"
+            rank_order = "ORDER BY confidence DESC"
+
+        # Pre-fetch recent rows so the window function scans ~hundreds
+        # instead of the full table (376K+ rows → 1000ms down to ~1ms).
+        pre_fetch = limit * 75 if unique else limit * 50
+
+        rows = self._fetch_deduplicated(partition, rank_order, pre_fetch, limit)
+
+        # Fallback: if unique query didn't find enough species in the
+        # pre-fetch window (e.g. one species dominates recent rows),
+        # retry without the row limit.
+        if unique and len(rows) < limit:
+            rows = self._fetch_deduplicated(partition, rank_order, None, limit)
+
+        detections = []
+        for row in rows:
+            detection = self._normalize_detection(row, include_filenames=True)
+            # Use legacy field names for backward compatibility with frontend
+            detection['bird_song_file_name'] = detection.pop('audio_filename')
+            detection['spectrogram_file_name'] = detection.pop('spectrogram_filename')
+            detections.append(detection)
+
+        return detections
+
+    def _fetch_deduplicated(self, partition, rank_order, pre_fetch, limit):
+        """Run the windowed dedup query, optionally bounded by pre_fetch."""
+        if pre_fetch is not None:
+            source = f"(SELECT * FROM detections ORDER BY timestamp DESC LIMIT {pre_fetch})"
+        else:
+            source = "detections"
+
+        query = f"""
         SELECT
             id,
             timestamp,
@@ -121,10 +156,10 @@ class DatabaseManager:
         WHERE id IN (
             SELECT id FROM (
                 SELECT id, ROW_NUMBER() OVER (
-                    PARTITION BY group_timestamp, common_name
-                    ORDER BY confidence DESC
+                    {partition}
+                    {rank_order}
                 ) as rn
-                FROM detections
+                FROM {source}
             ) WHERE rn = 1
         )
         ORDER BY timestamp DESC
@@ -133,17 +168,7 @@ class DatabaseManager:
         with self.get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute(query, (limit,))
-            rows = cur.fetchall()
-
-            detections = []
-            for row in rows:
-                detection = self._normalize_detection(row, include_filenames=True)
-                # Use legacy field names for backward compatibility with frontend
-                detection['bird_song_file_name'] = detection.pop('audio_filename')
-                detection['spectrogram_file_name'] = detection.pop('spectrogram_filename')
-                detections.append(detection)
-
-            return detections
+            return cur.fetchall()
 
     def get_detections_by_date_range(self, start_date, end_date, unique=False):
         start_time = time.time()
