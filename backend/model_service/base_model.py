@@ -1,10 +1,11 @@
 """Abstract base class for bird detection models."""
 
-import json
 import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
+
+from .label_utils import get_ebird_code as _lookup_ebird_code
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,6 @@ class BirdDetectionModel(ABC):
 
     def __init__(self, ebird_codes_path: str | None = None):
         self.ebird_codes_path = ebird_codes_path
-        self._ebird_codes = None
 
     @property
     @abstractmethod
@@ -70,34 +70,7 @@ class BirdDetectionModel(ABC):
 
     def get_ebird_code(self, scientific_name: str) -> str | None:
         """Look up eBird species code for a scientific name."""
-        if self._ebird_codes is None:
-            self.load_ebird_codes()
-        return self._ebird_codes.get(scientific_name)
-
-    def load_ebird_codes(self):
-        """Load eBird species codes mapping from JSON file.
-
-        Returns empty dict if file is missing or invalid.
-        """
-        if self._ebird_codes is not None:
-            return self._ebird_codes
-
-        if not self.ebird_codes_path:
-            self._ebird_codes = {}
-            return self._ebird_codes
-
-        try:
-            with open(self.ebird_codes_path, encoding='utf-8') as f:
-                self._ebird_codes = json.load(f)
-            logger.info(f"Loaded {len(self._ebird_codes)} eBird species codes")
-        except FileNotFoundError:
-            logger.warning(f"eBird codes file not found: {self.ebird_codes_path}")
-            self._ebird_codes = {}
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in eBird codes file: {e}")
-            self._ebird_codes = {}
-
-        return self._ebird_codes
+        return _lookup_ebird_code(scientific_name)
 
     def _post_process(
         self,
@@ -111,9 +84,16 @@ class BirdDetectionModel(ABC):
         Shared post-processing used by all model implementations after
         model-specific inference and score transformation.
         """
+        # Verify labels and scores have matching lengths
+        if len(labels) != len(scores):
+            raise RuntimeError(
+                f"Label count mismatch: {len(labels)} labels but {len(scores)} scores. "
+                "Model and labels file may be out of sync."
+            )
+
         # Log top 3 raw confidence scores before cutoff filtering
         if logger.isEnabledFor(logging.INFO):
-            raw_scores = list(zip(labels, scores, strict=False))
+            raw_scores = list(zip(labels, scores, strict=True))
             raw_scores_sorted = sorted(raw_scores, key=lambda x: x[1], reverse=True)[:3]
             top3_info = [
                 (label.split('_', 1)[-1], round(float(score) * 100, 1))
@@ -129,7 +109,7 @@ class BirdDetectionModel(ABC):
         scores = np.where(scores >= cutoff, scores, 0)
 
         # Build results dict, filter zeros, sort descending
-        results_dict = dict(zip(labels, scores, strict=False))
+        results_dict = dict(zip(labels, scores, strict=True))
         results_dict = {k: v for k, v in results_dict.items() if v != 0}
         return sorted(results_dict.items(), key=lambda x: x[1], reverse=True)
 

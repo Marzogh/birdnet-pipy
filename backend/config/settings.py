@@ -55,6 +55,7 @@ DEFAULT_SETTINGS = {
         "every_detection": False,
         "rate_limit_seconds": 300,
         "first_of_day": False,
+        "new_species": False,
         "rare_species": False,
         "rare_threshold": 3,
         "rare_window_days": 7
@@ -84,9 +85,15 @@ def load_user_settings():
                 for key in defaults:
                     if key in user_data:
                         if isinstance(defaults[key], dict):
-                            defaults[key].update(user_data[key])
+                            if isinstance(user_data[key], dict):
+                                defaults[key].update(user_data[key])
+                            else:
+                                print(f"Settings: ignoring non-dict value for '{key}' (expected dict)")
                         else:
-                            defaults[key] = user_data[key]
+                            if isinstance(user_data[key], type(defaults[key])):
+                                defaults[key] = user_data[key]
+                            else:
+                                print(f"Settings: ignoring '{key}' with type {type(user_data[key]).__name__} (expected {type(defaults[key]).__name__})")
 
                 return defaults
         except Exception as e:

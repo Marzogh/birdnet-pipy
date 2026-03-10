@@ -109,7 +109,7 @@ def classify_setting_changes(
     - component_restarts: in-process component restart/rebind needed
     - full_restart_paths: requires full service restart
     """
-    full_restart_exact = {"model.type", "location.timezone"}
+    full_restart_exact = {"model.type"}
     component_prefixes = ("audio.",)
     component_exact = {"birdweather.id", "location.latitude", "location.longitude", "location.configured"}
 

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from config.settings import DATABASE_PATH, DATABASE_SCHEMA
 from core.logging_config import get_logger
+from core.timezone_service import local_now
 from core.utils import build_detection_filenames
 
 
@@ -231,7 +232,7 @@ class DatabaseManager:
         if date:
             start_of_day = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
         else:
-            start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            start_of_day = local_now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         end_of_day = start_of_day + timedelta(days=1)
 
@@ -257,7 +258,7 @@ class DatabaseManager:
         if date:
             start_of_day = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
         else:
-            start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            start_of_day = local_now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         end_of_day = start_of_day + timedelta(days=1)
 
@@ -307,7 +308,7 @@ class DatabaseManager:
         if date:
             start_of_day = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
         else:
-            start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            start_of_day = local_now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         end_of_day = start_of_day + timedelta(days=1)
 
@@ -358,7 +359,7 @@ class DatabaseManager:
         else:
             start_date = start_date.isoformat()
 
-        end_date = datetime.now().isoformat()
+        end_date = local_now().isoformat()
 
         with self.get_db_connection() as conn:
             cur = conn.cursor()
@@ -1181,6 +1182,32 @@ class DatabaseManager:
             cur.execute(query, (scientific_name, day_start, before_timestamp))
             return cur.fetchone()['count']
 
+    def get_species_total_count(self, scientific_name, before_timestamp):
+        """Count detections of a species up to (and including) the given timestamp.
+
+        Returns at most 2 — the caller only needs to know if the count is
+        exactly 1 (new species) vs more, so we LIMIT 2 to avoid scanning
+        all historical detections for common species.
+
+        Args:
+            scientific_name: Species scientific name
+            before_timestamp: ISO timestamp string — upper bound for the query
+
+        Returns:
+            int: 0, 1, or 2
+        """
+        query = """
+        SELECT COUNT(*) as count FROM (
+            SELECT 1 FROM detections
+            WHERE scientific_name = ? AND timestamp <= ?
+            LIMIT 2
+        )
+        """
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, (scientific_name, before_timestamp))
+            return cur.fetchone()['count']
+
     def get_recent_detection_count(self, scientific_name, days=7, before_timestamp=None):
         """Count detections of a species within a recent window.
 
@@ -1193,7 +1220,7 @@ class DatabaseManager:
             int: Number of detections in the window for this species
         """
         if before_timestamp is None:
-            before_timestamp = datetime.now().isoformat()
+            before_timestamp = local_now().isoformat()
         cutoff = (datetime.fromisoformat(before_timestamp) - timedelta(days=days)).isoformat()
         query = """
         SELECT COUNT(*) as count FROM detections

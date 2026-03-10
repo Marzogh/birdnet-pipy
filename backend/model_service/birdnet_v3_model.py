@@ -77,7 +77,6 @@ class BirdNetV3Model(BirdDetectionModel):
             self._download_model()
         self._load_session()
         self._load_labels()
-        self.load_ebird_codes()
 
     def predict(
         self,
@@ -102,6 +101,8 @@ class BirdNetV3Model(BirdDetectionModel):
         probs = outputs[1][0].astype(np.float32)
 
         # Apply sensitivity scaling: probs^(1/sensitivity)
+        if sensitivity <= 0:
+            raise ValueError(f"Sensitivity must be positive, got {sensitivity}")
         probs = np.power(np.clip(probs, 1e-7, 1.0), 1.0 / sensitivity)
 
         # Shared post-processing: log, cutoff, filter, sort

@@ -1,6 +1,5 @@
 """Simple API tests that demonstrate working patterns."""
 
-import csv
 import json
 import os
 import tempfile
@@ -767,19 +766,18 @@ class TestSimpleAPI:
     def test_available_species_v24(self):
         """Test /api/species/available returns V2.4 species when model type is 'birdnet'."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a V2.4-style labels file
-            labels_file = os.path.join(tmpdir, 'labels.txt')
-            with open(labels_file, 'w') as f:
-                f.write('Turdus migratorius_American Robin\n')
-                f.write('Cyanocitta cristata_Blue Jay\n')
-                f.write('Cardinalis cardinalis_Northern Cardinal\n')
+            fake_species = [
+                {'scientific_name': 'Cyanocitta cristata', 'common_name': 'Blue Jay'},
+                {'scientific_name': 'Cardinalis cardinalis', 'common_name': 'Northern Cardinal'},
+                {'scientific_name': 'Turdus migratorius', 'common_name': 'American Robin'},
+            ]
 
             with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.db.DatabaseManager'), \
                  patch('core.api.load_user_settings', return_value={'model': {'type': 'birdnet'}}), \
-                 patch('core.api.LABELS_PATH', labels_file), \
+                 patch('core.api.get_species_list', return_value=fake_species), \
                  patch('core.api._available_species_cache', {}):
 
                 from core.api import create_app
@@ -797,19 +795,12 @@ class TestSimpleAPI:
     def test_available_species_v24_localized_display_names(self):
         """Test /api/species/available adds localized display names for V2.4."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            labels_dir = os.path.join(tmpdir, 'labels')
-            os.makedirs(labels_dir)
-
-            labels_en = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_en.txt')
-            labels_de = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_de.txt')
-
-            with open(labels_en, 'w', encoding='utf-8') as f:
-                f.write('Turdus migratorius_American Robin\n')
-                f.write('Cyanocitta cristata_Blue Jay\n')
-
-            with open(labels_de, 'w', encoding='utf-8') as f:
-                f.write('Turdus migratorius_Amsel\n')
-                f.write('Cyanocitta cristata_Blauhaeher\n')
+            # Use real species table data: Turdus migratorius → Wanderdrossel,
+            # Cyanocitta cristata → Blauhäher
+            fake_species = [
+                {'scientific_name': 'Cyanocitta cristata', 'common_name': 'Blue Jay'},
+                {'scientific_name': 'Turdus migratorius', 'common_name': 'American Robin'},
+            ]
 
             with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
@@ -819,8 +810,7 @@ class TestSimpleAPI:
                      'model': {'type': 'birdnet'},
                      'display': {'bird_name_language': 'de'}
                  }), \
-                 patch('core.api.LABELS_PATH', labels_en), \
-                 patch('core.bird_name_utils.LABELS_PATH', labels_en), \
+                 patch('core.api.get_species_list', return_value=fake_species), \
                  patch('core.api._available_species_cache', {}):
 
                 from core.api import create_app
@@ -833,32 +823,21 @@ class TestSimpleAPI:
                 assert response.status_code == 200
                 data = response.get_json()
                 assert data['total'] == 2
-                assert data['species'][0]['display_common_name'] == 'Amsel'
-                assert data['species'][1]['display_common_name'] == 'Blauhaeher'
+                # Sorted by localized name: Blauhäher < Wanderdrossel
+                assert data['species'][0]['display_common_name'] == 'Blauhäher'
+                assert data['species'][1]['display_common_name'] == 'Wanderdrossel'
 
     def test_activity_overview_localized_display_species(self):
         """Test /api/activity/overview adds localized display labels for charting."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            labels_dir = os.path.join(tmpdir, 'labels')
-            os.makedirs(labels_dir)
-
-            labels_en = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_en.txt')
-            labels_de = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_de.txt')
-
-            with open(labels_en, 'w', encoding='utf-8') as f:
-                f.write('Turdus migratorius_American Robin\n')
-
-            with open(labels_de, 'w', encoding='utf-8') as f:
-                f.write('Turdus migratorius_Amsel\n')
-
+            # Uses real species table: American Robin → Wanderdrossel in German
             with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.api.load_user_settings', return_value={
                      'model': {'type': 'birdnet'},
                      'display': {'bird_name_language': 'de'}
-                 }), \
-                 patch('core.bird_name_utils.LABELS_PATH', labels_en):
+                 }):
 
                 mock_db_instance = Mock()
                 mock_db_instance.get_activity_overview.return_value = [{
@@ -879,27 +858,24 @@ class TestSimpleAPI:
                 assert response.status_code == 200
                 data = response.get_json()
                 assert data[0]['species'] == 'American Robin'
-                assert data[0]['displaySpecies'] == 'Amsel'
+                assert data[0]['displaySpecies'] == 'Wanderdrossel'
 
     def test_available_species_v3(self):
         """Test /api/species/available returns V3.0 species when model type is 'birdnet_v3'."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a V3.0-style labels CSV (semicolon-delimited with BOM)
-            labels_csv = os.path.join(tmpdir, 'labels_v3.csv')
-            with open(labels_csv, 'w', encoding='utf-8-sig', newline='') as f:
-                writer = csv.writer(f, delimiter=';')
-                writer.writerow(['idx', 'id', 'sci_name', 'com_name', 'class', 'order'])
-                writer.writerow(['0', 'turdmig1', 'Turdus migratorius', 'American Robin', 'Aves', 'Passeriformes'])
-                writer.writerow(['1', 'cyacri1', 'Cyanocitta cristata', 'Blue Jay', 'Aves', 'Passeriformes'])
-                writer.writerow(['2', 'carcar3', 'Cardinalis cardinalis', 'Northern Cardinal', 'Aves', 'Passeriformes'])
-                writer.writerow(['3', 'passer1', 'Passer domesticus', 'House Sparrow', 'Aves', 'Passeriformes'])
+            fake_species = [
+                {'scientific_name': 'Turdus migratorius', 'common_name': 'American Robin'},
+                {'scientific_name': 'Cyanocitta cristata', 'common_name': 'Blue Jay'},
+                {'scientific_name': 'Cardinalis cardinalis', 'common_name': 'Northern Cardinal'},
+                {'scientific_name': 'Passer domesticus', 'common_name': 'House Sparrow'},
+            ]
 
             with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.db.DatabaseManager'), \
                  patch('core.api.load_user_settings', return_value={'model': {'type': 'birdnet_v3'}}), \
-                 patch('core.api.LABELS_V3_PATH', labels_csv), \
+                 patch('core.api.get_species_list', return_value=fake_species), \
                  patch('core.api._available_species_cache', {}):
 
                 from core.api import create_app

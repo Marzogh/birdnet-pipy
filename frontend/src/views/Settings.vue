@@ -653,6 +653,20 @@
           />
         </div>
 
+        <!-- Trigger: New Species -->
+        <div class="flex items-center justify-between py-2 border-t border-gray-100">
+          <div>
+            <label class="text-sm text-gray-600">New Species</label>
+            <p class="text-xs text-gray-400">
+              Species never seen before
+            </p>
+          </div>
+          <ToggleSwitch
+            :model-value="settings.notifications.new_species"
+            @update:model-value="toggleNotificationSetting('new_species')"
+          />
+        </div>
+
         <!-- Trigger: Rare Species -->
         <div class="flex items-center justify-between py-2 border-t border-gray-100">
           <div>

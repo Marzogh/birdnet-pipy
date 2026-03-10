@@ -249,64 +249,51 @@ class TestDetectionsAPI:
 
     def test_get_detections_sort_by_localized_display_name(self, api_client, real_db_manager):
         """Test species sorting follows the localized display name when configured."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            labels_dir = os.path.join(tmpdir, 'labels')
-            os.makedirs(labels_dir)
+        # Real German translations: Blauhäher (Blue Jay), Wanderdrossel (American Robin)
+        # Alphabetically: Blauhäher < Wanderdrossel
+        real_db_manager.insert_detection({
+            'timestamp': '2024-01-15T10:30:00',
+            'group_timestamp': '2024-01-15T10:30:00',
+            'common_name': 'American Robin',
+            'scientific_name': 'Turdus migratorius',
+            'confidence': 0.85,
+            'latitude': 40.7128,
+            'longitude': -74.0060,
+            'cutoff': 0.5,
+            'sensitivity': 0.75,
+            'overlap': 0.25
+        })
+        real_db_manager.insert_detection({
+            'timestamp': '2024-01-15T10:31:00',
+            'group_timestamp': '2024-01-15T10:31:00',
+            'common_name': 'Blue Jay',
+            'scientific_name': 'Cyanocitta cristata',
+            'confidence': 0.90,
+            'latitude': 40.7128,
+            'longitude': -74.0060,
+            'cutoff': 0.5,
+            'sensitivity': 0.75,
+            'overlap': 0.25
+        })
 
-            labels_en = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_en.txt')
-            labels_de = os.path.join(labels_dir, 'BirdNET_GLOBAL_6K_V2.4_Labels_de.txt')
+        from core.bird_name_utils import clear_bird_name_caches
 
-            with open(labels_en, 'w', encoding='utf-8') as f:
-                f.write('Turdus migratorius_American Robin\n')
-                f.write('Cyanocitta cristata_Blue Jay\n')
+        clear_bird_name_caches()
+        try:
+            with patch('core.api.load_user_settings', return_value={
+                'model': {'type': 'birdnet'},
+                'display': {'bird_name_language': 'de'}
+            }):
+                response = api_client.get('/api/detections?sort=common_name&order=asc')
 
-            with open(labels_de, 'w', encoding='utf-8') as f:
-                f.write('Turdus migratorius_Zzz Robin\n')
-                f.write('Cyanocitta cristata_Aaa Jay\n')
+            assert response.status_code == 200
+            data = response.get_json()
+            detections = data['detections']
 
-            real_db_manager.insert_detection({
-                'timestamp': '2024-01-15T10:30:00',
-                'group_timestamp': '2024-01-15T10:30:00',
-                'common_name': 'American Robin',
-                'scientific_name': 'Turdus migratorius',
-                'confidence': 0.85,
-                'latitude': 40.7128,
-                'longitude': -74.0060,
-                'cutoff': 0.5,
-                'sensitivity': 0.75,
-                'overlap': 0.25
-            })
-            real_db_manager.insert_detection({
-                'timestamp': '2024-01-15T10:31:00',
-                'group_timestamp': '2024-01-15T10:31:00',
-                'common_name': 'Blue Jay',
-                'scientific_name': 'Cyanocitta cristata',
-                'confidence': 0.90,
-                'latitude': 40.7128,
-                'longitude': -74.0060,
-                'cutoff': 0.5,
-                'sensitivity': 0.75,
-                'overlap': 0.25
-            })
-
-            from core.bird_name_utils import clear_bird_name_caches
-
+            assert [d['display_common_name'] for d in detections] == ['Blauhäher', 'Wanderdrossel']
+            assert [d['common_name'] for d in detections] == ['Blue Jay', 'American Robin']
+        finally:
             clear_bird_name_caches()
-            try:
-                with patch('core.api.load_user_settings', return_value={
-                    'model': {'type': 'birdnet'},
-                    'display': {'bird_name_language': 'de'}
-                }), patch('core.bird_name_utils.LABELS_PATH', labels_en):
-                    response = api_client.get('/api/detections?sort=common_name&order=asc')
-
-                assert response.status_code == 200
-                data = response.get_json()
-                detections = data['detections']
-
-                assert [d['display_common_name'] for d in detections] == ['Aaa Jay', 'Zzz Robin']
-                assert [d['common_name'] for d in detections] == ['Blue Jay', 'American Robin']
-            finally:
-                clear_bird_name_caches()
 
     def test_get_detections_invalid_date_format(self, api_client, real_db_manager):
         """Test that invalid date format returns 400."""

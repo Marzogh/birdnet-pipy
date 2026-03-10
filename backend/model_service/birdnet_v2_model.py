@@ -20,6 +20,8 @@ SPECIES_FILTER_THRESHOLD = 0.03
 
 def custom_sigmoid(x: np.ndarray, sensitivity: float) -> np.ndarray:
     """Apply custom sigmoid with adjustable sensitivity."""
+    if sensitivity <= 0:
+        raise ValueError(f"Sensitivity must be positive, got {sensitivity}")
     return 1 / (1.0 + np.exp(-sensitivity * x))
 
 
@@ -86,7 +88,6 @@ class BirdNetModel(BirdDetectionModel):
         self._load_model()
         self._load_meta_model()
         self._load_labels()
-        self.load_ebird_codes()
 
     def predict(
         self,
@@ -163,7 +164,7 @@ class BirdNetModel(BirdDetectionModel):
 
         meta_model_output = np.where(
             meta_model_output >= SPECIES_FILTER_THRESHOLD, meta_model_output, 0)
-        species_with_probs = list(zip(meta_model_output, self._labels, strict=False))
+        species_with_probs = list(zip(meta_model_output, self._labels, strict=True))
         species_with_probs = sorted(species_with_probs, key=lambda x: x[0], reverse=True)
 
         for prob, species_label in species_with_probs:

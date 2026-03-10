@@ -36,8 +36,6 @@ from config.settings import (
     DEFAULT_AUDIO_PATH,
     DEFAULT_IMAGE_PATH,
     EXTRACTED_AUDIO_DIR,
-    LABELS_PATH,
-    LABELS_V3_PATH,
     MODEL_TYPE,
     SPECTROGRAM_DIR,
     get_default_settings,
@@ -105,7 +103,8 @@ from core.runtime_config import (
     invalidate_runtime_settings_cache,
 )
 from core.storage_manager import delete_detection_files
-from model_service.label_utils import parse_v2_labels, parse_v3_labels
+from core.timezone_service import get_timezone_str, local_now
+from model_service.label_utils import get_species_list
 from version import DISPLAY_NAME, __version__
 
 # Setup logging
@@ -190,6 +189,7 @@ def require_internal(f):
 
 # Simple in-memory cache
 image_cache = {}
+_image_cache_lock = threading.Lock()
 CACHE_EXPIRATION = 172800  # Cache expiration time in seconds (48 hours)
 MAX_CACHE_SIZE = 1000  # Maximum number of cached entries
 
@@ -229,7 +229,7 @@ def _cache_and_return_update_result(result, cache_key, now):
 
 
 def _cleanup_expired_cache():
-    """Remove expired entries from image cache."""
+    """Remove expired entries from image cache. Caller must hold _image_cache_lock."""
     current_time = time.time()
     expired_keys = [
         key for key, value in image_cache.items()
@@ -244,30 +244,32 @@ def _cleanup_expired_cache():
 
 
 def get_cached_image(species_name):
-    if species_name in image_cache:
-        cached_data = image_cache[species_name]
-        if time.time() - cached_data['timestamp'] < CACHE_EXPIRATION:
-            logger.debug("Image cache hit", extra={
-                'species': species_name,
-                'age_seconds': int(time.time() - cached_data['timestamp'])
-            })
-            return cached_data['data']
+    with _image_cache_lock:
+        if species_name in image_cache:
+            cached_data = image_cache[species_name]
+            if time.time() - cached_data['timestamp'] < CACHE_EXPIRATION:
+                logger.debug("Image cache hit", extra={
+                    'species': species_name,
+                    'age_seconds': int(time.time() - cached_data['timestamp'])
+                })
+                return cached_data['data']
     return None
 
 
 def set_cached_image(species_name, data):
-    # Periodically clean up expired entries when adding new ones
-    if len(image_cache) >= MAX_CACHE_SIZE:
-        _cleanup_expired_cache()
-        # If still at max after cleanup, remove oldest entry
+    with _image_cache_lock:
+        # Periodically clean up expired entries when adding new ones
         if len(image_cache) >= MAX_CACHE_SIZE:
-            oldest_key = min(image_cache, key=lambda k: image_cache[k]['timestamp'])
-            del image_cache[oldest_key]
+            _cleanup_expired_cache()
+            # If still at max after cleanup, remove oldest entry
+            if len(image_cache) >= MAX_CACHE_SIZE:
+                oldest_key = min(image_cache, key=lambda k: image_cache[k]['timestamp'])
+                del image_cache[oldest_key]
 
-    image_cache[species_name] = {
-        'data': data,
-        'timestamp': time.time()
-    }
+        image_cache[species_name] = {
+            'data': data,
+            'timestamp': time.time()
+        }
 
 ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -446,18 +448,19 @@ def get_recent_observations():
 @log_api_request
 @handle_api_errors
 def get_observation_summary():
+    now = local_now()
     settings = load_user_settings()
     summary = {
         'today': _localize_summary(
-            db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
+            db_manager.get_summary_stats(now.replace(hour=0, minute=0, second=0, microsecond=0)),
             settings=settings,
         ),
         'week': _localize_summary(
-            db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
+            db_manager.get_summary_stats(now - timedelta(weeks=1)),
             settings=settings,
         ),
         'month': _localize_summary(
-            db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
+            db_manager.get_summary_stats(now - timedelta(days=30)),
             settings=settings,
         ),
         'allTime': _localize_summary(db_manager.get_summary_stats(), settings=settings)
@@ -474,7 +477,7 @@ def get_observation_summary():
 @validate_date_param()
 @handle_api_errors
 def get_hourly_activity():
-    date = request.args.get('date', default=datetime.now().strftime('%Y-%m-%d'))
+    date = request.args.get('date', default=local_now().strftime('%Y-%m-%d'))
     activity = db_manager.get_hourly_activity(date)
     log_data_metrics('get_hourly_activity', activity, {
         'date': date,
@@ -488,7 +491,7 @@ def get_hourly_activity():
 @validate_date_param()
 @handle_api_errors
 def get_activity_overview():
-    date = request.args.get('date', default=datetime.now().strftime('%Y-%m-%d'))
+    date = request.args.get('date', default=local_now().strftime('%Y-%m-%d'))
     order = request.args.get('order', default='most')
     if order not in ('most', 'least'):
         order = 'most'
@@ -506,7 +509,8 @@ def get_activity_overview():
 @handle_api_errors
 def get_dashboard():
     """Consolidated dashboard endpoint — all DB data in one request."""
-    today = datetime.now().strftime('%Y-%m-%d')
+    now = local_now()
+    today = now.strftime('%Y-%m-%d')
     settings = load_user_settings()
 
     recent_all = db_manager.get_latest_detections(7)
@@ -517,15 +521,15 @@ def get_dashboard():
 
     summary = {
         'today': _localize_summary(
-            db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
+            db_manager.get_summary_stats(now.replace(hour=0, minute=0, second=0, microsecond=0)),
             settings=settings,
         ),
         'week': _localize_summary(
-            db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
+            db_manager.get_summary_stats(now - timedelta(weeks=1)),
             settings=settings,
         ),
         'month': _localize_summary(
-            db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
+            db_manager.get_summary_stats(now - timedelta(days=30)),
             settings=settings,
         ),
         'allTime': _localize_summary(db_manager.get_summary_stats(), settings=settings)
@@ -703,7 +707,7 @@ def get_bird_recordings(species_name):
 @handle_api_errors
 def get_detection_distribution(species_name):
     view = request.args.get('view', 'month')
-    date = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+    date = request.args.get('date', local_now().strftime('%Y-%m-%d'))
     distribution = db_manager.get_detection_distribution(species_name, view, date)
     return jsonify(distribution)
 
@@ -914,7 +918,7 @@ def export_detections_csv():
         ])
 
     # Generate filename with timestamp
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = local_now().strftime('%Y%m%d_%H%M%S')
     filename = f'birdnet_detections_{timestamp}.csv'
 
     return Response(
@@ -1024,15 +1028,9 @@ def delete_detections_batch():
 _available_species_cache = {}
 
 
-def _get_configured_model_type(settings=None) -> str:
-    settings_data = settings or load_user_settings()
-    return settings_data.get('model', {}).get('type', MODEL_TYPE)
-
-
 def _localize_detection(detection, settings=None):
     return add_display_common_name(
         detection,
-        model_type=_get_configured_model_type(settings),
         language=get_bird_name_language(settings),
         settings=settings,
     )
@@ -1056,7 +1054,6 @@ def _localize_summary(summary, settings=None):
         localized_summary[f'{key}Display'] = (
             get_localized_common_name_from_english(
                 bird_name,
-                model_type=_get_configured_model_type(settings),
                 language=get_bird_name_language(settings),
                 settings=settings,
             )
@@ -1082,45 +1079,22 @@ def _localize_activity_items(items, settings=None):
 
 
 def load_available_species():
-    """Load all available species from the BirdNET model labels file.
+    """Load all available species from the species table.
 
     Returns list of dicts with scientific_name and common_name.
-    Results are cached per model type since the labels file doesn't change at runtime.
+    Results are cached per model type since the species table doesn't change at runtime.
     """
-    model_type = _get_configured_model_type()
+    model_type = load_user_settings().get('model', {}).get('type', MODEL_TYPE)
 
     if model_type in _available_species_cache:
         return _available_species_cache[model_type]
 
-    species_list = []
-    try:
-        if model_type == 'birdnet_v3':
-            # V3.0: semicolon-delimited CSV with BOM
-            species_list = [
-                {'scientific_name': sci, 'common_name': com}
-                for sci, com in parse_v3_labels(LABELS_V3_PATH)
-            ]
-            labels_path = LABELS_V3_PATH
-        else:
-            species_list = [
-                {'scientific_name': sci, 'common_name': com}
-                for sci, com in parse_v2_labels(LABELS_PATH)
-            ]
-            labels_path = LABELS_PATH
-
-        # Sort by common name for easier browsing
-        species_list.sort(key=lambda x: x['common_name'])
-        _available_species_cache[model_type] = species_list
-        logger.info("Loaded available species from labels", extra={
-            'count': len(species_list),
-            'model_type': model_type
-        })
-    except Exception as e:
-        logger.error("Failed to load species labels", extra={
-            'error': str(e),
-            'path': labels_path if 'labels_path' in dir() else model_type
-        })
-
+    species_list = get_species_list(model_type)
+    _available_species_cache[model_type] = species_list
+    logger.info("Loaded available species", extra={
+        'count': len(species_list),
+        'model_type': model_type,
+    })
     return species_list
 
 
@@ -1243,7 +1217,7 @@ def write_flag(flag_name, content=None):
     os.makedirs(flag_dir, exist_ok=True)
     flag_file = os.path.join(flag_dir, flag_name)
     with open(flag_file, 'w') as f:
-        f.write(content if content else datetime.now().isoformat())
+        f.write(content if content else local_now().isoformat())
     logger.debug("Flag file written", extra={
         'flag': flag_name,
         'content': content,
@@ -1433,7 +1407,7 @@ def should_show_update_note(current_commit, note_data):
 
 VALID_NOTIFICATION_FIELDS = {
     'apprise_urls', 'every_detection', 'rate_limit_seconds',
-    'first_of_day', 'rare_species', 'rare_threshold', 'rare_window_days'
+    'first_of_day', 'new_species', 'rare_species', 'rare_threshold', 'rare_window_days'
 }
 
 def _validate_notification_settings(notif):
@@ -1446,7 +1420,7 @@ def _validate_notification_settings(notif):
     unknown = set(notif.keys()) - VALID_NOTIFICATION_FIELDS
     if unknown:
         return f'Unknown notification fields: {", ".join(sorted(unknown))}'
-    for bool_field in ('every_detection', 'first_of_day', 'rare_species'):
+    for bool_field in ('every_detection', 'first_of_day', 'new_species', 'rare_species'):
         if bool_field in notif and not isinstance(notif[bool_field], bool):
             return f'notifications.{bool_field} must be a boolean'
     if 'apprise_urls' in notif:
@@ -3002,7 +2976,7 @@ if __name__ == '__main__':
     logger.info("🌐 API server starting", extra={
         'port': API_PORT,
         'websocket': 'enabled',
-        'timezone': os.environ.get('TZ', 'UTC')
+        'timezone': get_timezone_str()
     })
     app, socketio = create_app()
     socketio.run(app, host='0.0.0.0', port=API_PORT, debug=False, allow_unsafe_werkzeug=True)

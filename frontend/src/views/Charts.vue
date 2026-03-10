@@ -546,11 +546,16 @@ export default {
             return selectedDate.value < maxDate.value
         })
 
+        const BASE_SPECIES_COUNT = 10
+        const BASE_CHART_HEIGHT = 375
+        const CHART_OVERHEAD = 80  // title, axis labels, padding
+        const ROW_HEIGHT = (BASE_CHART_HEIGHT - CHART_OVERHEAD) / BASE_SPECIES_COUNT
+
         const activityChartHeight = computed(() => {
             const speciesCount = limitedBirdActivityData.value.length
-            const rowHeight = 35
-            const baseHeight = 375
-            const height = speciesCount <= 10 ? baseHeight : speciesCount * rowHeight + 100
+            const height = speciesCount <= BASE_SPECIES_COUNT
+                ? BASE_CHART_HEIGHT
+                : speciesCount * ROW_HEIGHT + CHART_OVERHEAD
             return `${height}px`
         })
 

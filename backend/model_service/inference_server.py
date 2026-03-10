@@ -23,6 +23,7 @@ from scipy.io import wavfile
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logging_config import get_logger, log_execution_time, setup_logging
 from core.runtime_config import get_runtime_settings
+from core.timezone_service import get_timezone_str, local_now
 from core.utils import build_detection_filenames
 
 from .base_model import BirdDetectionModel
@@ -435,6 +436,10 @@ def analyze_audio_file():
     start_time = time.time()
     try:
         data = request.json
+        if not data or not isinstance(data, dict):
+            return jsonify({"error": "Invalid or missing JSON payload"}), 400
+        if 'audio_file_path' not in data:
+            return jsonify({"error": "Missing required field: audio_file_path"}), 400
         audio_file_path = data['audio_file_path']
 
         # Validate path is within allowed directory (prevent path traversal)
@@ -454,7 +459,7 @@ def analyze_audio_file():
             })
             return jsonify({"error": f"File not found: {audio_file_path}"}), 404
 
-        week = datetime.datetime.now().isocalendar()[1]
+        week = local_now().isocalendar()[1]
 
         # Get current analysis settings from runtime config
         runtime_settings = get_runtime_settings()
@@ -525,6 +530,6 @@ if __name__ == '__main__':
         'port': settings.BIRDNET_SERVICE_PORT,
         'model': model.name,
         'model_version': model.version,
-        'timezone': os.environ.get('TZ', 'UTC')
+        'timezone': get_timezone_str()
     })
     app.run(host='0.0.0.0', debug=False, port=settings.BIRDNET_SERVICE_PORT)
