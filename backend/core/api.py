@@ -103,7 +103,6 @@ from core.runtime_config import (
     invalidate_runtime_settings_cache,
 )
 from core.storage_manager import delete_detection_files
-from core.timezone_service import get_timezone_str, local_now
 from model_service.label_utils import get_species_list
 from version import DISPLAY_NAME, __version__
 
@@ -448,19 +447,18 @@ def get_recent_observations():
 @log_api_request
 @handle_api_errors
 def get_observation_summary():
-    now = local_now()
     settings = load_user_settings()
     summary = {
         'today': _localize_summary(
-            db_manager.get_summary_stats(now.replace(hour=0, minute=0, second=0, microsecond=0)),
+            db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
             settings=settings,
         ),
         'week': _localize_summary(
-            db_manager.get_summary_stats(now - timedelta(weeks=1)),
+            db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
             settings=settings,
         ),
         'month': _localize_summary(
-            db_manager.get_summary_stats(now - timedelta(days=30)),
+            db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
             settings=settings,
         ),
         'allTime': _localize_summary(db_manager.get_summary_stats(), settings=settings)
@@ -477,7 +475,7 @@ def get_observation_summary():
 @validate_date_param()
 @handle_api_errors
 def get_hourly_activity():
-    date = request.args.get('date', default=local_now().strftime('%Y-%m-%d'))
+    date = request.args.get('date', default=datetime.now().strftime('%Y-%m-%d'))
     activity = db_manager.get_hourly_activity(date)
     log_data_metrics('get_hourly_activity', activity, {
         'date': date,
@@ -491,7 +489,7 @@ def get_hourly_activity():
 @validate_date_param()
 @handle_api_errors
 def get_activity_overview():
-    date = request.args.get('date', default=local_now().strftime('%Y-%m-%d'))
+    date = request.args.get('date', default=datetime.now().strftime('%Y-%m-%d'))
     order = request.args.get('order', default='most')
     if order not in ('most', 'least'):
         order = 'most'
@@ -509,8 +507,7 @@ def get_activity_overview():
 @handle_api_errors
 def get_dashboard():
     """Consolidated dashboard endpoint — all DB data in one request."""
-    now = local_now()
-    today = now.strftime('%Y-%m-%d')
+    today = datetime.now().strftime('%Y-%m-%d')
     settings = load_user_settings()
 
     recent_all = db_manager.get_latest_detections(7)
@@ -521,15 +518,15 @@ def get_dashboard():
 
     summary = {
         'today': _localize_summary(
-            db_manager.get_summary_stats(now.replace(hour=0, minute=0, second=0, microsecond=0)),
+            db_manager.get_summary_stats(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
             settings=settings,
         ),
         'week': _localize_summary(
-            db_manager.get_summary_stats(now - timedelta(weeks=1)),
+            db_manager.get_summary_stats(datetime.now() - timedelta(weeks=1)),
             settings=settings,
         ),
         'month': _localize_summary(
-            db_manager.get_summary_stats(now - timedelta(days=30)),
+            db_manager.get_summary_stats(datetime.now() - timedelta(days=30)),
             settings=settings,
         ),
         'allTime': _localize_summary(db_manager.get_summary_stats(), settings=settings)
@@ -707,7 +704,7 @@ def get_bird_recordings(species_name):
 @handle_api_errors
 def get_detection_distribution(species_name):
     view = request.args.get('view', 'month')
-    date = request.args.get('date', local_now().strftime('%Y-%m-%d'))
+    date = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
     distribution = db_manager.get_detection_distribution(species_name, view, date)
     return jsonify(distribution)
 
@@ -918,7 +915,7 @@ def export_detections_csv():
         ])
 
     # Generate filename with timestamp
-    timestamp = local_now().strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = f'birdnet_detections_{timestamp}.csv'
 
     return Response(
@@ -1217,7 +1214,7 @@ def write_flag(flag_name, content=None):
     os.makedirs(flag_dir, exist_ok=True)
     flag_file = os.path.join(flag_dir, flag_name)
     with open(flag_file, 'w') as f:
-        f.write(content if content else local_now().isoformat())
+        f.write(content if content else datetime.now().isoformat())
     logger.debug("Flag file written", extra={
         'flag': flag_name,
         'content': content,
@@ -2976,7 +2973,7 @@ if __name__ == '__main__':
     logger.info("🌐 API server starting", extra={
         'port': API_PORT,
         'websocket': 'enabled',
-        'timezone': get_timezone_str()
+        'timezone': os.environ.get('TZ', 'UTC')
     })
     app, socketio = create_app()
     socketio.run(app, host='0.0.0.0', port=API_PORT, debug=False, allow_unsafe_werkzeug=True)

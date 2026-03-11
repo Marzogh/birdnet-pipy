@@ -15,9 +15,9 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from config.constants import VALID_RECORDING_MODES, RecordingMode
-from core.timezone_service import local_now
 from core.utils import sanitize_url
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ class BaseRecorder(ABC):
             Path to recorded file if successful, None otherwise
         """
         # Generate timestamp-based filenames
-        timestamp = local_now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         temp_path = os.path.join(self.output_dir, f".{timestamp}.tmp.wav")
         final_path = os.path.join(self.output_dir, f"{timestamp}.wav")
 

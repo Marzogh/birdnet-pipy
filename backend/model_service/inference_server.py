@@ -23,7 +23,6 @@ from scipy.io import wavfile
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logging_config import get_logger, log_execution_time, setup_logging
 from core.runtime_config import get_runtime_settings
-from core.timezone_service import get_timezone_str, local_now
 from core.utils import build_detection_filenames
 
 from .base_model import BirdDetectionModel
@@ -459,7 +458,7 @@ def analyze_audio_file():
             })
             return jsonify({"error": f"File not found: {audio_file_path}"}), 404
 
-        week = local_now().isocalendar()[1]
+        week = datetime.datetime.now().isocalendar()[1]
 
         # Get current analysis settings from runtime config
         runtime_settings = get_runtime_settings()
@@ -530,6 +529,6 @@ if __name__ == '__main__':
         'port': settings.BIRDNET_SERVICE_PORT,
         'model': model.name,
         'model_version': model.version,
-        'timezone': get_timezone_str()
+        'timezone': os.environ.get('TZ', 'UTC')
     })
     app.run(host='0.0.0.0', debug=False, port=settings.BIRDNET_SERVICE_PORT)

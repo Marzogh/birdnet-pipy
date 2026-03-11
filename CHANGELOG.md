@@ -5,7 +5,6 @@
 - Added "new species" notification trigger — alerts when a species is detected that has never been seen before
 - Added unified species lookup table merging V2.4 labels (27 languages), V3.0 taxonomy, and eBird codes — enables localized bird names for V3.0 (~6K overlapping species)
 - Added unique species toggle (All/Unique) to Dashboard recent observations — both lists fetched in a single API call for instant switching
-- Changed timezone handling to read from config instead of the TZ environment variable — timezone changes now take effect without a container restart
 - Fixed consistent row height in Bird Activity Overview when species limit exceeds 10
 - Fixed unique species query returning too few results when one species dominates recent detections — falls back to unbounded query when pre-fetch window is insufficient
 - Fixed user toggle selections (activity overview, recent observations) resetting during in-flight dashboard fetches

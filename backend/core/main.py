@@ -38,7 +38,6 @@ from core.logging_config import get_logger, setup_logging
 from core.notification_service import get_notification_service
 from core.runtime_config import get_runtime_settings
 from core.storage_manager import storage_monitor_loop
-from core.timezone_service import get_timezone_str
 from core.utils import (
     convert_wav_to_mp3,
     generate_spectrogram,
@@ -635,7 +634,7 @@ if __name__ == "__main__":
         'recording_dir': RECORDING_DIR,
         'recording_length': startup_audio.get('recording_length', 9),
         'analysis_chunk_length': startup_audio.get('recording_chunk_length', 3),
-        'timezone': get_timezone_str()
+        'timezone': os.environ.get('TZ', 'UTC')
     })
 
     # Wait for location and timezone to be configured before starting detection.
