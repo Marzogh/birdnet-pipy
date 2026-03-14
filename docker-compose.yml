@@ -52,6 +52,10 @@ services:
         GID: ${GID:-1000}
     command: python -m core.main
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 16384
     volumes:
       - ./backend:/app
       - ./data:/app/data

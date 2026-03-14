@@ -11,6 +11,7 @@ All output mono WAV files at target sample rate (48kHz).
 
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -21,6 +22,161 @@ from config.constants import VALID_RECORDING_MODES, RecordingMode
 from core.utils import sanitize_url
 
 logger = logging.getLogger(__name__)
+
+# ffmpeg stderr prefixes to skip (boilerplate + redundant wrappers)
+_FFMPEG_SKIP_PREFIXES = (
+    # Build/version boilerplate
+    'ffmpeg version', 'built with', 'configuration:', 'lib',
+    'Copyright', 'the FFmpeg developers',
+    # Redundant wrapper lines ffmpeg emits after the real error
+    'Error opening input file',
+    'Error opening input files',
+)
+
+# Regex to strip memory addresses from ffmpeg component tags, e.g.
+# [rtsp @ 0x55564a562e00] → [rtsp]
+_FFMPEG_ADDR_RE = re.compile(r'\[(\w+)#?\d*\s*@\s*0x[0-9a-f]+\]')
+
+
+def _close_process_pipes(*procs: subprocess.Popen | None) -> None:
+    """Close all open pipes on the given subprocess(es) to prevent FD leaks."""
+    for proc in procs:
+        if proc is None:
+            continue
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            if pipe and not pipe.closed:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+
+def _parse_ffmpeg_error(stderr: str) -> str:
+    """Extract meaningful error lines from ffmpeg stderr.
+
+    ffmpeg stderr starts with version/build/library info before the
+    actual error.  Strip that boilerplate, memory addresses, and
+    redundant wrapper lines, returning only the useful part capped
+    at 500 characters.
+    """
+    if not stderr:
+        return 'No error output'
+    lines = []
+    for line in stderr.strip().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(_FFMPEG_SKIP_PREFIXES):
+            continue
+        # Strip verbose memory addresses for readability
+        stripped = _FFMPEG_ADDR_RE.sub(r'[\1]', stripped)
+        lines.append(stripped)
+    if not lines:
+        return 'No meaningful error output'
+    return '\n'.join(lines)[:500]
+
+
+def _summarize_stream_error(stderr: str) -> str:
+    """Extract a concise single-line error for stream test results.
+
+    Builds on _parse_ffmpeg_error but returns only the first meaningful
+    line, capped at 150 characters — suitable for inline UI display.
+    """
+    parsed = _parse_ffmpeg_error(stderr)
+    if parsed in ('No error output', 'No meaningful error output'):
+        return parsed
+    first_line = parsed.split('\n')[0]
+    if len(first_line) > 150:
+        return first_line[:147] + '...'
+    return first_line
+
+
+def test_stream_url(url: str, stream_type: str) -> tuple:
+    """Probe a stream URL to check if it's accessible.
+
+    Args:
+        url: The stream URL to test
+        stream_type: Either RecordingMode.HTTP_STREAM or RecordingMode.RTSP
+
+    Returns:
+        (success: bool, message: str)
+    """
+    # Validate URL format
+    if stream_type == RecordingMode.HTTP_STREAM:
+        if not url.startswith(('http://', 'https://')):
+            return (False, 'Invalid URL format: must start with http:// or https://')
+    elif stream_type == RecordingMode.RTSP:
+        if not url.startswith(('rtsp://', 'rtsps://')):
+            return (False, 'Invalid URL format: must start with rtsp:// or rtsps://')
+    else:
+        return (False, f'Invalid stream type: {stream_type}')
+
+    safe_url = sanitize_url(url)
+
+    try:
+        if stream_type == RecordingMode.HTTP_STREAM:
+            curl_proc = subprocess.Popen(
+                ['curl', '-s', '--max-time', '5', url],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            ffmpeg_proc = subprocess.Popen(
+                ['ffmpeg', '-i', 'pipe:0', '-t', '1', '-f', 'null', '-'],
+                stdin=curl_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Allow curl to receive SIGPIPE if ffmpeg exits
+            curl_proc.stdout.close()
+            try:
+                _, stderr = ffmpeg_proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                ffmpeg_proc.kill()
+                curl_proc.kill()
+                ffmpeg_proc.wait()
+                curl_proc.wait()
+                return (False, 'Connection timed out')
+            finally:
+                _close_process_pipes(curl_proc, ffmpeg_proc)
+
+            # Clean up curl (may already have exited — terminate is safe on dead processes)
+            curl_proc.terminate()
+            try:
+                curl_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                curl_proc.kill()
+                curl_proc.wait()
+
+            if ffmpeg_proc.returncode == 0:
+                return (True, 'Stream is accessible')
+            error_msg = _summarize_stream_error(stderr.decode(errors='replace'))
+            return (False, f'Stream probe failed: {error_msg}')
+
+        else:  # rtsp
+            result = subprocess.run(
+                [
+                    'ffmpeg',
+                    '-rtsp_transport', 'tcp',
+                    '-timeout', '5000000',
+                    '-allowed_media_types', 'audio',
+                    '-fflags', '+genpts+discardcorrupt',
+                    '-use_wallclock_as_timestamps', '1',
+                    '-i', url,
+                    '-t', '1',
+                    '-f', 'null', '-',
+                ],
+                timeout=10,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return (True, 'Stream is accessible')
+            error_msg = _summarize_stream_error(result.stderr)
+            return (False, f'Stream probe failed: {error_msg}')
+
+    except subprocess.TimeoutExpired:
+        return (False, 'Connection timed out')
+    except Exception as e:
+        logger.error('Stream test error', extra={'error': str(e), 'url': safe_url})
+        return (False, f'Stream test error: {str(e)}')
 
 
 class BaseRecorder(ABC):
@@ -49,6 +205,12 @@ class BaseRecorder(ABC):
         self.is_running = False
         self.recording_thread = None
         self._last_error_logged = 0  # Timestamp for rate-limited logging
+
+        # Health tracking
+        self.consecutive_failures = 0
+        self.last_error_message = ''
+        self.last_error_time = 0.0
+        self.last_success_time = 0.0
 
     @abstractmethod
     def _get_thread_name(self) -> str:
@@ -91,11 +253,12 @@ class BaseRecorder(ABC):
         Log a recording error with rate limiting to avoid log flooding.
 
         Only logs if at least _ERROR_LOG_INTERVAL seconds have passed
-        since the last error was logged.
+        since the last error was logged. Always captures message for health tracking.
 
         Args:
             message: Error message to log
         """
+        self.last_error_message = message
         current_time = time.time()
         if current_time - self._last_error_logged > self._ERROR_LOG_INTERVAL:
             self._last_error_logged = current_time
@@ -120,11 +283,15 @@ class BaseRecorder(ABC):
                 if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
                     # Atomic rename - file only appears when complete
                     os.rename(temp_path, final_path)
+                    self.consecutive_failures = 0
+                    self.last_success_time = time.time()
                     return final_path
         except subprocess.TimeoutExpired:
             logger.warning("Recording timed out", extra={'temp_path': temp_path})
+            self.last_error_message = "Recording timed out"
         except Exception as e:
             logger.warning(f"Recording failed: {e}", extra={'temp_path': temp_path})
+            self.last_error_message = f"Recording failed: {e}"
         finally:
             # Clean up temp file if it still exists (wasn't renamed)
             # Use try-except to handle race conditions where file may have been removed
@@ -134,6 +301,8 @@ class BaseRecorder(ABC):
             except OSError:
                 pass  # File already removed or inaccessible
 
+        self.consecutive_failures += 1
+        self.last_error_time = time.time()
         return None
 
     def _get_retry_delay(self) -> float:
@@ -182,9 +351,36 @@ class BaseRecorder(ABC):
             return False
         return self.recording_thread and self.recording_thread.is_alive()
 
+    @staticmethod
+    def default_health_status() -> dict:
+        """Return default/empty health status (used when no recorder exists)."""
+        return {
+            'is_healthy': False,
+            'consecutive_failures': 0,
+            'last_error_message': '',
+            'last_error_time': 0.0,
+            'last_success_time': 0.0,
+        }
+
+    def get_health_status(self, healthy: bool | None = None) -> dict:
+        """Get recorder health metrics for monitoring.
+
+        Args:
+            healthy: Override for is_healthy() to avoid redundant calls
+                     when the caller already has the result.
+        """
+        return {
+            'is_healthy': self.is_healthy() if healthy is None else healthy,
+            'consecutive_failures': self.consecutive_failures,
+            'last_error_message': self.last_error_message,
+            'last_error_time': self.last_error_time,
+            'last_success_time': self.last_success_time,
+        }
+
     def restart(self):
         """Restart the recording process"""
         self.stop()
+        self.consecutive_failures = 0
         time.sleep(1)
         self.start()
 
@@ -229,6 +425,7 @@ class HttpStreamRecorder(BaseRecorder):
         # Start ffmpeg process to convert and save
         ffmpeg_cmd = ['ffmpeg', '-i', 'pipe:0'] + self._get_ffmpeg_output_args(temp_path)
 
+        ffmpeg_proc = None
         try:
             ffmpeg_proc = subprocess.Popen(
                 ffmpeg_cmd,
@@ -248,20 +445,27 @@ class HttpStreamRecorder(BaseRecorder):
             curl_proc.wait(timeout=2)
 
             if ffmpeg_proc.returncode != 0:
-                ffmpeg_stderr = ffmpeg_proc.stderr.read().decode('utf-8', errors='replace')[:500] if ffmpeg_proc.stderr else ""
+                ffmpeg_stderr = ffmpeg_proc.stderr.read().decode('utf-8', errors='replace') if ffmpeg_proc.stderr else ""
                 curl_stderr = curl_proc.stderr.read().decode('utf-8', errors='replace')[:200] if curl_proc.stderr else ""
+                error_detail = _parse_ffmpeg_error(ffmpeg_stderr)
+                if curl_stderr.strip():
+                    error_detail += f"\ncurl: {curl_stderr.strip()}"
                 self._log_recording_error(
-                    f"HTTP stream recording failed (returncode={ffmpeg_proc.returncode}, "
-                    f"url={self.stream_url}): ffmpeg: {ffmpeg_stderr}, curl: {curl_stderr}"
+                    f"HTTP stream recording failed (url={self.stream_url}): {error_detail}"
                 )
 
             return ffmpeg_proc.returncode == 0
 
         except subprocess.TimeoutExpired:
-            # Kill both processes on timeout
-            ffmpeg_proc.kill()
+            # Kill both processes and reap zombies
+            if ffmpeg_proc:
+                ffmpeg_proc.kill()
+                ffmpeg_proc.wait()
             curl_proc.kill()
+            curl_proc.wait()
             raise
+        finally:
+            _close_process_pipes(curl_proc, ffmpeg_proc)
 
 
 class RtspRecorder(BaseRecorder):
@@ -325,10 +529,9 @@ class RtspRecorder(BaseRecorder):
         )
 
         if result.returncode != 0:
-            stderr_snippet = result.stderr[:500] if result.stderr else "No error output"
             safe_url = sanitize_url(self.rtsp_url)
             self._log_recording_error(
-                f"RTSP recording failed (returncode={result.returncode}, url={safe_url}): {stderr_snippet}"
+                f"RTSP recording failed (url={safe_url}): {_parse_ffmpeg_error(result.stderr)}"
             )
 
         return result.returncode == 0
@@ -377,9 +580,8 @@ class PulseAudioRecorder(BaseRecorder):
         )
 
         if result.returncode != 0:
-            stderr_snippet = result.stderr[:500] if result.stderr else "No error output"
             self._log_recording_error(
-                f"PulseAudio recording failed (returncode={result.returncode}): {stderr_snippet}"
+                f"PulseAudio recording failed: {_parse_ffmpeg_error(result.stderr)}"
             )
 
         return result.returncode == 0

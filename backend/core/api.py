@@ -1140,48 +1140,50 @@ def get_stream_config():
 
     if recording_mode == RecordingMode.PULSEAUDIO:
         # PulseAudio mode - provide Icecast stream URL
-        return jsonify({
+        config = {
             'stream_url': '/stream/stream.mp3',
             'stream_type': 'icecast',
             'description': 'Local Icecast audio stream'
-        })
+        }
     elif recording_mode == RecordingMode.RTSP:
         # RTSP mode - use Icecast to transcode RTSP to MP3 for browser
         if rtsp_url:
-            return jsonify({
+            config = {
                 'stream_url': '/stream/stream.mp3',
                 'stream_type': 'icecast',
                 'description': 'RTSP stream via Icecast'
-            })
+            }
         else:
             # rtsp mode but no URL configured
-            return jsonify({
+            config = {
                 'stream_url': None,
                 'stream_type': 'none',
                 'description': 'RTSP mode selected but no URL configured'
-            })
+            }
     elif recording_mode == RecordingMode.HTTP_STREAM:
         # HTTP stream mode - use custom stream URL
         if stream_url:
-            return jsonify({
+            config = {
                 'stream_url': stream_url,
                 'stream_type': 'custom',
                 'description': 'User-defined audio stream'
-            })
+            }
         else:
             # http_stream mode but no URL configured
-            return jsonify({
+            config = {
                 'stream_url': None,
                 'stream_type': 'none',
                 'description': 'HTTP stream mode selected but no URL configured'
-            })
+            }
     else:
         # Unknown mode
-        return jsonify({
+        config = {
             'stream_url': None,
             'stream_type': 'none',
             'description': 'Unknown recording mode'
-        })
+        }
+
+    return jsonify(config)
 
 @api.route('/api/broadcast/detection', methods=['POST'])
 @require_internal
@@ -1200,6 +1202,29 @@ def broadcast_detection_endpoint():
         logger.error("Failed to broadcast detection", extra={
             'error': str(e)
         }, exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@api.route('/api/broadcast/recorder-status', methods=['POST'])
+@require_internal
+def broadcast_recorder_status_endpoint():
+    """Receive recorder health status from main container and broadcast to clients.
+
+    Internal-only endpoint - only accessible from docker network or localhost.
+    Called by the main processing container on recorder state changes.
+    """
+    global _recorder_status
+    try:
+        _recorder_status = request.json
+        if socketio:
+            socketio.emit('recorder_status', _recorder_status)
+        logger.debug("Recorder status broadcasted", extra={
+            'state': _recorder_status.get('state')
+        })
+        return jsonify({'status': 'broadcasted'}), 200
+    except Exception as e:
+        logger.error("Failed to broadcast recorder status", extra={
+            'error': str(e)
+        })
         return jsonify({'error': str(e)}), 500
 
 def write_flag(flag_name, content=None):
@@ -1770,6 +1795,31 @@ def test_notification():
 
     except Exception as e:
         logger.error("Test notification error", extra={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
+
+
+@api.route('/api/stream/test', methods=['POST'])
+@log_api_request
+@require_auth
+def test_stream():
+    """Test a stream URL to verify it's accessible."""
+    try:
+        data = request.json or {}
+        url = data.get('url', '').strip()
+        stream_type = data.get('type', '')
+
+        if not url:
+            return jsonify({'error': 'No URL provided'}), 400
+        if stream_type not in (RecordingMode.HTTP_STREAM, RecordingMode.RTSP):
+            return jsonify({'error': 'Invalid type: must be "http_stream" or "rtsp"'}), 400
+
+        from core.audio_manager import test_stream_url
+        success, message = test_stream_url(url, stream_type)
+
+        return jsonify({'success': success, 'message': message}), 200
+
+    except Exception as e:
+        logger.error("Stream test error", extra={'error': str(e)})
         return jsonify({'error': str(e)}), 500
 
 
@@ -2921,6 +2971,9 @@ def migration_spectrogram_skip():
 # Global SocketIO instance to be used by other modules
 socketio = None
 
+# Latest recorder health status (populated by main container broadcasts)
+_recorder_status = {}
+
 def create_app():
     global socketio
     app = Flask(__name__)
@@ -2951,6 +3004,8 @@ def create_app():
             return False  # Reject connection
         logger.info('WebSocket client connected')
         emit('status', {'message': 'Connected to live detection feed'})
+        if _recorder_status:
+            emit('recorder_status', _recorder_status)
 
     @socketio.on('disconnect')
     def handle_disconnect():

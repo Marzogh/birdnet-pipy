@@ -22,6 +22,7 @@
         ref="spectrogramCanvas"
         class="w-full h-48 mb-4 rounded-lg"
       />
+      <AlertBanner :message="recorderWarning" :dismissible="false" :auto-dismiss="0" />
       <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-4">
         <button
           class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow focus:outline-none focus:ring-2 focus:ring-blue-300 flex items-center justify-center min-w-[120px] flex-shrink-0 disabled:bg-gray-400 disabled:cursor-not-allowed"
@@ -72,14 +73,16 @@
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { io } from 'socket.io-client'
+import AlertBanner from '@/components/AlertBanner.vue'
 import BirdDetectionList from './BirdDetectionList.vue'
 import api from '@/services/api'
 
 export default {
   name: 'LiveFeed',
   components: {
+    AlertBanner,
     BirdDetectionList
   },
   setup() {
@@ -93,6 +96,21 @@ export default {
     const streamUrl = ref('')
     const streamType = ref('none')
     const streamDescription = ref('')
+    const recorderStatus = ref(null)
+
+    const recorderWarning = computed(() => {
+      const status = recorderStatus.value
+      if (!status || status.state === 'running') return ''
+      const modeLabels = {
+        pulseaudio: 'Microphone',
+        rtsp: 'RTSP stream',
+        http_stream: 'HTTP stream'
+      }
+      const label = modeLabels[status.recording_mode] || 'Audio'
+      if (status.state === 'stopped') return `${label} recording has stopped`
+      if (status.state === 'degraded') return `${label} recording is experiencing issues`
+      return ''
+    })
 
     let audioContext, analyser, source, dataArray, animationId
     let canvasCtx, canvasWidth, canvasHeight
@@ -296,6 +314,9 @@ export default {
         streamUrl.value = config.stream_url || ''
         streamType.value = config.stream_type || 'none'
         streamDescription.value = config.description || ''
+        if (config.recorder_status) {
+          recorderStatus.value = config.recorder_status
+        }
 
         if (!streamUrl.value || streamType.value === 'none') {
           statusMessage.value = 'No audio stream configured'
@@ -315,6 +336,10 @@ export default {
 
       socket.on('disconnect', (reason) => {
         console.log(`[LiveFeed] WebSocket disconnected: ${reason}`)
+      })
+
+      socket.on('recorder_status', (status) => {
+        recorderStatus.value = status
       })
 
       socket.on('bird_detected', (detection) => {
@@ -425,6 +450,7 @@ export default {
       streamType,
       streamDescription,
       isSafari,
+      recorderWarning,
       handleAudioError,
       handleAudioBuffering,
       handleAudioPlaying,

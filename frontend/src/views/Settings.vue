@@ -124,93 +124,197 @@
     </div>
 
     <div class="space-y-4">
-      <!-- Location & Audio Source -->
+      <!-- Location & Audio -->
       <div class="bg-white rounded-lg shadow-sm border border-gray-100 p-5">
-        <h2 class="text-base font-medium text-gray-800 mb-3">
-          Location & Audio
-        </h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <!-- Location -->
-          <div class="space-y-3">
-            <div class="flex gap-3">
-              <div class="flex-1">
-                <label
-                  for="latitude"
-                  class="block text-sm text-gray-600 mb-1"
-                >Latitude</label>
-                <input
-                  id="latitude"
-                  v-model.number="settings.location.latitude"
-                  type="text"
-                  inputmode="decimal"
-                  class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                  placeholder="42.47"
-                  @input="limitDecimals"
-                >
-              </div>
-              <div class="flex-1">
-                <label
-                  for="longitude"
-                  class="block text-sm text-gray-600 mb-1"
-                >Longitude</label>
-                <input
-                  id="longitude"
-                  v-model.number="settings.location.longitude"
-                  type="text"
-                  inputmode="decimal"
-                  class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                  placeholder="-76.45"
-                  @input="limitDecimals"
-                >
-              </div>
-            </div>
-            <p class="text-xs text-gray-400">
-              Used for species filtering and weather data
-            </p>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-medium text-gray-800">
+            Location & Audio
+          </h2>
+          <div
+            v-if="recorderStatus"
+            class="flex items-center gap-1.5"
+          >
+            <span
+              class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              :class="recorderDotClass"
+            />
+            <span
+              class="text-xs font-medium"
+              :class="recorderStateLabelClass"
+            >{{ recorderStateLabel }}</span>
           </div>
-
-          <!-- Audio Source -->
-          <div class="space-y-3">
-            <div>
-              <label
-                for="recordingMode"
-                class="block text-sm text-gray-600 mb-1"
-              >Audio Source</label>
-              <select
-                id="recordingMode"
-                v-model="recordingMode"
-                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                @change="onRecordingModeChange"
-              >
-                <option
-                  v-for="mode in recordingModeOptions"
-                  :key="mode.value"
-                  :value="mode.value"
-                >
-                  {{ mode.label }}
-                </option>
-              </select>
-            </div>
-            <div v-if="recordingMode === 'http_stream'">
-              <input
-                id="streamUrl"
-                v-model="settings.audio.stream_url"
-                type="text"
-                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                placeholder="http://example.com:8888/stream.mp3"
-              >
-            </div>
-            <div v-if="recordingMode === 'rtsp'">
-              <input
-                id="rtspUrl"
-                v-model="settings.audio.rtsp_url"
-                type="text"
-                class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                placeholder="rtsp://user:pass@192.168.1.100:554/stream"
-              >
+        </div>
+        <div class="flex gap-3">
+          <div class="flex-1">
+            <label
+              for="latitude"
+              class="block text-sm text-gray-600 mb-1"
+            >Latitude</label>
+            <input
+              id="latitude"
+              v-model.number="settings.location.latitude"
+              type="text"
+              inputmode="decimal"
+              class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+              placeholder="42.47"
+              @input="limitDecimals"
+            >
+          </div>
+          <div class="flex-1">
+            <label
+              for="longitude"
+              class="block text-sm text-gray-600 mb-1"
+            >Longitude</label>
+            <input
+              id="longitude"
+              v-model.number="settings.location.longitude"
+              type="text"
+              inputmode="decimal"
+              class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+              placeholder="-76.45"
+              @input="limitDecimals"
+            >
+          </div>
+          <div
+            v-if="settings.location.timezone"
+            class="flex-1"
+          >
+            <label class="block text-sm text-gray-600 mb-1">Timezone</label>
+            <div class="px-3 py-2 text-sm text-gray-500 bg-gray-50 rounded-lg border border-gray-200">
+              {{ settings.location.timezone }}
             </div>
           </div>
         </div>
+
+        <hr class="my-3 border-gray-100">
+
+        <!-- Audio sources -->
+        <label class="block text-sm text-gray-600 mb-1">Source</label>
+        <div class="flex flex-wrap gap-2">
+          <!-- Local Mic pill -->
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border text-sm font-medium transition-colors"
+            :class="recordingMode === 'pulseaudio'
+              ? 'border-blue-200 bg-blue-50 text-gray-800'
+              : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'"
+            @click="selectRtspSource(null)"
+          >
+            Local Mic
+          </button>
+
+          <!-- RTSP source pills -->
+          <div
+            v-for="(url, index) in rtspSources"
+            :key="url"
+            class="group inline-flex items-center rounded-full border cursor-pointer transition-colors"
+            :class="recordingMode === 'rtsp' && settings.audio.rtsp_url === url
+              ? 'border-blue-200 bg-blue-50'
+              : 'border-gray-200 bg-gray-50 hover:bg-gray-100'"
+            @click="selectRtspSource(url)"
+          >
+            <span
+              class="pl-3.5 pr-1 py-1.5 text-sm font-medium truncate max-w-48"
+              :class="recordingMode === 'rtsp' && settings.audio.rtsp_url === url
+                ? 'text-gray-800'
+                : 'text-gray-600'"
+              :title="url"
+            >{{ getRtspLabel(url) || 'RTSP Stream' }}</span>
+            <button
+              type="button"
+              class="p-1 pr-2.5 text-gray-400 hover:text-blue-600 md:opacity-0 md:group-hover:opacity-100 transition-all flex-shrink-0"
+              title="Edit"
+              @click.stop="openEditSource(index)"
+            >
+              <svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Add stream pill -->
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-dashed border-gray-200 text-xs text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-colors"
+            @click="openAddSource"
+          >
+            <svg
+              class="w-3.5 h-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width="2"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
+            </svg>
+            Add
+          </button>
+        </div>
+
+        <!-- Stream Source Modal -->
+        <StreamSourceModal
+          v-if="showStreamModal"
+          :source="editingSource"
+          :existing-urls="rtspSources"
+          @close="showStreamModal = false"
+          @add="handleStreamAdd"
+          @save="handleStreamSave"
+          @delete="handleStreamDelete"
+        />
+
+        <!-- Error details (only when source is unhealthy) -->
+        <details
+          v-if="showRecorderError"
+          class="mt-2.5"
+        >
+          <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600 select-none">
+            Show error details
+          </summary>
+          <div class="mt-1 relative group">
+            <pre class="text-xs text-gray-500 bg-gray-50 rounded-md p-2 pr-8 overflow-x-auto whitespace-pre-wrap break-words font-mono">{{ recorderStatus.last_error_message }}</pre>
+            <button
+              class="absolute top-1 right-1 p-1 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
+              title="Copy to clipboard"
+              @click="copyErrorToClipboard"
+            >
+              <svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  v-if="!errorCopied"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                />
+                <path
+                  v-else
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+            </button>
+          </div>
+        </details>
       </div>
 
       <!-- Storage -->
@@ -1250,6 +1354,7 @@
   <script>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
+import { io } from 'socket.io-client'
 import { useSystemUpdate } from '@/composables/useSystemUpdate'
 import { requestRestart, useServiceRestart } from '@/composables/useServiceRestart'
 import { useAuth } from '@/composables/useAuth'
@@ -1264,6 +1369,7 @@ import UnsavedChangesModal from '@/components/UnsavedChangesModal.vue'
 import MigrationModal from '@/components/MigrationModal.vue'
 import AddNotificationModal from '@/components/AddNotificationModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import StreamSourceModal from '@/components/StreamSourceModal.vue'
 import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import { SCHEME_TO_SERVICE_NAME } from '@/utils/notificationServices'
@@ -1280,6 +1386,7 @@ export default {
     MigrationModal,
     AddNotificationModal,
     ConfirmModal,
+    StreamSourceModal,
     CollapsibleSection,
     ToggleSwitch
   },
@@ -1291,11 +1398,6 @@ export default {
     const appStatus = useAppStatus()
 
     // Dropdown options (static configuration)
-    const recordingModeOptions = [
-      { value: 'pulseaudio', label: 'Local Microphone' },
-      { value: 'http_stream', label: 'HTTP Stream' },
-      { value: 'rtsp', label: 'RTSP Stream' }
-    ]
     const recordingLengthOptions = [
       { value: 9, label: '9 seconds' },
       { value: 12, label: '12 seconds' },
@@ -1339,6 +1441,82 @@ export default {
 
     // Storage state
     const storage = ref(null)
+
+    // Recorder health status (populated via WebSocket + REST)
+    const recorderStatus = ref(null)
+    const errorCopied = ref(false)
+    let settingsSocket = null
+
+    // Stream source modal state
+    const showStreamModal = ref(false)
+    const editingSource = ref(null)
+
+    const rtspSources = computed(() => settings.value.audio.rtsp_urls || [])
+
+    const rtspLabels = computed(() => settings.value.audio.rtsp_labels || {})
+
+    const getRtspLabel = (url) => rtspLabels.value[url] || ''
+
+    const showRecorderError = computed(() => {
+      if (!recorderStatus.value) return false
+      if (serviceRestart.isRestarting.value) return false
+      if (recorderStatus.value.state === 'running') return false
+      return !!recorderStatus.value.last_error_message
+    })
+
+    const recorderDotClass = computed(() => {
+      if (serviceRestart.isRestarting.value) return 'bg-gray-300'
+      const state = recorderStatus.value?.state
+      if (state === 'running') return 'bg-green-500 animate-pulse'
+      if (state === 'degraded') return 'bg-amber-500'
+      if (state === 'stopped') return 'bg-red-500'
+      return 'bg-gray-300'
+    })
+
+    const recorderStateLabel = computed(() => {
+      if (serviceRestart.isRestarting.value) return 'Unavailable'
+      const state = recorderStatus.value?.state
+      if (state === 'running') return 'Audio Healthy'
+      if (state === 'degraded') return 'Audio Degraded'
+      if (state === 'stopped') return 'Audio Stopped'
+      return 'Audio Unknown'
+    })
+
+    const recorderStateLabelClass = computed(() => {
+      if (serviceRestart.isRestarting.value) return 'text-gray-400'
+      const state = recorderStatus.value?.state
+      if (state === 'running') return 'text-green-600'
+      if (state === 'degraded') return 'text-amber-600'
+      if (state === 'stopped') return 'text-red-600'
+      return 'text-gray-400'
+    })
+
+    let errorCopiedTimer = null
+
+    const copyErrorToClipboard = async () => {
+      const msg = recorderStatus.value?.last_error_message
+      if (!msg) return
+      try {
+        // navigator.clipboard requires HTTPS; fall back for plain HTTP
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(msg)
+        } else {
+          const ta = document.createElement('textarea')
+          ta.value = msg
+          ta.style.position = 'fixed'
+          ta.style.left = '-9999px'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+        }
+        errorCopied.value = true
+        if (errorCopiedTimer) clearTimeout(errorCopiedTimer)
+        errorCopiedTimer = setTimeout(() => { errorCopied.value = false }, 2000)
+      } catch (err) {
+        console.warn('Clipboard copy failed:', err)
+      }
+    }
 
     // Export state
     const exporting = ref(false)
@@ -1440,6 +1618,7 @@ export default {
         recording_mode: s.audio?.recording_mode,
         stream_url: s.audio?.stream_url,
         rtsp_url: s.audio?.rtsp_url,
+        rtsp_urls: s.audio?.rtsp_urls || [],
         recording_length: s.audio?.recording_length,
         overlap: s.audio?.overlap
       },
@@ -1495,6 +1674,16 @@ export default {
       }
     }
 
+    // Initialize WebSocket for live recorder status updates.
+    // Initial status is sent by backend on socket connect, so no REST call needed.
+    const initSettingsSocket = () => {
+      settingsSocket = io()
+
+      settingsSocket.on('recorder_status', (status) => {
+        recorderStatus.value = status
+      })
+    }
+
     // Load species list (shared with SpeciesFilterModal)
     const loadSpeciesList = async () => {
       try {
@@ -1528,6 +1717,12 @@ export default {
       if (!data.notifications) data.notifications = {}
       if (!data.access) data.access = { charts_public: false, table_public: false, live_feed_public: false }
       if (data.updates.channel === 'stable') data.updates.channel = 'release'
+      // Migrate: if rtsp_url exists but rtsp_urls is empty, populate array
+      if (!data.audio) data.audio = {}
+      if (!Array.isArray(data.audio.rtsp_urls)) data.audio.rtsp_urls = []
+      if (data.audio.rtsp_url && data.audio.rtsp_urls.length === 0) {
+        data.audio.rtsp_urls.push(data.audio.rtsp_url)
+      }
     }
 
     // Load settings from API with retry and fallback to defaults
@@ -1586,6 +1781,10 @@ export default {
         settingsSaveError.value = ''
         settings.value.location.configured = true
         const { data } = await api.put('/settings', settings.value)
+        // Apply server-computed fields (e.g. timezone from coordinates)
+        if (data.settings) {
+          settings.value = data.settings
+        }
         // Update snapshot after successful save
         takeSnapshot()
         confirmedNotifications.value = cloneNotif()
@@ -1700,9 +1899,90 @@ export default {
       }
     }
 
-    // Handle recording mode change - just update the mode, preserve all URLs
-    const onRecordingModeChange = () => {
-      settings.value.audio.recording_mode = recordingMode.value
+    const selectRecordingMode = (value) => {
+      recordingMode.value = value
+      settings.value.audio.recording_mode = value
+    }
+
+    const selectRtspSource = (url) => {
+      if (url) {
+        settings.value.audio.rtsp_url = url
+        selectRecordingMode('rtsp')
+      } else {
+        selectRecordingMode('pulseaudio')
+      }
+    }
+
+    // Stream source modal actions
+    const openAddSource = () => {
+      editingSource.value = null
+      showStreamModal.value = true
+    }
+
+    const openEditSource = (index) => {
+      const url = rtspSources.value[index]
+      editingSource.value = {
+        url,
+        label: getRtspLabel(url),
+      }
+      showStreamModal.value = true
+    }
+
+    const setRtspLabel = (url, label) => {
+      if (!settings.value.audio.rtsp_labels) {
+        settings.value.audio.rtsp_labels = {}
+      }
+      if (label) {
+        settings.value.audio.rtsp_labels[url] = label
+      } else {
+        delete settings.value.audio.rtsp_labels[url]
+      }
+    }
+
+    const handleStreamAdd = ({ url, label }) => {
+      if (!settings.value.audio.rtsp_urls) {
+        settings.value.audio.rtsp_urls = []
+      }
+      settings.value.audio.rtsp_urls.push(url)
+      setRtspLabel(url, label)
+      selectRtspSource(url)
+      showStreamModal.value = false
+    }
+
+    const handleStreamSave = ({ url, label, originalUrl }) => {
+      const urls = settings.value.audio.rtsp_urls
+      const index = urls.indexOf(originalUrl)
+      if (index !== -1) {
+        urls[index] = url
+      }
+      // Clean up old label, set new one
+      if (originalUrl !== url && settings.value.audio.rtsp_labels?.[originalUrl]) {
+        delete settings.value.audio.rtsp_labels[originalUrl]
+      }
+      setRtspLabel(url, label)
+      // Update active source if it was the one being edited
+      if (settings.value.audio.rtsp_url === originalUrl) {
+        settings.value.audio.rtsp_url = url
+      }
+      showStreamModal.value = false
+    }
+
+    const handleStreamDelete = (url) => {
+      const urls = settings.value.audio.rtsp_urls
+      const index = urls.indexOf(url)
+      if (index !== -1) {
+        urls.splice(index, 1)
+      }
+      // Clean up label
+      if (settings.value.audio.rtsp_labels?.[url]) {
+        delete settings.value.audio.rtsp_labels[url]
+      }
+      // If the active source was removed, switch to microphone
+      if (settings.value.audio.rtsp_url === url) {
+        settings.value.audio.rtsp_url = ''
+        selectRecordingMode('pulseaudio')
+      }
+      showStreamModal.value = false
     }
 
     // Handle BirdWeather ID update
@@ -2082,12 +2362,18 @@ export default {
       loadSpeciesList()
       systemUpdate.loadVersionInfo()
       auth.checkAuthStatus()
+      initSettingsSocket()
       window.addEventListener('beforeunload', handleBeforeUnload)
     })
 
     // Cleanup on unmount
     onUnmounted(() => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
+      if (errorCopiedTimer) clearTimeout(errorCopiedTimer)
+      if (settingsSocket) {
+        settingsSocket.disconnect()
+        settingsSocket = null
+      }
     })
 
     return {
@@ -2105,7 +2391,9 @@ export default {
       repositoryUrl,
       versionChangelogUrl,
       toggleMetricUnits,
-      onRecordingModeChange,
+      selectRecordingMode,
+      getRtspLabel,
+      showRecorderError,
       limitDecimals,
       updateBirdweatherId,
       confirmUpdate,
@@ -2142,8 +2430,24 @@ export default {
       updateFilterList,
       saveSpeciesFilter,
       getCommonName,
+      // Recorder health
+      recorderStatus,
+      recorderDotClass,
+      recorderStateLabel,
+      recorderStateLabelClass,
+      errorCopied,
+      copyErrorToClipboard,
+      // Audio source management
+      rtspSources,
+      selectRtspSource,
+      showStreamModal,
+      editingSource,
+      openAddSource,
+      openEditSource,
+      handleStreamAdd,
+      handleStreamSave,
+      handleStreamDelete,
       // Dropdown options
-      recordingModeOptions,
       recordingLengthOptions,
       overlapOptions,
       modelTypeOptions,

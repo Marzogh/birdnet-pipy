@@ -63,3 +63,10 @@ class TestClassifySettingChanges:
 
         assert plan["full_restart_required"] is False
         assert "audio.rtsp_url" in plan["component_restarts"]
+
+    def test_location_change_requires_full_restart(self):
+        plan = classify_setting_changes(["location.latitude", "location.longitude"])
+
+        assert plan["full_restart_required"] is True
+        assert "location.latitude" in plan["full_restart_paths"]
+        assert "location.longitude" in plan["full_restart_paths"]

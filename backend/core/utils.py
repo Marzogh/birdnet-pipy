@@ -1,9 +1,10 @@
+import os
+
 import matplotlib
 import numpy as np
 
 matplotlib.use('Agg')
 import subprocess
-from io import BytesIO
 
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
@@ -15,6 +16,10 @@ from config.settings import SPECTROGRAM_FONT_PATH
 from core.runtime_config import get_runtime_settings
 
 BUFFER_SIZE = 1000
+
+# Register custom font once at import time (not per-call)
+if os.path.exists(SPECTROGRAM_FONT_PATH):
+    font_manager.fontManager.addfont(SPECTROGRAM_FONT_PATH)
 
 
 def build_detection_filenames(common_name, confidence, timestamp, audio_extension='mp3'):
@@ -107,9 +112,6 @@ def generate_spectrogram(input_file_path, output_file_path, graph_title, start_t
 
     figsize = (5, 0.8)
 
-    # Set up Inter font
-    font_path = SPECTROGRAM_FONT_PATH  # Update this path if necessary
-    font_manager.fontManager.addfont(font_path)
     plt.rcParams['font.family'] = 'Inter'
 
     # Calculate scaling factor based on figure width
@@ -147,39 +149,39 @@ def generate_spectrogram(input_file_path, output_file_path, graph_title, start_t
     # Use 150 DPI for web/general use, 200 for high-quality while keeping file size reasonable
     dpi = 250
 
-    # Plot spectrogram
-    plt.figure(figsize=figsize, facecolor='white', dpi=dpi)
-    plt.imshow(Sxx_dbfs, aspect='auto', cmap="Greens_r", origin='lower',
-               extent=[times.min(), times.max(), frequencies.min(), frequencies.max()],
-               vmin=min_dbfs, vmax=max_dbfs,
-               interpolation='bilinear')  # Smoother rendering
+    # Plot spectrogram — use try/finally to guarantee figure cleanup
+    fig = plt.figure(figsize=figsize, facecolor='white', dpi=dpi)
+    try:
+        plt.imshow(Sxx_dbfs, aspect='auto', cmap="Greens_r", origin='lower',
+                   extent=[times.min(), times.max(), frequencies.min(), frequencies.max()],
+                   vmin=min_dbfs, vmax=max_dbfs,
+                   interpolation='bilinear')  # Smoother rendering
 
-    plt.title(graph_title, fontsize=14*scale, fontweight='bold', pad=10*scale)
-    plt.ylabel('Frequency [kHz]', fontsize=12*scale, labelpad=3*scale)
+        plt.title(graph_title, fontsize=14*scale, fontweight='bold', pad=10*scale)
+        plt.ylabel('Frequency [kHz]', fontsize=12*scale, labelpad=3*scale)
 
-    cbar = plt.colorbar(pad=0.01)
-    cbar.set_label('Intensity [dBFS]', fontsize=12*scale, labelpad=3*scale)
-    cbar.ax.tick_params(labelsize=10*scale)
+        cbar = plt.colorbar(pad=0.01)
+        cbar.set_label('Intensity [dBFS]', fontsize=12*scale, labelpad=3*scale)
+        cbar.ax.tick_params(labelsize=10*scale)
 
-    plt.xticks([])
-    plt.yticks([0,6,12])
-    plt.yticks(fontsize=10*scale)
-    plt.ylim(min_freq_khz, max_freq_khz)
+        plt.xticks([])
+        plt.yticks([0,6,12])
+        plt.yticks(fontsize=10*scale)
+        plt.ylim(min_freq_khz, max_freq_khz)
 
-    # Adjust margins manually
-    plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
+        # Adjust margins manually
+        plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
 
-    # Save as WebP for better compression (~87% smaller than PNG)
-    # First save to buffer as PNG, then convert to WebP with PIL
-    buf = BytesIO()
-    plt.savefig(buf, dpi=dpi, bbox_inches='tight', format='png')
-    plt.close()
+        # Render to Agg canvas buffer — raw RGBA pixels, no PNG encode/decode
+        fig.canvas.draw()
+        width, height = fig.canvas.get_width_height()
+        raw_data = bytes(fig.canvas.buffer_rgba())
+    finally:
+        plt.close(fig)
 
-    # Convert to WebP using PIL
-    buf.seek(0)
-    img = Image.open(buf)
+    # Convert raw RGBA pixels directly to WebP
+    img = Image.frombytes('RGBA', (width, height), raw_data)
     img.save(output_file_path, 'WEBP', quality=85)
-    buf.close()
 
 
 def select_audio_chunks(detected_chunk_index, total_chunks):

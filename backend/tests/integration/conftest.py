@@ -11,6 +11,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from core.audio_manager import BaseRecorder
+
 
 @pytest.fixture
 def temp_recording_dir():
@@ -310,6 +312,13 @@ def mock_recorder():
     """Mock recorder for testing recording thread."""
     recorder = Mock()
     recorder.is_healthy.return_value = True
+    recorder.consecutive_failures = 0
+    recorder.last_error_message = ''
+    recorder.last_error_time = 0.0
+    recorder.last_success_time = 0.0
+    health = BaseRecorder.default_health_status()
+    health['is_healthy'] = True
+    recorder.get_health_status.return_value = health
     recorder.start.return_value = None
     recorder.stop.return_value = None
     recorder.restart.return_value = None

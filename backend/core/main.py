@@ -57,6 +57,8 @@ BIRDNET_MAX_RETRIES = 5       # Max retries for BirdNet connection errors
 BIRDNET_RETRY_BASE_DELAY = 2  # Base delay for exponential backoff (seconds)
 RECORDING_THREAD_SHUTDOWN_TIMEOUT = 10  # Max wait for recording thread (seconds)
 PROCESSING_THREAD_SHUTDOWN_TIMEOUT = 5  # Max wait for processing thread (seconds)
+DEGRADED_FAILURE_THRESHOLD = 3  # Consecutive failures before 'degraded' state
+STATUS_REFRESH_INTERVAL = 60   # Re-broadcast recorder status every N seconds
 
 # Setup logging
 setup_logging('main')
@@ -174,6 +176,46 @@ def setup_recorder(audio_settings: dict[str, Any], thread_logger) -> BaseRecorde
         rtsp_url=rtsp_url
     )
 
+def _get_recorder_state(recorder: BaseRecorder | None, healthy: bool) -> str:
+    """Derive simple state string for change detection.
+
+    Args:
+        recorder: Recorder instance or None
+        healthy: Cached result of recorder.is_healthy()
+    """
+    if recorder is None or not healthy:
+        return 'stopped'
+    if recorder.consecutive_failures >= DEGRADED_FAILURE_THRESHOLD:
+        return 'degraded'
+    return 'running'
+
+
+def broadcast_recorder_status(
+    state: str, recorder: BaseRecorder | None, healthy: bool,
+    recording_mode: str, thread_logger
+) -> None:
+    """Send recorder health status to API for WebSocket broadcast."""
+    try:
+        if recorder:
+            health = recorder.get_health_status(healthy=healthy)
+        else:
+            health = BaseRecorder.default_health_status()
+        status_data = {
+            'recording_mode': recording_mode,
+            'state': state,
+            **health,
+        }
+        requests.post(
+            f'http://{API_HOST}:{API_PORT}/api/broadcast/recorder-status',
+            json=status_data,
+            timeout=BROADCAST_TIMEOUT
+        )
+    except Exception as e:
+        thread_logger.debug("Failed to broadcast recorder status", extra={
+            'error': str(e)
+        })
+
+
 def continuous_audio_recording(thread_logger):
     """Continuous audio recording from PulseAudio or HTTP stream.
 
@@ -182,6 +224,8 @@ def continuous_audio_recording(thread_logger):
     """
     recorder: BaseRecorder | None = None
     current_signature: tuple | None = None
+    last_broadcast_state: str | None = None
+    last_broadcast_time: float = 0.0
 
     try:
         # Initialize recorder once before loop for startup validation and
@@ -218,9 +262,22 @@ def continuous_audio_recording(thread_logger):
                     current_signature = new_signature
 
                 # Check recorder health and restart if needed
-                if not recorder.is_healthy():
+                healthy = recorder.is_healthy()
+                if not healthy:
                     thread_logger.warning("Recorder unhealthy, restarting...")
                     recorder.restart()
+
+                # Broadcast status on state change or periodic refresh
+                current_state = _get_recorder_state(recorder, healthy)
+                state_changed = current_state != last_broadcast_state
+                refresh_due = (time.time() - last_broadcast_time) >= STATUS_REFRESH_INTERVAL
+                if state_changed or refresh_due:
+                    recording_mode = _get_recording_mode(audio_settings)
+                    broadcast_recorder_status(
+                        current_state, recorder, healthy, recording_mode, thread_logger
+                    )
+                    last_broadcast_state = current_state
+                    last_broadcast_time = time.time()
 
                 # Brief sleep to prevent CPU thrashing
                 time.sleep(FILE_SCAN_INTERVAL)

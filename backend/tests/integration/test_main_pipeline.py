@@ -1695,7 +1695,7 @@ class TestRecordingThread:
              patch('core.main.stop_flag') as mock_stop, \
              patch('time.sleep'):
 
-            # Mock is_healthy() to return False on 2nd call
+            # is_healthy() called once per iteration (result cached for state check)
             mock_recorder.is_healthy.side_effect = [True, False, True, True]
 
             # Mock stop_flag to run 4 iterations

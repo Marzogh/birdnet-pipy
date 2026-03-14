@@ -18,6 +18,8 @@ DEFAULT_SETTINGS = {
         "recording_mode": DEFAULT_RECORDING_MODE,  # "pulseaudio", "http_stream", or "rtsp"
         "stream_url": None,
         "rtsp_url": None,
+        "rtsp_urls": [],
+        "rtsp_labels": {},
         "pulseaudio_source": None,
         "recording_length": 9,
         "overlap": 0.0,

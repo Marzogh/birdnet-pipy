@@ -80,6 +80,8 @@ const mockSettings = {
   audio: {
     recording_mode: 'pulseaudio',
     stream_url: null,
+    rtsp_url: null,
+    rtsp_urls: [],
     pulseaudio_source: null,
     recording_length: 9,
     overlap: 0.0,
@@ -108,6 +110,19 @@ const mockSettings = {
     rare_species: false,
     rare_threshold: 3,
     rare_window_days: 7
+  },
+  display: {
+    station_name: '',
+    bird_name_language: 'en',
+    use_metric_units: true
+  },
+  updates: {
+    channel: 'release'
+  },
+  access: {
+    charts_public: false,
+    table_public: false,
+    live_feed_public: false
   }
 }
 
@@ -270,14 +285,15 @@ describe('Settings', () => {
   })
 
   describe('Other Settings Sections', () => {
-    it('displays Location & Audio section', async () => {
+    it('displays Location and Audio sections', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      expect(wrapper.text()).toContain('Location & Audio')
+      expect(wrapper.text()).toContain('Location')
+      expect(wrapper.text()).toContain('Audio')
       expect(wrapper.find('#latitude').exists()).toBe(true)
       expect(wrapper.find('#longitude').exists()).toBe(true)
-      expect(wrapper.find('#recordingMode').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Local Mic')
     })
 
     it('displays Detection section', async () => {
@@ -399,43 +415,124 @@ describe('Settings', () => {
     })
   })
 
-  describe('Recording Mode Switching', () => {
-    it('shows stream URL input when http_stream mode selected', async () => {
+  describe('Audio Source List', () => {
+    // Helper: add an RTSP source via the modal handler
+    const addRtspSource = (wrapper, url, label = '') => {
+      wrapper.vm.handleStreamAdd({ url, label })
+    }
+
+    it('shows Local Mic as default active source', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      const modeSelect = wrapper.find('#recordingMode')
-      await modeSelect.setValue('http_stream')
-      await flushPromises()
-
-      expect(wrapper.find('#streamUrl').exists()).toBe(true)
+      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
+      expect(wrapper.text()).toContain('Local Mic')
     })
 
-    it('hides stream URL input when pulseaudio mode selected', async () => {
+    it('adds RTSP source and selects it', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      const modeSelect = wrapper.find('#recordingMode')
-      await modeSelect.setValue('pulseaudio')
-      await flushPromises()
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
 
-      expect(wrapper.find('#streamUrl').exists()).toBe(false)
+      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.recordingMode).toBe('rtsp')
+      expect(wrapper.vm.showStreamModal).toBe(false)
     })
 
-    it('preserves stream_url when switching to pulseaudio mode', async () => {
+    it('adds RTSP source with label', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      wrapper.vm.settings.audio.stream_url = 'http://example.com/stream.mp3'
-      wrapper.vm.recordingMode = 'http_stream'
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream', 'Backyard mic')
 
-      const modeSelect = wrapper.find('#recordingMode')
-      await modeSelect.setValue('pulseaudio')
-      wrapper.vm.onRecordingModeChange()
+      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.settings.audio.rtsp_labels['rtsp://192.168.1.100:554/stream']).toBe('Backyard mic')
+    })
 
-      // URLs are intentionally preserved when switching modes
-      // This allows users to switch back without re-entering URLs
-      expect(wrapper.vm.settings.audio.stream_url).toBe('http://example.com/stream.mp3')
+    it('supports multiple RTSP sources', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream1')
+      addRtspSource(wrapper, 'rtsp://192.168.1.200:554/stream2')
+
+      expect(wrapper.vm.settings.audio.rtsp_urls).toHaveLength(2)
+      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.200:554/stream2')
+    })
+
+    it('edits RTSP source URL and label', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream', 'Old label')
+
+      wrapper.vm.handleStreamSave({
+        url: 'rtsp://192.168.1.200:554/new',
+        label: 'New label',
+        originalUrl: 'rtsp://192.168.1.100:554/stream',
+      })
+
+      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.200:554/new')
+      expect(wrapper.vm.settings.audio.rtsp_urls).not.toContain('rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.settings.audio.rtsp_labels['rtsp://192.168.1.200:554/new']).toBe('New label')
+      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.200:554/new')
+    })
+
+    it('deletes RTSP source and switches to microphone when active', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.recordingMode).toBe('rtsp')
+
+      wrapper.vm.handleStreamDelete('rtsp://192.168.1.100:554/stream')
+
+      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
+      expect(wrapper.vm.settings.audio.rtsp_url).toBe('')
+      expect(wrapper.vm.settings.audio.rtsp_urls).toHaveLength(0)
+    })
+
+    it('deletes inactive RTSP source without switching mode', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream1')
+      addRtspSource(wrapper, 'rtsp://192.168.1.200:554/stream2')
+
+      // Active is stream2, delete stream1
+      wrapper.vm.handleStreamDelete('rtsp://192.168.1.100:554/stream1')
+
+      expect(wrapper.vm.recordingMode).toBe('rtsp')
+      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.200:554/stream2')
+      expect(wrapper.vm.settings.audio.rtsp_urls).toHaveLength(1)
+    })
+
+    it('switches active source between cards', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.recordingMode).toBe('rtsp')
+
+      wrapper.vm.selectRtspSource(null)
+      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
+
+      wrapper.vm.selectRtspSource('rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.recordingMode).toBe('rtsp')
+      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.100:554/stream')
+    })
+
+    it('preserves rtsp_urls when switching to microphone', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
+
+      wrapper.vm.selectRtspSource(null)
+      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
+      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.100:554/stream')
     })
   })
 
@@ -728,10 +825,10 @@ describe('Settings', () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      // Set up state that will fail validation (HTTP stream mode without URL)
-      wrapper.vm.recordingMode = 'http_stream'
-      wrapper.vm.settings.audio.recording_mode = 'http_stream'
-      wrapper.vm.settings.audio.stream_url = ''
+      // Set up state that will fail validation (RTSP mode without URL)
+      wrapper.vm.recordingMode = 'rtsp'
+      wrapper.vm.settings.audio.recording_mode = 'rtsp'
+      wrapper.vm.settings.audio.rtsp_url = ''
       wrapper.vm.showUnsavedModal = true
       let navigationResolved = null
       wrapper.vm.navigationResolver = (value) => { navigationResolved = value }
@@ -744,7 +841,7 @@ describe('Settings', () => {
       // Modal should stay open, navigation should NOT be resolved
       expect(wrapper.vm.showUnsavedModal).toBe(true)
       expect(navigationResolved).toBe(null)
-      expect(wrapper.vm.settingsSaveError).toContain('Stream URL')
+      expect(wrapper.vm.settingsSaveError).toContain('RTSP URL')
     })
 
     it('handleUnsavedSave keeps modal open on API failure', async () => {
