@@ -3,6 +3,25 @@
 
 set -e
 
+# Logging to file and stdout
+LOG_DIR="/app/data/logs"
+LOG_FILE="$LOG_DIR/icecast.log"
+LOG_MAX_SIZE=$((5 * 1024 * 1024))  # 5 MB
+
+mkdir -p "$LOG_DIR"
+
+log_msg() {
+    local msg="[$(date -Iseconds)] $1"
+    echo "$msg"
+    echo "$msg" >> "$LOG_FILE"
+    # Truncate if file exceeds max size (keep last 1000 lines)
+    local size
+    size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "$size" -gt "$LOG_MAX_SIZE" ]; then
+        tail -n 1000 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+    fi
+}
+
 # Recording mode constants
 # Source of truth: backend/config/constants.py
 # Keep in sync when adding/removing modes
@@ -25,9 +44,9 @@ STREAM_BITRATE="${STREAM_BITRATE:-320k}"
 if [ -z "$ICECAST_PASSWORD" ] || [ "$ICECAST_PASSWORD" = "hackme" ]; then
     # Generate a random password if not set or using insecure default
     ICECAST_PASSWORD=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    echo "WARNING: ICECAST_PASSWORD not set or using insecure default."
-    echo "         Generated random password for this session."
-    echo "         Set ICECAST_PASSWORD in your environment for a persistent password."
+    log_msg "WARNING: ICECAST_PASSWORD not set or using insecure default."
+    log_msg "         Generated random password for this session."
+    log_msg "         Set ICECAST_PASSWORD in your environment for a persistent password."
 fi
 
 # Generate icecast config with secure password (template is mounted read-only)
@@ -85,7 +104,7 @@ RTSP_STREAM_URL=""
 if [ -f "$SETTINGS_FILE" ]; then
     RECORDING_MODE=$(jq -r '.audio.recording_mode // "'"$DEFAULT_RECORDING_MODE"'"' "$SETTINGS_FILE")
     if ! is_valid_recording_mode "$RECORDING_MODE"; then
-        echo "Warning: Unknown recording mode '$RECORDING_MODE', using default"
+        log_msg "Warning: Unknown recording mode '$RECORDING_MODE', using default"
         RECORDING_MODE="$DEFAULT_RECORDING_MODE"
     fi
     if [ "$RECORDING_MODE" = "rtsp" ]; then
@@ -93,23 +112,23 @@ if [ -f "$SETTINGS_FILE" ]; then
     fi
 fi
 
-echo "Starting Icecast streaming service..."
-echo "  Stream bitrate: $STREAM_BITRATE"
+log_msg "Starting Icecast streaming service..."
+log_msg "  Stream bitrate: $STREAM_BITRATE"
 
 # Determine audio source based on RTSP_STREAM_URL
 # Use arrays to avoid eval and prevent command injection
 if [ -n "$RTSP_STREAM_URL" ]; then
-    echo "  Audio source: RTSP stream"
+    log_msg "  Audio source: RTSP stream"
     # Hide credentials in log output
     RTSP_DISPLAY_URL=$(echo "$RTSP_STREAM_URL" | sed 's/:[^:@]*@/:***@/')
-    echo "  RTSP URL: $RTSP_DISPLAY_URL"
+    log_msg "  RTSP URL: $RTSP_DISPLAY_URL"
     # Ignore video streams and rebuild audio timestamps for cameras with unstable RTP timing.
     AUDIO_ARGS=(-rtsp_transport tcp -timeout 10000000 -allowed_media_types audio -fflags +genpts+discardcorrupt -use_wallclock_as_timestamps 1 -i "$RTSP_STREAM_URL" -map 0:a:0 -af aresample=async=1:first_pts=0)
 else
-    echo "  Audio source: PulseAudio (default)"
+    log_msg "  Audio source: PulseAudio (default)"
 
     # Wait for PulseAudio to be available
-    echo "Waiting for PulseAudio..."
+    log_msg "Waiting for PulseAudio..."
     MAX_RETRIES=30
     RETRY_COUNT=0
     while ! timeout 1 bash -c "echo > /dev/tcp/localhost/0" 2>/dev/null; do
@@ -119,7 +138,7 @@ else
         fi
         RETRY_COUNT=$((RETRY_COUNT + 1))
         if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
-            echo "ERROR: PulseAudio socket not found after ${MAX_RETRIES} seconds"
+            log_msg "ERROR: PulseAudio socket not found after ${MAX_RETRIES} seconds"
             exit 1
         fi
         sleep 1
@@ -127,29 +146,29 @@ else
 
     # Verify PulseAudio connection
     if [ -S "/run/pulse/native" ]; then
-        echo "PulseAudio socket found at /run/pulse/native"
+        log_msg "PulseAudio socket found at /run/pulse/native"
     else
-        echo "ERROR: PulseAudio socket not available"
+        log_msg "ERROR: PulseAudio socket not available"
         exit 1
     fi
 
     PA_SOURCE="default"
-    echo "Using PulseAudio source: $PA_SOURCE"
+    log_msg "Using PulseAudio source: $PA_SOURCE"
     AUDIO_ARGS=(-f pulse -i "$PA_SOURCE")
 fi
 
 # Start Icecast in background
-echo "Starting Icecast server..."
+log_msg "Starting Icecast server..."
 icecast2 -c "$ICECAST_CONFIG" -b
 sleep 2
 
 # Verify Icecast is running
 if ! curl -s http://localhost:8888/status-json.xsl > /dev/null 2>&1; then
-    echo "ERROR: Icecast failed to start"
+    log_msg "ERROR: Icecast failed to start"
     exit 1
 fi
 
-echo "Icecast server started on port 8888"
+log_msg "Icecast server started on port 8888"
 
 # Retry configuration (match main container patterns)
 if [ -n "$RTSP_STREAM_URL" ]; then
@@ -165,7 +184,7 @@ ERROR_LOG_INTERVAL=30
 RUNNING=true
 cleanup() {
     RUNNING=false
-    echo "[$(date '+%H:%M:%S')] Received shutdown signal..."
+    log_msg "Received shutdown signal..."
     if [ -n "$FFMPEG_PID" ]; then
         kill "$FFMPEG_PID" 2>/dev/null
     fi
@@ -175,7 +194,7 @@ trap cleanup SIGTERM SIGINT
 # Disable exit-on-error for the retry loop
 set +e
 
-echo "[$(date '+%H:%M:%S')] Starting audio stream capture..."
+log_msg "Starting audio stream capture..."
 
 while $RUNNING; do
     STREAM_START=$(date +%s)
@@ -191,9 +210,9 @@ while $RUNNING; do
     sleep 1
     if kill -0 "$FFMPEG_PID" 2>/dev/null; then
         if [ $RETRY_COUNT -gt 0 ]; then
-            echo "[$(date '+%H:%M:%S')] Stream reconnected after $RETRY_COUNT retries"
+            log_msg "Stream reconnected after $RETRY_COUNT retries"
         else
-            echo "[$(date '+%H:%M:%S')] Stream connected successfully"
+            log_msg "Stream connected successfully"
         fi
         RETRY_COUNT=0
     fi
@@ -203,7 +222,7 @@ while $RUNNING; do
     STREAM_DURATION=$(($(date +%s) - STREAM_START))
 
     if ! $RUNNING; then
-        echo "[$(date '+%H:%M:%S')] Shutdown complete"
+        log_msg "Shutdown complete"
         break
     fi
 
@@ -214,9 +233,9 @@ while $RUNNING; do
     if [ $((CURRENT_TIME - LAST_ERROR_LOG)) -gt $ERROR_LOG_INTERVAL ]; then
         LAST_ERROR_LOG=$CURRENT_TIME
         if [ $STREAM_DURATION -gt 5 ]; then
-            echo "[$(date '+%H:%M:%S')] Stream disconnected after ${STREAM_DURATION}s (exit code: $EXIT_CODE), reconnecting..."
+            log_msg "Stream disconnected after ${STREAM_DURATION}s (exit code: $EXIT_CODE), reconnecting..."
         else
-            echo "[$(date '+%H:%M:%S')] Connection failed (attempt $RETRY_COUNT), retrying in ${RETRY_DELAY}s..."
+            log_msg "Connection failed (attempt $RETRY_COUNT), retrying in ${RETRY_DELAY}s..."
         fi
     fi
 

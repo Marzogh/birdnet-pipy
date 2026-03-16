@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Added system logs viewer with per-service file logging, accessible via modal in Settings
+- Added restart services button in Settings Management section
+- Added configurable species filter threshold in Settings UI
+- Combined detection sliders into responsive 3-column grid
+- Converted Management section to collapsible, repositioned above Data
+- Improved log polling efficiency with AbortController and fixed formatter duplication
+- Simplified filter_by_location to single filter-then-sort pass
+- Fixed Icecast UTC timestamps not converted to local time, causing incorrect sorting
 - Added "new species" notification trigger — alerts when a species is detected that has never been seen before
 - Added unified species lookup table merging V2.4 labels (27 languages), V3.0 taxonomy, and eBird codes — enables localized bird names for V3.0 (~6K overlapping species)
 - Added unique species toggle (All/Unique) to Dashboard recent observations — both lists fetched in a single API call for instant switching

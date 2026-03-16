@@ -208,13 +208,25 @@ class TestBirdNetModelFilterByLocation:
 
         result = mock_birdnet_model_with_meta.filter_by_location(42.0, -76.0, 25)
 
-        # Should include species above SPECIES_FILTER_THRESHOLD (0.03)
+        # Should include species above default threshold (0.03)
         assert "Turdus migratorius_American Robin" in result
         assert "Cardinalis cardinalis_Northern Cardinal" in result
         assert "Cyanocitta cristata_Blue Jay" not in result
 
+    def test_filter_by_location_custom_threshold(self, mock_birdnet_model_with_meta):
+        """Test filter_by_location respects custom threshold parameter."""
+        meta_output = np.array([0.5, 0.1, 0.01])
+        mock_birdnet_model_with_meta._meta_model.get_tensor.return_value = np.array([meta_output])
+
+        # High threshold should filter more aggressively
+        result = mock_birdnet_model_with_meta.filter_by_location(42.0, -76.0, 25, threshold=0.15)
+
+        assert "Turdus migratorius_American Robin" in result
+        assert "Cardinalis cardinalis_Northern Cardinal" not in result  # 0.1 < 0.15
+        assert "Cyanocitta cristata_Blue Jay" not in result
+
     def test_filter_by_location_caches_results(self, mock_birdnet_model_with_meta):
-        """Test filter_by_location caches results by (lat, lon, week)."""
+        """Test filter_by_location caches results by (lat, lon, week, threshold)."""
         meta_output = np.array([0.5, 0.1, 0.05])
         mock_birdnet_model_with_meta._meta_model.get_tensor.return_value = np.array([meta_output])
 
@@ -229,6 +241,24 @@ class TestBirdNetModelFilterByLocation:
 
         # Meta model invoke should only be called once due to caching
         assert mock_birdnet_model_with_meta._meta_model.invoke.call_count == 1
+
+    def test_filter_by_location_cache_key_includes_threshold(self, mock_birdnet_model_with_meta):
+        """Test that different thresholds produce separate cache entries."""
+        meta_output = np.array([0.5, 0.1, 0.05])
+        mock_birdnet_model_with_meta._meta_model.get_tensor.return_value = np.array([meta_output])
+
+        # Call with default threshold
+        result1 = mock_birdnet_model_with_meta.filter_by_location(42.0, -76.0, 25, threshold=0.03)
+
+        # Call with different threshold - should NOT use cache
+        result2 = mock_birdnet_model_with_meta.filter_by_location(42.0, -76.0, 25, threshold=0.08)
+
+        # Meta model should be invoked twice (different cache keys)
+        assert mock_birdnet_model_with_meta._meta_model.invoke.call_count == 2
+
+        # Results should differ: threshold=0.08 excludes Blue Jay (0.05)
+        assert "Cyanocitta cristata_Blue Jay" in result1
+        assert "Cyanocitta cristata_Blue Jay" not in result2
 
     def test_filter_by_location_raises_if_not_loaded(self):
         """Test filter_by_location raises RuntimeError if meta model not loaded."""

@@ -59,7 +59,8 @@ describe('useAuth', () => {
         authEnabled: false,
         setupComplete: false,
         authenticated: false,
-        publicFeatures: []
+        publicFeatures: [],
+        stationName: ''
       })
     })
 
@@ -156,7 +157,8 @@ describe('useAuth', () => {
         authEnabled: true,
         setupComplete: true,
         authenticated: false,
-        publicFeatures: ['charts']
+        publicFeatures: ['charts'],
+        stationName: ''
       })
     })
 

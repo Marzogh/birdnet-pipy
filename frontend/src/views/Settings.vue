@@ -177,7 +177,7 @@
           </div>
           <div
             v-if="settings.location.timezone"
-            class="flex-1"
+            class="hidden sm:block flex-1"
           >
             <label class="block text-sm text-gray-600 mb-1">Timezone</label>
             <div class="px-3 py-2 text-sm text-gray-500 bg-gray-50 rounded-lg border border-gray-200">
@@ -442,9 +442,12 @@
           </p>
         </div>
 
-        <!-- Sensitivity & Confidence -->
+        <!-- Sensitivity, Confidence & Location Filter Threshold -->
         <div class="pt-4 border-t border-gray-100">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div
+            class="grid grid-cols-1 md:grid-cols-2 gap-6"
+            :class="{ 'lg:grid-cols-3': settings.model?.type !== 'birdnet_v3' }"
+          >
             <div>
               <div class="flex justify-between items-center mb-2">
                 <label
@@ -485,6 +488,32 @@
               >
               <p class="text-xs text-gray-400 mt-1">
                 Minimum confidence to report
+              </p>
+            </div>
+            <!-- Location Filter Threshold (V2.4 only — V3 has no meta-model) -->
+            <div v-if="settings.model?.type !== 'birdnet_v3'">
+              <div class="flex justify-between items-center mb-2">
+                <label
+                  for="speciesFilterThreshold"
+                  class="text-sm text-gray-600"
+                >
+                  Location Filter
+                </label>
+                <span class="text-sm font-medium text-gray-800">
+                  {{ settings.detection.species_filter_threshold }}
+                </span>
+              </div>
+              <input
+                id="speciesFilterThreshold"
+                v-model.number="settings.detection.species_filter_threshold"
+                type="range"
+                min="0.01"
+                max="0.10"
+                step="0.01"
+                class="w-full h-2 rounded-lg cursor-pointer"
+              >
+              <p class="text-xs text-gray-400 mt-1">
+                Higher = stricter location filtering
               </p>
             </div>
           </div>
@@ -927,6 +956,34 @@
         </div>
       </CollapsibleSection>
 
+      <!-- Management (Collapsible) -->
+      <CollapsibleSection
+        title="Management"
+        subtitle="System logs and service controls"
+      >
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <!-- System Logs Button -->
+          <button
+            class="py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors"
+            @click="showLogsModal = true"
+          >
+            System Logs
+          </button>
+
+          <!-- Restart Services Button -->
+          <button
+            class="py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg transition-colors"
+            :class="serviceRestart.isRestarting.value
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:text-red-600 hover:border-red-200 hover:bg-red-50'"
+            :disabled="serviceRestart.isRestarting.value"
+            @click="manualRestart"
+          >
+            {{ serviceRestart.isRestarting.value ? 'Restarting...' : 'Restart Services' }}
+          </button>
+        </div>
+      </CollapsibleSection>
+
       <!-- Data Management -->
       <div class="bg-white rounded-lg shadow-sm border border-gray-100 p-5">
         <h2 class="text-base font-medium text-gray-800 mb-1">
@@ -952,7 +1009,7 @@
         </div>
       </div>
 
-      <!-- System Updates -->
+      <!-- System -->
       <div
         id="system-updates"
         class="bg-white rounded-lg shadow-sm border border-gray-100 p-5"
@@ -1070,7 +1127,7 @@
           href="https://github.com/alexbelgium/hassio-addons/tree/master/birdnet-pipy"
           target="_blank"
           rel="noopener noreferrer"
-          class="mt-2 w-full py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors flex items-center justify-center gap-2"
+          class="w-full py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors flex items-center justify-center gap-2"
         >
           <svg
             class="w-4 h-4"
@@ -1348,6 +1405,12 @@
       @confirm="confirmRemoveAppriseUrl"
       @cancel="cancelRemoveAppriseUrl"
     />
+
+    <!-- System Logs Modal -->
+    <LogsModal
+      v-if="showLogsModal"
+      @close="showLogsModal = false"
+    />
   </div>
 </template>
 
@@ -1372,6 +1435,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 import StreamSourceModal from '@/components/StreamSourceModal.vue'
 import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
+import LogsModal from '@/components/LogsModal.vue'
 import { SCHEME_TO_SERVICE_NAME } from '@/utils/notificationServices'
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Suncuss/BirdNET-PiPy'
@@ -1388,7 +1452,8 @@ export default {
     ConfirmModal,
     StreamSourceModal,
     CollapsibleSection,
-    ToggleSwitch
+    ToggleSwitch,
+    LogsModal
   },
   setup() {
     // Composables
@@ -1438,6 +1503,7 @@ export default {
     const settingsSaveError = ref('')
     const recordingMode = ref('pulseaudio')
     const showUpdateConfirm = ref(false)
+    const showLogsModal = ref(false)
 
     // Storage state
     const storage = ref(null)
@@ -1622,7 +1688,7 @@ export default {
         recording_length: s.audio?.recording_length,
         overlap: s.audio?.overlap
       },
-      detection: { sensitivity: s.detection?.sensitivity, cutoff: s.detection?.cutoff },
+      detection: { sensitivity: s.detection?.sensitivity, cutoff: s.detection?.cutoff, species_filter_threshold: s.detection?.species_filter_threshold },
       species_filter: {
         allowed_species: s.species_filter?.allowed_species || [],
         blocked_species: s.species_filter?.blocked_species || []
@@ -1837,6 +1903,22 @@ export default {
           }
           showStatus('success', result?.message || 'Settings saved')
         }
+      }
+    }
+
+    // Manual restart triggered from Management section
+    const manualRestart = async () => {
+      if (serviceRestart.isRestarting.value) return
+      try {
+        await requestRestart()
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+        await serviceRestart.waitForRestart({
+          autoReload: true,
+          message: 'Restarting services'
+        })
+      } catch (error) {
+        console.error('Manual restart failed:', error)
+        settingsSaveError.value = 'Restart did not complete. Please refresh or restart services.'
       }
     }
 
@@ -2382,6 +2464,8 @@ export default {
       saveStatus,
       recordingMode,
       showUpdateConfirm,
+      showLogsModal,
+      manualRestart,
       storage,
       exporting,
       exportCSV,

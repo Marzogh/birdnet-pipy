@@ -1,7 +1,12 @@
 import json
 import os
 
-from config.constants import DEFAULT_RECORDING_MODE, MODEL_SAMPLE_RATES, ModelType
+from config.constants import (
+    DEFAULT_RECORDING_MODE,
+    DEFAULT_SPECIES_FILTER_THRESHOLD,
+    MODEL_SAMPLE_RATES,
+    ModelType,
+)
 
 BASE_DIR = '/app'
 USER_SETTINGS_PATH = f'{BASE_DIR}/data/config/user_settings.json'
@@ -9,7 +14,7 @@ USER_SETTINGS_PATH = f'{BASE_DIR}/data/config/user_settings.json'
 # Default settings structure - single source of truth
 DEFAULT_SETTINGS = {
     "location": {"latitude": 42.47, "longitude": -76.45, "configured": False, "timezone": None},
-    "detection": {"sensitivity": 0.75, "cutoff": 0.60},
+    "detection": {"sensitivity": 0.75, "cutoff": 0.60, "species_filter_threshold": DEFAULT_SPECIES_FILTER_THRESHOLD},
     "species_filter": {
         "allowed_species": [],   # If non-empty, ONLY detect these (bypasses location filter)
         "blocked_species": []    # Never detect these species
@@ -207,6 +212,7 @@ CUSTOM_BIRD_IMAGES_DIR = f'{BASE_DIR}/data/bird_images'
 DEFAULT_AUDIO_PATH = f'{BASE_DIR}/assets/default_audio.mp3'
 DEFAULT_IMAGE_PATH = f'{BASE_DIR}/assets/default_spectrogram.webp'
 DATABASE_PATH = f'{BASE_DIR}/data/db/birds.db'
+LOGS_DIR = f'{BASE_DIR}/data/logs'
 
 DATABASE_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS detections (

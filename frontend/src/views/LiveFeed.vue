@@ -22,7 +22,11 @@
         ref="spectrogramCanvas"
         class="w-full h-48 mb-4 rounded-lg"
       />
-      <AlertBanner :message="recorderWarning" :dismissible="false" :auto-dismiss="0" />
+      <AlertBanner
+        :message="recorderWarning"
+        :dismissible="false"
+        :auto-dismiss="0"
+      />
       <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-4">
         <button
           class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow focus:outline-none focus:ring-2 focus:ring-blue-300 flex items-center justify-center min-w-[120px] flex-shrink-0 disabled:bg-gray-400 disabled:cursor-not-allowed"

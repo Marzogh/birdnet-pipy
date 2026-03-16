@@ -245,6 +245,8 @@ export default {
         // Auth enabled means initial setup (including location) was already done
         // Allow dashboard to work without login (public access)
         setLocationConfigured(true)
+        // Station name from public auth endpoint (settings endpoint requires login)
+        setStationName(auth.authStatus.value.stationName)
       } else {
         checkLocationSetup()
       }

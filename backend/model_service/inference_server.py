@@ -10,6 +10,7 @@ import warnings
 import numpy as np
 
 from config import settings
+from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
 
 # Suppress NumPy floating point limit warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='numpy.core.getlimits')
@@ -258,7 +259,8 @@ def process_audio_file(
     overlap: float,
     recording_length: float,
     allowed_species: list[str] | None,
-    blocked_species: list[str] | None
+    blocked_species: list[str] | None,
+    species_filter_threshold: float = DEFAULT_SPECIES_FILTER_THRESHOLD
 ):
     """Process an audio file and return detected species.
 
@@ -275,7 +277,7 @@ def process_audio_file(
     """
     # Time meta model inference for location filtering
     meta_start = time.time()
-    local_species_list = model.filter_by_location(lat, lon, week)
+    local_species_list = model.filter_by_location(lat, lon, week, threshold=species_filter_threshold)
     meta_time = time.time() - meta_start
 
     if local_species_list is not None:
@@ -314,7 +316,8 @@ def process_audio_file(
         'lon': lon,
         'overlap': overlap,
         'sensitivity': sensitivity,
-        'cutoff': cutoff
+        'cutoff': cutoff,
+        'species_filter_threshold': species_filter_threshold
     })
 
     results = []
@@ -471,6 +474,7 @@ def analyze_audio_file():
         lon = location_settings.get('longitude')
         sensitivity = detection_settings.get('sensitivity', 0.75)
         cutoff = detection_settings.get('cutoff', 0.60)
+        species_filter_threshold = detection_settings.get('species_filter_threshold', DEFAULT_SPECIES_FILTER_THRESHOLD)
         overlap = audio_settings.get('overlap', 0.0)
         recording_length = audio_settings.get('recording_length', 9)
         allowed_species = species_filter_settings.get('allowed_species') or []
@@ -489,6 +493,7 @@ def analyze_audio_file():
             'lon': lon,
             'sensitivity': sensitivity,
             'cutoff': cutoff,
+            'species_filter_threshold': species_filter_threshold,
             'overlap': overlap
         })
 
@@ -504,7 +509,8 @@ def analyze_audio_file():
             overlap,
             recording_length,
             allowed_species,
-            blocked_species
+            blocked_species,
+            species_filter_threshold
         )
 
         processing_time = time.time() - start_time

@@ -10,13 +10,11 @@ try:
 except ImportError:
     from tensorflow import lite as tflite
 
+from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
+
 from .base_model import BirdDetectionModel
 
 logger = logging.getLogger(__name__)
-
-# Minimum probability threshold for local species filtering (meta model)
-SPECIES_FILTER_THRESHOLD = 0.03
-
 
 def custom_sigmoid(x: np.ndarray, sensitivity: float) -> np.ndarray:
     """Apply custom sigmoid with adjustable sensitivity."""
@@ -130,15 +128,15 @@ class BirdNetModel(BirdDetectionModel):
             self._load_labels()
         return self._labels
 
-    def filter_by_location(self, lat: float, lon: float, week: int) -> list[str] | None:
+    def filter_by_location(self, lat: float, lon: float, week: int, threshold: float = DEFAULT_SPECIES_FILTER_THRESHOLD) -> list[str] | None:
         """Get species likely at a location using the meta-model.
 
-        Results are cached by (lat, lon, week).
+        Results are cached by (lat, lon, week, threshold).
         """
         if self._meta_model is None:
             raise RuntimeError("Meta model not loaded. Call load() first.")
 
-        cache_key = (lat, lon, week)
+        cache_key = (lat, lon, week, threshold)
 
         if cache_key in self._meta_model_cache:
             logger.debug("Meta model cache hit", extra={
@@ -151,8 +149,6 @@ class BirdNetModel(BirdDetectionModel):
             'lat': lat, 'lon': lon, 'week': week
         })
 
-        local_species = []
-
         meta_model_input = np.expand_dims(
             np.array([lat, lon, week], dtype='float32'), 0)
 
@@ -162,14 +158,13 @@ class BirdNetModel(BirdDetectionModel):
             meta_model_output = self._meta_model.get_tensor(
                 self.meta_output_layer_index)[0].copy()
 
-        meta_model_output = np.where(
-            meta_model_output >= SPECIES_FILTER_THRESHOLD, meta_model_output, 0)
-        species_with_probs = list(zip(meta_model_output, self._labels, strict=True))
-        species_with_probs = sorted(species_with_probs, key=lambda x: x[0], reverse=True)
-
-        for prob, species_label in species_with_probs:
-            if prob >= SPECIES_FILTER_THRESHOLD:
-                local_species.append(species_label)
+        # Filter species above threshold, sort by probability descending
+        local_species = [
+            label for _, label in sorted(
+                ((p, label) for p, label in zip(meta_model_output, self._labels, strict=True) if p >= threshold),
+                key=lambda x: x[0], reverse=True
+            )
+        ]
 
         self._meta_model_cache[cache_key] = local_species
         return local_species

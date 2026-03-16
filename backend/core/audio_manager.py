@@ -285,6 +285,10 @@ class BaseRecorder(ABC):
                     os.rename(temp_path, final_path)
                     self.consecutive_failures = 0
                     self.last_success_time = time.time()
+                    logger.info("🔴 Audio recorded", extra={
+                        'file': os.path.basename(final_path),
+                        'duration': self.chunk_duration,
+                    })
                     return final_path
         except subprocess.TimeoutExpired:
             logger.warning("Recording timed out", extra={'temp_path': temp_path})

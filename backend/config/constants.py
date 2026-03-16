@@ -51,3 +51,12 @@ MODEL_SAMPLE_RATES = {
     ModelType.BIRDNET: 48000,
     ModelType.BIRDNET_V3: 32000,
 }
+
+# Species filter (meta-model) default threshold
+DEFAULT_SPECIES_FILTER_THRESHOLD = 0.03
+
+# Log rotation
+LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 MB per file
+LOG_BACKUP_COUNT = 2               # 2 rotated backups (15 MB max per service)
+LOG_DEFAULT_LINES = 500
+LOG_MAX_LINES = 2000

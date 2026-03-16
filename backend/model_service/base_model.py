@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
+
 from .label_utils import get_ebird_code as _lookup_ebird_code
 
 logger = logging.getLogger(__name__)
@@ -113,7 +115,7 @@ class BirdDetectionModel(ABC):
         results_dict = {k: v for k, v in results_dict.items() if v != 0}
         return sorted(results_dict.items(), key=lambda x: x[1], reverse=True)
 
-    def filter_by_location(self, lat: float, lon: float, week: int) -> list[str] | None:
+    def filter_by_location(self, lat: float, lon: float, week: int, threshold: float = DEFAULT_SPECIES_FILTER_THRESHOLD) -> list[str] | None:
         """Get species likely at a location during a specific week.
 
         Returns None if location filtering is not supported by this model.

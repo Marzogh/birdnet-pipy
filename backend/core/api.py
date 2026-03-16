@@ -2157,6 +2157,25 @@ def trigger_service_restart():
 
 
 # =============================================================================
+# Log Viewer Endpoint
+# =============================================================================
+
+@api.route('/api/system/logs', methods=['GET'])
+@require_auth
+@handle_api_errors
+def get_system_logs():
+    """Return merged, filtered log entries from all services."""
+    from core.log_reader import get_logs
+
+    service = request.args.get('service')
+    search = request.args.get('search')
+    limit = request.args.get('limit', type=int)
+
+    result = get_logs(service=service, search=search, limit=limit)
+    return jsonify(result)
+
+
+# =============================================================================
 # Authentication Endpoints
 # =============================================================================
 
@@ -2165,11 +2184,13 @@ def get_auth_status():
     """Get authentication status for frontend."""
     auth_enabled = is_auth_enabled()
     public_features = sorted(get_public_features()) if auth_enabled else []
+    settings = get_runtime_settings()
     return jsonify({
         'auth_enabled': auth_enabled,
         'setup_complete': is_setup_complete(),
         'authenticated': is_authenticated(),
-        'public_features': public_features
+        'public_features': public_features,
+        'station_name': settings.get('display', {}).get('station_name', '')
     }), 200
 
 

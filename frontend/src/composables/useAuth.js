@@ -9,7 +9,8 @@ const authStatus = ref({
   authEnabled: false,
   setupComplete: false,
   authenticated: false,
-  publicFeatures: []
+  publicFeatures: [],
+  stationName: ''
 })
 const loading = ref(false)
 const error = ref('')
@@ -43,7 +44,8 @@ export function useAuth() {
           authEnabled: data.auth_enabled,
           setupComplete: data.setup_complete,
           authenticated: data.authenticated,
-          publicFeatures: data.public_features || []
+          publicFeatures: data.public_features || [],
+          stationName: data.station_name || ''
         }
         error.value = ''
         logger.debug('Auth status checked', authStatus.value)
@@ -265,7 +267,8 @@ export function useAuth() {
       authEnabled: false,
       setupComplete: false,
       authenticated: false,
-      publicFeatures: []
+      publicFeatures: [],
+      stationName: ''
     }
     loading.value = false
     error.value = ''

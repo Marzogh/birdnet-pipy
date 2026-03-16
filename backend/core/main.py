@@ -147,19 +147,19 @@ def setup_recorder(audio_settings: dict[str, Any], thread_logger) -> BaseRecorde
 
     # Log startup info based on mode
     if recording_mode == RecordingMode.PULSEAUDIO:
-        thread_logger.info("Starting PulseAudio recording", extra={
+        thread_logger.info("🔴 Starting PulseAudio recording", extra={
             'pulseaudio_source': pulseaudio_source,
             'chunk_duration': recording_length,
             'output_dir': RECORDING_DIR
         })
     elif recording_mode == RecordingMode.RTSP:
-        thread_logger.info("Starting RTSP stream recording", extra={
+        thread_logger.info("🔴 Starting RTSP stream recording", extra={
             'rtsp_url': sanitize_url(rtsp_url),
             'chunk_duration': recording_length,
             'output_dir': RECORDING_DIR
         })
     else:  # http_stream
-        thread_logger.info("Starting HTTP stream recording", extra={
+        thread_logger.info("🔴 Starting HTTP stream recording", extra={
             'stream_url': stream_url,
             'chunk_duration': recording_length,
             'output_dir': RECORDING_DIR
@@ -252,7 +252,7 @@ def continuous_audio_recording(thread_logger):
                     recorder.start()
                     current_signature = new_signature
                 elif new_signature != current_signature:
-                    thread_logger.info("Audio settings changed, reloading recorder", extra={
+                    thread_logger.info("🔴 Audio settings changed, reloading recorder", extra={
                         'old_signature': current_signature,
                         'new_signature': new_signature
                     })
@@ -294,7 +294,7 @@ def continuous_audio_recording(thread_logger):
 
     finally:
         # Always clean up on exit
-        thread_logger.info("Stopping audio recording")
+        thread_logger.info("🔴 Stopping audio recording")
         if recorder:
             recorder.stop()
 
@@ -539,7 +539,7 @@ def process_audio_files():
                     continue
 
                 # Log that we're processing this file
-                thread_logger.info("🔴 Processing recording", extra={
+                thread_logger.info("🔄 Processing recording", extra={
                     'file': file_name
                 })
 
