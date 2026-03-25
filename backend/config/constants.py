@@ -52,8 +52,9 @@ MODEL_SAMPLE_RATES = {
     ModelType.BIRDNET_V3: 32000,
 }
 
-# Species filter (meta-model) default threshold
-DEFAULT_SPECIES_FILTER_THRESHOLD = 0.03
+# Species filter default thresholds
+DEFAULT_SPECIES_FILTER_THRESHOLD = 0.03      # V2.4 meta-model
+DEFAULT_GEOMODEL_FILTER_THRESHOLD = 0.15     # V3.0 geomodel
 
 # Log rotation
 LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 MB per file

@@ -114,6 +114,29 @@ def get_species_list(model_type: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Species label helpers (shared across model service modules)
+# ---------------------------------------------------------------------------
+
+def get_scientific_name(label: str) -> str:
+    """Extract scientific name from a full species label.
+
+    Args:
+        label: Full species label (e.g., "Turdus migratorius_American Robin")
+
+    Returns:
+        Scientific name (e.g., "Turdus migratorius")
+    """
+    parts = label.split('_', 1)
+    return parts[0] if len(parts) == 2 else label
+
+
+def get_common_name(label: str) -> str:
+    """Extract common name from a full species label."""
+    parts = label.split('_', 1)
+    return parts[1] if len(parts) == 2 else label
+
+
+# ---------------------------------------------------------------------------
 # Model-specific label parsers (used by model classes for inference only)
 # ---------------------------------------------------------------------------
 
@@ -136,6 +159,31 @@ def parse_v2_labels(path: str) -> list[tuple[str, str]]:
             if scientific_name and separator and common_name:
                 labels.append((scientific_name.strip(), common_name.strip()))
 
+    return labels
+
+
+def parse_geomodel_labels(path: str) -> list[tuple[str, str, str]]:
+    """Parse geomodel tab-delimited labels file.
+
+    Format: speciesCode<TAB>scientificName<TAB>commonName
+
+    Returns:
+        List of (species_code, scientific_name, common_name) tuples
+        in model output order (index = position in list).
+    """
+    labels = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) >= 3:
+                code, sci, com = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            elif len(parts) == 2:
+                code, sci = parts[0].strip(), parts[1].strip()
+                com = sci
+            else:
+                code = sci = com = parts[0].strip()
+            if sci:
+                labels.append((code, sci, com))
     return labels
 
 

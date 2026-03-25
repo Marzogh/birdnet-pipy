@@ -119,5 +119,8 @@ class BirdDetectionModel(ABC):
         """Get species likely at a location during a specific week.
 
         Returns None if location filtering is not supported by this model.
+
+        Deprecated: prefer the LocationFilter abstraction (location_filter.py)
+        for new code. This method is retained for V2.4's embedded meta model.
         """
         return None

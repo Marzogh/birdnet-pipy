@@ -200,6 +200,10 @@
               : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'"
             @click="selectRtspSource(null)"
           >
+            <span
+              v-if="recordingMode === 'pulseaudio' && recorderStatus?.state === 'running'"
+              class="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse flex-shrink-0"
+            />
             Local Mic
           </button>
 
@@ -214,10 +218,19 @@
             @click="selectRtspSource(url)"
           >
             <span
-              class="pl-3.5 pr-1 py-1.5 text-sm font-medium truncate max-w-48"
-              :class="recordingMode === 'rtsp' && settings.audio.rtsp_url === url
-                ? 'text-gray-800'
-                : 'text-gray-600'"
+              v-if="recordingMode === 'rtsp' && settings.audio.rtsp_url === url && recorderStatus?.state === 'running'"
+              class="w-1.5 h-1.5 ml-3.5 rounded-full bg-red-400 animate-pulse flex-shrink-0"
+            />
+            <span
+              class="pr-1 py-1.5 text-sm font-medium truncate max-w-48"
+              :class="[
+                recordingMode === 'rtsp' && settings.audio.rtsp_url === url
+                  ? 'text-gray-800'
+                  : 'text-gray-600',
+                recordingMode === 'rtsp' && settings.audio.rtsp_url === url && recorderStatus?.state === 'running'
+                  ? 'pl-1.5'
+                  : 'pl-3.5'
+              ]"
               :title="url"
             >{{ getRtspLabel(url) || 'RTSP Stream' }}</span>
             <button
@@ -428,6 +441,7 @@
             id="modelType"
             v-model="settings.model.type"
             class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+            @change="onModelTypeChange"
           >
             <option
               v-for="m in modelTypeOptions"
@@ -445,8 +459,7 @@
         <!-- Sensitivity, Confidence & Location Filter Threshold -->
         <div class="pt-4 border-t border-gray-100">
           <div
-            class="grid grid-cols-1 md:grid-cols-2 gap-6"
-            :class="{ 'lg:grid-cols-3': settings.model?.type !== 'birdnet_v3' }"
+            class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
           >
             <div>
               <div class="flex justify-between items-center mb-2">
@@ -490,8 +503,8 @@
                 Minimum confidence to report
               </p>
             </div>
-            <!-- Location Filter Threshold (V2.4 only — V3 has no meta-model) -->
-            <div v-if="settings.model?.type !== 'birdnet_v3'">
+            <!-- Location Filter Threshold (V2.4 meta-model / V3.0 geomodel) -->
+            <div>
               <div class="flex justify-between items-center mb-2">
                 <label
                   for="speciesFilterThreshold"
@@ -508,7 +521,7 @@
                 v-model.number="settings.detection.species_filter_threshold"
                 type="range"
                 min="0.01"
-                max="0.10"
+                :max="settings.model?.type === 'birdnet_v3' ? 0.30 : 0.10"
                 step="0.01"
                 class="w-full h-2 rounded-lg cursor-pointer"
               >
@@ -1480,6 +1493,11 @@ export default {
       { value: 'birdnet', label: 'BirdNET v2.4 (6K species)' },
       { value: 'birdnet_v3', label: 'BirdNET v3.0 (11K species, preview)' }
     ]
+    const FILTER_DEFAULTS = { birdnet: 0.03, birdnet_v3: 0.15 }
+    const onModelTypeChange = () => {
+      settings.value.detection.species_filter_threshold =
+        FILTER_DEFAULTS[settings.value.model.type] ?? 0.03
+    }
 
     // Notification pill options
     const rateLimitOptions = [
@@ -1685,6 +1703,7 @@ export default {
         stream_url: s.audio?.stream_url,
         rtsp_url: s.audio?.rtsp_url,
         rtsp_urls: s.audio?.rtsp_urls || [],
+        rtsp_labels: s.audio?.rtsp_labels || {},
         recording_length: s.audio?.recording_length,
         overlap: s.audio?.overlap
       },
@@ -1887,12 +1906,8 @@ export default {
       return true
     }
 
-    // Save settings and wait for restart (used by main Save button)
-    const saveSettings = async () => {
-      if (!hasUnsavedChanges.value) {
-        return // Nothing changed, skip save and restart
-      }
-
+    // Persist current settings to backend, handle restart if needed, show status
+    const persistAndRestart = async (statusMessage = 'Settings saved') => {
       const result = await saveSettingsOnly()
       if (result) {
         appStatus.setStationName(settings.value.display?.station_name)
@@ -1901,9 +1916,17 @@ export default {
           if (result?.changes?.changed_paths?.includes('display.bird_name_language')) {
             await loadSpeciesList()
           }
-          showStatus('success', result?.message || 'Settings saved')
+          showStatus('success', result?.message || statusMessage)
         }
       }
+    }
+
+    // Save settings and wait for restart (used by main Save button)
+    const saveSettings = async () => {
+      if (!hasUnsavedChanges.value) {
+        return // Nothing changed, skip save and restart
+      }
+      await persistAndRestart()
     }
 
     // Manual restart triggered from Management section
@@ -2021,7 +2044,7 @@ export default {
       }
     }
 
-    const handleStreamAdd = ({ url, label }) => {
+    const handleStreamAdd = async ({ url, label }) => {
       if (!settings.value.audio.rtsp_urls) {
         settings.value.audio.rtsp_urls = []
       }
@@ -2029,9 +2052,10 @@ export default {
       setRtspLabel(url, label)
       selectRtspSource(url)
       showStreamModal.value = false
+      await persistAndRestart('Stream source added')
     }
 
-    const handleStreamSave = ({ url, label, originalUrl }) => {
+    const handleStreamSave = async ({ url, label, originalUrl }) => {
       const urls = settings.value.audio.rtsp_urls
       const index = urls.indexOf(originalUrl)
       if (index !== -1) {
@@ -2047,9 +2071,10 @@ export default {
         settings.value.audio.rtsp_url = url
       }
       showStreamModal.value = false
+      await persistAndRestart('Stream source updated')
     }
 
-    const handleStreamDelete = (url) => {
+    const handleStreamDelete = async (url) => {
       const urls = settings.value.audio.rtsp_urls
       const index = urls.indexOf(url)
       if (index !== -1) {
@@ -2065,6 +2090,7 @@ export default {
         selectRecordingMode('pulseaudio')
       }
       showStreamModal.value = false
+      await persistAndRestart('Stream source removed')
     }
 
     // Handle BirdWeather ID update
@@ -2535,6 +2561,7 @@ export default {
       recordingLengthOptions,
       overlapOptions,
       modelTypeOptions,
+      onModelTypeChange,
       // Unsaved changes
       hasUnsavedChanges,
       showUnsavedModal,

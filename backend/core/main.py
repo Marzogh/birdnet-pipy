@@ -266,6 +266,7 @@ def continuous_audio_recording(thread_logger):
                 if not healthy:
                     thread_logger.warning("Recorder unhealthy, restarting...")
                     recorder.restart()
+                    healthy = recorder.is_healthy()
 
                 # Broadcast status on state change or periodic refresh
                 current_state = _get_recorder_state(recorder, healthy)

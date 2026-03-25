@@ -2,6 +2,7 @@ import json
 import os
 
 from config.constants import (
+    DEFAULT_GEOMODEL_FILTER_THRESHOLD,
     DEFAULT_RECORDING_MODE,
     DEFAULT_SPECIES_FILTER_THRESHOLD,
     MODEL_SAMPLE_RATES,
@@ -81,6 +82,20 @@ def get_default_settings():
     return copy.deepcopy(DEFAULT_SETTINGS)
 
 
+def _apply_model_aware_defaults(settings, user_data):
+    """Adjust defaults that depend on the resolved model type.
+
+    DEFAULT_SETTINGS bakes in V2.4 values.  When the active model is V3
+    and the user hasn't explicitly saved a species_filter_threshold, we
+    must swap in the V3 geomodel default so the location filter works at
+    the intended strictness.
+    """
+    model_type = settings['model'].get('type')
+    user_threshold = (user_data.get('detection') or {}).get('species_filter_threshold')
+    if model_type == ModelType.BIRDNET_V3.value and user_threshold is None:
+        settings['detection']['species_filter_threshold'] = DEFAULT_GEOMODEL_FILTER_THRESHOLD
+
+
 def load_user_settings():
     """Load user settings from JSON file, merged with defaults."""
     defaults = get_default_settings()
@@ -102,6 +117,7 @@ def load_user_settings():
                             else:
                                 print(f"Settings: ignoring '{key}' with type {type(user_data[key]).__name__} (expected {type(defaults[key]).__name__})")
 
+                _apply_model_aware_defaults(defaults, user_data)
                 return defaults
         except Exception as e:
             print(f"Error loading user settings: {e}, using defaults")
@@ -136,6 +152,10 @@ LABELS_PATH = f'{MODELS_DIR}/v2.4/labels/BirdNET_GLOBAL_6K_V2.4_Labels_en.txt'
 MODEL_V3_PATH = f'{MODELS_DIR}/v3.0/BirdNET_V3.0_Global_11K_FP32.onnx'
 MODEL_V3_URL = 'https://zenodo.org/records/18247420/files/BirdNET+_V3.0-preview3_Global_11K_FP32.onnx?download=1'
 LABELS_V3_PATH = f'{MODELS_DIR}/v3.0/BirdNET_V3.0_Global_11K_Labels.csv'
+
+# Geomodel (location-based species filter, used with V3.0+)
+GEOMODEL_PATH = f'{MODELS_DIR}/geomodel/geomodel_fp16.onnx'
+GEOMODEL_LABELS_PATH = f'{MODELS_DIR}/geomodel/labels.txt'
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 

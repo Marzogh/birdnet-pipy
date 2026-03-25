@@ -26,6 +26,12 @@
 - Fixed unique species query returning too few results when one species dominates recent detections — falls back to unbounded query when pre-fetch window is insufficient
 - Fixed user toggle selections (activity overview, recent observations) resetting during in-flight dashboard fetches
 - Fixed input validation and thread safety in model service: guard sensitivity ≤ 0, validate inference payloads, type-check settings before merge, add thread locks to shared caches
+- Added location-based species filtering (geomodel) for BirdNET V3.0 — bundled geomodel filters detections by geographic probability with thread-safe caching
+- Added pulsing red dot indicator on active audio source pill when recorder is running
+- Added immediate persist for RTSP stream add/edit/delete — modal "Test & Save" now saves to backend without requiring a second Save click
+- Fixed V3.0 geomodel default threshold (0.15) being silently overridden by the V2.4 default (0.03) on fresh or upgraded installs
+- Fixed RTSP label-only edits not tracked as unsaved changes, causing silent data loss
+- Fixed recorder health status broadcasting stale pre-restart value after automatic recovery
 
 ## [0.5.7] - 2026-03-07
 
