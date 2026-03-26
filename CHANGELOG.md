@@ -2,34 +2,36 @@
 
 ## [Unreleased]
 
-- Added system logs viewer with per-service file logging, accessible via modal in Settings
-- Added restart services button in Settings Management section
-- Added configurable species filter threshold in Settings UI
-- Combined detection sliders into responsive 3-column grid
-- Converted Management section to collapsible, repositioned above Data
-- Improved log polling efficiency with AbortController and fixed formatter duplication
-- Simplified filter_by_location to single filter-then-sort pass
-- Fixed Icecast UTC timestamps not converted to local time, causing incorrect sorting
+## [0.5.8] - 2026-03-25
+
+- Added location-based species filtering (geomodel) for BirdNET V3.0 — bundled geomodel filters detections by geographic probability with thread-safe caching
 - Added "new species" notification trigger — alerts when a species is detected that has never been seen before
 - Added unified species lookup table merging V2.4 labels (27 languages), V3.0 taxonomy, and eBird codes — enables localized bird names for V3.0 (~6K overlapping species)
 - Added unique species toggle (All/Unique) to Dashboard recent observations — both lists fetched in a single API call for instant switching
 - Added recorder health status to Settings — real-time recording state surfaced via WebSocket
 - Added stream URL testing with card-style audio source selector and edit modal
+- Added configurable species filter threshold in Settings UI
+- Added system logs viewer with per-service file logging, accessible via modal in Settings
+- Added restart services button in Settings Management section
 - Added timezone display in Location settings section
+- Added pulsing red dot indicator on active audio source pill when recorder is running
+- Added immediate persist for RTSP stream add/edit/delete — modal "Test & Save" now saves to backend without requiring a second Save click
 - Redesigned audio source UI with card grid, labels, and test-and-add flow
 - Merged Location and Audio Source into a single Settings card
+- Combined detection sliders into responsive 3-column grid
+- Converted Management section to collapsible, repositioned above Data
+- Simplified filter_by_location to single filter-then-sort pass
 - Improved spectrogram generation performance — skip PNG encode/decode by passing raw NumPy arrays directly
 - Improved recorder health UX: cleaner errors, clipboard copy, restart state feedback
+- Improved log polling efficiency with AbortController and fixed formatter duplication
+- Fixed V3.0 geomodel default threshold (0.15) being silently overridden by the V2.4 default (0.03) on fresh or upgraded installs
 - Fixed subprocess pipe leaks and raised FD limit to prevent "too many open files" (#35)
 - Fixed location change not re-applying timezone until manual restart — now triggers full service restart
+- Fixed Icecast UTC timestamps not converted to local time, causing incorrect sorting
 - Fixed consistent row height in Bird Activity Overview when species limit exceeds 10
 - Fixed unique species query returning too few results when one species dominates recent detections — falls back to unbounded query when pre-fetch window is insufficient
 - Fixed user toggle selections (activity overview, recent observations) resetting during in-flight dashboard fetches
 - Fixed input validation and thread safety in model service: guard sensitivity ≤ 0, validate inference payloads, type-check settings before merge, add thread locks to shared caches
-- Added location-based species filtering (geomodel) for BirdNET V3.0 — bundled geomodel filters detections by geographic probability with thread-safe caching
-- Added pulsing red dot indicator on active audio source pill when recorder is running
-- Added immediate persist for RTSP stream add/edit/delete — modal "Test & Save" now saves to backend without requiring a second Save click
-- Fixed V3.0 geomodel default threshold (0.15) being silently overridden by the V2.4 default (0.03) on fresh or upgraded installs
 - Fixed RTSP label-only edits not tracked as unsaved changes, causing silent data loss
 - Fixed recorder health status broadcasting stale pre-restart value after automatic recovery
 
