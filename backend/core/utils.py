@@ -1,4 +1,5 @@
 import os
+from io import BytesIO
 
 import matplotlib
 import numpy as np
@@ -172,16 +173,17 @@ def generate_spectrogram(input_file_path, output_file_path, graph_title, start_t
         # Adjust margins manually
         plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
 
-        # Render to Agg canvas buffer — raw RGBA pixels, no PNG encode/decode
-        fig.canvas.draw()
-        width, height = fig.canvas.get_width_height()
-        raw_data = bytes(fig.canvas.buffer_rgba())
+        # Save to buffer with bbox_inches='tight' so labels/title aren't clipped
+        buf = BytesIO()
+        fig.savefig(buf, dpi=dpi, bbox_inches='tight', format='png')
     finally:
         plt.close(fig)
 
-    # Convert raw RGBA pixels directly to WebP
-    img = Image.frombytes('RGBA', (width, height), raw_data)
+    # Convert PNG to WebP
+    buf.seek(0)
+    img = Image.open(buf)
     img.save(output_file_path, 'WEBP', quality=85)
+    buf.close()
 
 
 def select_audio_chunks(detected_chunk_index, total_chunks):
