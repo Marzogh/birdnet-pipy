@@ -189,55 +189,40 @@
         <hr class="my-3 border-gray-100">
 
         <!-- Audio sources -->
-        <label class="block text-sm text-gray-600 mb-1">Source</label>
+        <label class="block text-sm text-gray-600 mb-1">Sources</label>
         <div class="flex flex-wrap gap-2">
-          <!-- Local Mic pill -->
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border text-sm font-medium transition-colors"
-            :class="recordingMode === 'pulseaudio'
-              ? 'border-blue-200 bg-blue-50 text-gray-800'
-              : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'"
-            @click="selectRtspSource(null)"
-          >
-            <span
-              v-if="recordingMode === 'pulseaudio' && recorderStatus?.state === 'running'"
-              class="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse flex-shrink-0"
-            />
-            Local Mic
-          </button>
-
-          <!-- RTSP source pills -->
+          <!-- Source pills -->
           <div
-            v-for="(url, index) in rtspSources"
-            :key="url"
+            v-for="source in (settings.audio.sources || [])"
+            :key="source.id"
             class="group inline-flex items-center rounded-full border cursor-pointer transition-colors"
-            :class="recordingMode === 'rtsp' && settings.audio.rtsp_url === url
+            :class="source.enabled
               ? 'border-blue-200 bg-blue-50'
               : 'border-gray-200 bg-gray-50 hover:bg-gray-100'"
-            @click="selectRtspSource(url)"
+            @click="toggleSource(source.id)"
           >
             <span
-              v-if="recordingMode === 'rtsp' && settings.audio.rtsp_url === url && recorderStatus?.state === 'running'"
-              class="w-1.5 h-1.5 ml-3.5 rounded-full bg-red-400 animate-pulse flex-shrink-0"
+              v-if="source.enabled && getSourceState(source.id)"
+              class="w-1.5 h-1.5 ml-3.5 rounded-full flex-shrink-0"
+              :class="{
+                'bg-red-400 animate-pulse': getSourceState(source.id) === RECORDER_STATES.RUNNING,
+                'bg-amber-500': getSourceState(source.id) === RECORDER_STATES.DEGRADED,
+                'bg-red-500': getSourceState(source.id) === RECORDER_STATES.STOPPED,
+              }"
             />
             <span
-              class="pr-1 py-1.5 text-sm font-medium truncate max-w-48"
+              class="pr-3 py-1.5 text-sm font-medium truncate max-w-48 md:group-hover:pr-1 transition-[padding] duration-200"
               :class="[
-                recordingMode === 'rtsp' && settings.audio.rtsp_url === url
-                  ? 'text-gray-800'
-                  : 'text-gray-600',
-                recordingMode === 'rtsp' && settings.audio.rtsp_url === url && recorderStatus?.state === 'running'
-                  ? 'pl-1.5'
-                  : 'pl-3.5'
+                source.enabled ? 'text-gray-800' : 'text-gray-600',
+                source.enabled && getSourceState(source.id) ? 'pl-1.5' : 'pl-3.5'
               ]"
-              :title="url"
-            >{{ getRtspLabel(url) || 'RTSP Stream' }}</span>
+              :title="source.type === 'rtsp' ? source.url : 'Local Microphone'"
+            >{{ source.label || (source.type === 'rtsp' ? 'RTSP Stream' : 'Local Mic') }}</span>
             <button
               type="button"
-              class="p-1 pr-2.5 text-gray-400 hover:text-blue-600 md:opacity-0 md:group-hover:opacity-100 transition-all flex-shrink-0"
+              class="text-gray-400 hover:text-blue-600 flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out p-1 pr-2.5 md:max-w-0 md:p-0 md:pr-0 md:group-hover:max-w-8 md:group-hover:p-1 md:group-hover:pr-2.5"
               title="Edit"
-              @click.stop="openEditSource(index)"
+              @click.stop="openEditSource(source.id)"
             >
               <svg
                 class="w-3.5 h-3.5"
@@ -255,7 +240,7 @@
             </button>
           </div>
 
-          <!-- Add stream pill -->
+          <!-- Add source pill -->
           <button
             type="button"
             class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-dashed border-gray-200 text-xs text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-colors"
@@ -282,7 +267,7 @@
         <StreamSourceModal
           v-if="showStreamModal"
           :source="editingSource"
-          :existing-urls="rtspSources"
+          :existing-sources="settings.audio.sources || []"
           @close="showStreamModal = false"
           @add="handleStreamAdd"
           @save="handleStreamSave"
@@ -297,10 +282,19 @@
           <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600 select-none">
             Show error details
           </summary>
-          <div class="mt-1 relative group">
-            <pre class="text-xs text-gray-500 bg-gray-50 rounded-md p-2 pr-8 overflow-x-auto whitespace-pre-wrap break-words font-mono">{{ recorderStatus.last_error_message }}</pre>
+          <div class="mt-1 space-y-1.5 relative group">
+            <div
+              v-for="(err, idx) in sourceErrors"
+              :key="idx"
+            >
+              <span
+                class="text-xs font-medium"
+                :class="err.state === RECORDER_STATES.STOPPED ? 'text-red-400' : 'text-amber-500'"
+              >{{ err.label }}</span>
+              <pre class="text-xs text-gray-500 bg-gray-50 rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words font-mono">{{ err.message }}</pre>
+            </div>
             <button
-              class="absolute top-1 right-1 p-1 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
+              class="absolute top-0 right-0 p-1 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
               title="Copy to clipboard"
               @click="copyErrorToClipboard"
             >
@@ -1437,6 +1431,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useUnitSettings } from '@/composables/useUnitSettings'
 import { useAppStatus } from '@/composables/useAppStatus'
 import { limitDecimals } from '@/utils/inputHelpers'
+import { RECORDER_STATES } from '@/utils/recorderStates'
 import api, { createLongRequest } from '@/services/api'
 import SpeciesFilterModal from '@/components/SpeciesFilterModal.vue'
 import AlertBanner from '@/components/AlertBanner.vue'
@@ -1519,7 +1514,6 @@ export default {
     const loading = ref(false)
     const saveStatus = ref(null)
     const settingsSaveError = ref('')
-    const recordingMode = ref('pulseaudio')
     const showUpdateConfirm = ref(false)
     const showLogsModal = ref(false)
 
@@ -1535,51 +1529,70 @@ export default {
     const showStreamModal = ref(false)
     const editingSource = ref(null)
 
-    const rtspSources = computed(() => settings.value.audio.rtsp_urls || [])
+    const hasMicSource = computed(() =>
+      (settings.value.audio.sources || []).some(s => s.type === 'pulseaudio')
+    )
 
-    const rtspLabels = computed(() => settings.value.audio.rtsp_labels || {})
+    const getSourceState = (sourceId) => {
+      return recorderStatus.value?.sources?.[sourceId]?.state
+    }
 
-    const getRtspLabel = (url) => rtspLabels.value[url] || ''
+    const toggleSource = (sourceId) => {
+      const sources = settings.value.audio.sources || []
+      const source = sources.find(s => s.id === sourceId)
+      if (source) {
+        source.enabled = !source.enabled
+      }
+    }
+
+    const sourceErrors = computed(() => {
+      const sources = recorderStatus.value?.sources
+      if (!sources) return []
+      return Object.values(sources)
+        .filter(s => s.state !== RECORDER_STATES.RUNNING && s.last_error_message)
+        .map(s => ({ label: s.label, state: s.state, message: s.last_error_message }))
+    })
 
     const showRecorderError = computed(() => {
       if (!recorderStatus.value) return false
       if (serviceRestart.isRestarting.value) return false
-      if (recorderStatus.value.state === 'running') return false
-      return !!recorderStatus.value.last_error_message
+      if (recorderStatus.value.state === RECORDER_STATES.RUNNING) return false
+      return sourceErrors.value.length > 0
     })
 
     const recorderDotClass = computed(() => {
       if (serviceRestart.isRestarting.value) return 'bg-gray-300'
       const state = recorderStatus.value?.state
-      if (state === 'running') return 'bg-green-500 animate-pulse'
-      if (state === 'degraded') return 'bg-amber-500'
-      if (state === 'stopped') return 'bg-red-500'
+      if (state === RECORDER_STATES.RUNNING) return 'bg-green-500 animate-pulse'
+      if (state === RECORDER_STATES.DEGRADED) return 'bg-amber-500'
+      if (state === RECORDER_STATES.STOPPED) return 'bg-red-500'
       return 'bg-gray-300'
     })
 
     const recorderStateLabel = computed(() => {
       if (serviceRestart.isRestarting.value) return 'Unavailable'
       const state = recorderStatus.value?.state
-      if (state === 'running') return 'Audio Healthy'
-      if (state === 'degraded') return 'Audio Degraded'
-      if (state === 'stopped') return 'Audio Stopped'
+      if (state === RECORDER_STATES.RUNNING) return 'Audio Healthy'
+      if (state === RECORDER_STATES.DEGRADED) return 'Audio Degraded'
+      if (state === RECORDER_STATES.STOPPED) return 'Audio Stopped'
       return 'Audio Unknown'
     })
 
     const recorderStateLabelClass = computed(() => {
       if (serviceRestart.isRestarting.value) return 'text-gray-400'
       const state = recorderStatus.value?.state
-      if (state === 'running') return 'text-green-600'
-      if (state === 'degraded') return 'text-amber-600'
-      if (state === 'stopped') return 'text-red-600'
+      if (state === RECORDER_STATES.RUNNING) return 'text-green-600'
+      if (state === RECORDER_STATES.DEGRADED) return 'text-amber-600'
+      if (state === RECORDER_STATES.STOPPED) return 'text-red-600'
       return 'text-gray-400'
     })
 
     let errorCopiedTimer = null
 
     const copyErrorToClipboard = async () => {
-      const msg = recorderStatus.value?.last_error_message
-      if (!msg) return
+      const errors = sourceErrors.value
+      if (!errors.length) return
+      const msg = errors.map(e => `[${e.label}] ${e.message}`).join('\n\n')
       try {
         // navigator.clipboard requires HTTPS; fall back for plain HTTP
         if (navigator.clipboard && window.isSecureContext) {
@@ -1699,11 +1712,8 @@ export default {
     const getComparableSettings = (s) => ({
       location: { latitude: s.location?.latitude, longitude: s.location?.longitude },
       audio: {
-        recording_mode: s.audio?.recording_mode,
-        stream_url: s.audio?.stream_url,
-        rtsp_url: s.audio?.rtsp_url,
-        rtsp_urls: s.audio?.rtsp_urls || [],
-        rtsp_labels: s.audio?.rtsp_labels || {},
+        sources: JSON.parse(JSON.stringify(s.audio?.sources || [])),
+        next_source_id: s.audio?.next_source_id || 0,
         recording_length: s.audio?.recording_length,
         overlap: s.audio?.overlap
       },
@@ -1802,11 +1812,74 @@ export default {
       if (!data.notifications) data.notifications = {}
       if (!data.access) data.access = { charts_public: false, table_public: false, live_feed_public: false }
       if (data.updates.channel === 'stable') data.updates.channel = 'release'
-      // Migrate: if rtsp_url exists but rtsp_urls is empty, populate array
       if (!data.audio) data.audio = {}
-      if (!Array.isArray(data.audio.rtsp_urls)) data.audio.rtsp_urls = []
-      if (data.audio.rtsp_url && data.audio.rtsp_urls.length === 0) {
-        data.audio.rtsp_urls.push(data.audio.rtsp_url)
+
+      // Migrate old audio format to sources array
+      if (!Array.isArray(data.audio.sources)) {
+        const sources = []
+        let nextId = 0
+        const mode = data.audio.recording_mode || 'pulseaudio'
+        const activeRtsp = data.audio.rtsp_url
+        const rtspUrls = data.audio.rtsp_urls || []
+        const rtspLabels = data.audio.rtsp_labels || {}
+
+        // Only create a mic source if the user was actually using pulseaudio mode.
+        // RTSP users made a deliberate choice — no need to inject an unused mic.
+        if (mode === 'pulseaudio') {
+          sources.push({
+            id: `source_${nextId}`,
+            type: 'pulseaudio',
+            device: 'default',
+            label: 'Local Mic',
+            enabled: true
+          })
+          nextId++
+        }
+
+        const validRtspUrls = rtspUrls.filter(u => u)
+        const multiRtsp = validRtspUrls.length > 1
+        validRtspUrls.forEach((url, i) => {
+          const defaultLabel = multiRtsp ? `RTSP Stream ${i + 1}` : 'RTSP Stream'
+          sources.push({
+            id: `source_${nextId}`,
+            type: 'rtsp',
+            url,
+            label: rtspLabels[url] || defaultLabel,
+            enabled: mode === 'rtsp' && url === activeRtsp
+          })
+          nextId++
+        })
+
+        if (mode === 'rtsp' && activeRtsp && !validRtspUrls.includes(activeRtsp)) {
+          sources.push({
+            id: `source_${nextId}`,
+            type: 'rtsp',
+            url: activeRtsp,
+            label: rtspLabels[activeRtsp] || 'RTSP Stream',
+            enabled: true
+          })
+          nextId++
+        }
+
+        data.audio.sources = sources
+        data.audio.next_source_id = nextId
+
+        // Clean up old keys
+        delete data.audio.recording_mode
+        delete data.audio.rtsp_url
+        delete data.audio.rtsp_urls
+        delete data.audio.rtsp_labels
+        delete data.audio.pulseaudio_source
+        delete data.audio.stream_url
+      }
+
+      // Self-healing: ensure next_source_id exists
+      if (data.audio.next_source_id === undefined) {
+        const maxSuffix = data.audio.sources.reduce((max, s) => {
+          const num = parseInt(s.id?.split('_')[1], 10)
+          return isNaN(num) ? max : Math.max(max, num)
+        }, -1)
+        data.audio.next_source_id = maxSuffix + 1
       }
     }
 
@@ -1817,7 +1890,6 @@ export default {
         const { data } = await api.get('/settings')
         normalizeSettingsData(data)
         settings.value = data
-        recordingMode.value = data.audio?.recording_mode || 'pulseaudio'
         unitSettings.setUseMetricUnits(settings.value.display.use_metric_units ?? true)
         if (saveStatus.value?.type === 'error') {
           saveStatus.value = null
@@ -1835,7 +1907,6 @@ export default {
             const { data } = await api.get('/settings/defaults')
             normalizeSettingsData(data)
             settings.value = data
-            recordingMode.value = data.audio?.recording_mode || 'pulseaudio'
             // Take snapshot for unsaved changes tracking
             takeSnapshot()
             confirmedNotifications.value = JSON.parse(JSON.stringify(data.notifications || {}))
@@ -1851,13 +1922,11 @@ export default {
 
     // Save settings to API (returns response payload on success, null on failure)
     const saveSettingsOnly = async () => {
-      // Validate stream URLs if using stream modes
-      if (recordingMode.value === 'http_stream' && !settings.value.audio.stream_url?.trim()) {
-        settingsSaveError.value = 'HTTP Stream requires a Stream URL'
-        return false
-      }
-      if (recordingMode.value === 'rtsp' && !settings.value.audio.rtsp_url?.trim()) {
-        settingsSaveError.value = 'RTSP Stream requires an RTSP URL'
+      // Validate RTSP sources have valid URLs
+      const sources = settings.value.audio.sources || []
+      const invalidRtsp = sources.find(s => s.type === 'rtsp' && !s.url?.trim())
+      if (invalidRtsp) {
+        settingsSaveError.value = `RTSP source "${invalidRtsp.label || invalidRtsp.id}" requires a URL`
         return false
       }
 
@@ -2004,93 +2073,52 @@ export default {
       }
     }
 
-    const selectRecordingMode = (value) => {
-      recordingMode.value = value
-      settings.value.audio.recording_mode = value
-    }
-
-    const selectRtspSource = (url) => {
-      if (url) {
-        settings.value.audio.rtsp_url = url
-        selectRecordingMode('rtsp')
-      } else {
-        selectRecordingMode('pulseaudio')
-      }
-    }
-
     // Stream source modal actions
     const openAddSource = () => {
       editingSource.value = null
       showStreamModal.value = true
     }
 
-    const openEditSource = (index) => {
-      const url = rtspSources.value[index]
-      editingSource.value = {
-        url,
-        label: getRtspLabel(url),
+    const openEditSource = (sourceId) => {
+      const sources = settings.value.audio.sources || []
+      const source = sources.find(s => s.id === sourceId)
+      if (source) {
+        editingSource.value = { ...source }
       }
       showStreamModal.value = true
     }
 
-    const setRtspLabel = (url, label) => {
-      if (!settings.value.audio.rtsp_labels) {
-        settings.value.audio.rtsp_labels = {}
+    const handleStreamAdd = async (source) => {
+      if (!settings.value.audio.sources) {
+        settings.value.audio.sources = []
       }
-      if (label) {
-        settings.value.audio.rtsp_labels[url] = label
-      } else {
-        delete settings.value.audio.rtsp_labels[url]
-      }
-    }
-
-    const handleStreamAdd = async ({ url, label }) => {
-      if (!settings.value.audio.rtsp_urls) {
-        settings.value.audio.rtsp_urls = []
-      }
-      settings.value.audio.rtsp_urls.push(url)
-      setRtspLabel(url, label)
-      selectRtspSource(url)
+      const nextId = settings.value.audio.next_source_id || 0
+      source.id = `source_${nextId}`
+      source.enabled = true
+      settings.value.audio.sources.push(source)
+      settings.value.audio.next_source_id = nextId + 1
       showStreamModal.value = false
-      await persistAndRestart('Stream source added')
+      await persistAndRestart('Source added')
     }
 
-    const handleStreamSave = async ({ url, label, originalUrl }) => {
-      const urls = settings.value.audio.rtsp_urls
-      const index = urls.indexOf(originalUrl)
+    const handleStreamSave = async ({ id, updates }) => {
+      const sources = settings.value.audio.sources || []
+      const source = sources.find(s => s.id === id)
+      if (source) {
+        Object.assign(source, updates)
+      }
+      showStreamModal.value = false
+      await persistAndRestart('Source updated')
+    }
+
+    const handleStreamDelete = async (sourceId) => {
+      const sources = settings.value.audio.sources || []
+      const index = sources.findIndex(s => s.id === sourceId)
       if (index !== -1) {
-        urls[index] = url
-      }
-      // Clean up old label, set new one
-      if (originalUrl !== url && settings.value.audio.rtsp_labels?.[originalUrl]) {
-        delete settings.value.audio.rtsp_labels[originalUrl]
-      }
-      setRtspLabel(url, label)
-      // Update active source if it was the one being edited
-      if (settings.value.audio.rtsp_url === originalUrl) {
-        settings.value.audio.rtsp_url = url
+        sources.splice(index, 1)
       }
       showStreamModal.value = false
-      await persistAndRestart('Stream source updated')
-    }
-
-    const handleStreamDelete = async (url) => {
-      const urls = settings.value.audio.rtsp_urls
-      const index = urls.indexOf(url)
-      if (index !== -1) {
-        urls.splice(index, 1)
-      }
-      // Clean up label
-      if (settings.value.audio.rtsp_labels?.[url]) {
-        delete settings.value.audio.rtsp_labels[url]
-      }
-      // If the active source was removed, switch to microphone
-      if (settings.value.audio.rtsp_url === url) {
-        settings.value.audio.rtsp_url = ''
-        selectRecordingMode('pulseaudio')
-      }
-      showStreamModal.value = false
-      await persistAndRestart('Stream source removed')
+      await persistAndRestart('Source removed')
     }
 
     // Handle BirdWeather ID update
@@ -2488,7 +2516,6 @@ export default {
       settings,
       loading,
       saveStatus,
-      recordingMode,
       showUpdateConfirm,
       showLogsModal,
       manualRestart,
@@ -2501,8 +2528,6 @@ export default {
       repositoryUrl,
       versionChangelogUrl,
       toggleMetricUnits,
-      selectRecordingMode,
-      getRtspLabel,
       showRecorderError,
       limitDecimals,
       updateBirdweatherId,
@@ -2545,11 +2570,14 @@ export default {
       recorderDotClass,
       recorderStateLabel,
       recorderStateLabelClass,
+      sourceErrors,
       errorCopied,
       copyErrorToClipboard,
+      RECORDER_STATES,
       // Audio source management
-      rtspSources,
-      selectRtspSource,
+      hasMicSource,
+      getSourceState,
+      toggleSource,
       showStreamModal,
       editingSource,
       openAddSource,

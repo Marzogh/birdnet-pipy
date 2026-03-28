@@ -1,6 +1,7 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import Settings from '@/views/Settings.vue'
+import { RECORDER_STATES } from '@/utils/recorderStates'
 
 // Mock the api service
 const mockApi = vi.hoisted(() => ({
@@ -78,11 +79,10 @@ const mockSettings = {
     cutoff: 0.60
   },
   audio: {
-    recording_mode: 'pulseaudio',
-    stream_url: null,
-    rtsp_url: null,
-    rtsp_urls: [],
-    pulseaudio_source: null,
+    sources: [
+      { id: 'source_0', type: 'pulseaudio', device: 'default', label: 'Microphone', enabled: true }
+    ],
+    next_source_id: 1,
     recording_length: 9,
     overlap: 0.0,
     sample_rate: 48000,
@@ -293,7 +293,7 @@ describe('Settings', () => {
       expect(wrapper.text()).toContain('Audio')
       expect(wrapper.find('#latitude').exists()).toBe(true)
       expect(wrapper.find('#longitude').exists()).toBe(true)
-      expect(wrapper.text()).toContain('Local Mic')
+      expect(wrapper.text()).toContain('Microphone')
     })
 
     it('displays Detection section', async () => {
@@ -417,27 +417,32 @@ describe('Settings', () => {
 
   describe('Audio Source List', () => {
     // Helper: add an RTSP source via the modal handler
-    const addRtspSource = (wrapper, url, label = '') => {
-      wrapper.vm.handleStreamAdd({ url, label })
+    const addSource = (wrapper, source) => {
+      wrapper.vm.handleStreamAdd(source)
     }
 
-    it('shows Local Mic as default active source', async () => {
+    it('shows Microphone as default active source', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
-      expect(wrapper.text()).toContain('Local Mic')
+      const sources = wrapper.vm.settings.audio.sources
+      expect(sources).toHaveLength(1)
+      expect(sources[0].type).toBe('pulseaudio')
+      expect(sources[0].enabled).toBe(true)
+      expect(wrapper.text()).toContain('Microphone')
     })
 
-    it('adds RTSP source and selects it', async () => {
+    it('adds RTSP source with enabled flag', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream', label: '' })
 
-      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.recordingMode).toBe('rtsp')
+      const sources = wrapper.vm.settings.audio.sources
+      const rtsp = sources.find(s => s.type === 'rtsp')
+      expect(rtsp).toBeTruthy()
+      expect(rtsp.url).toBe('rtsp://192.168.1.100:554/stream')
+      expect(rtsp.enabled).toBe(true)
       expect(wrapper.vm.showStreamModal).toBe(false)
     })
 
@@ -445,94 +450,95 @@ describe('Settings', () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream', 'Backyard mic')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream', label: 'Backyard mic' })
 
-      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.settings.audio.rtsp_labels['rtsp://192.168.1.100:554/stream']).toBe('Backyard mic')
+      const sources = wrapper.vm.settings.audio.sources
+      const rtsp = sources.find(s => s.url === 'rtsp://192.168.1.100:554/stream')
+      expect(rtsp.label).toBe('Backyard mic')
     })
 
     it('supports multiple RTSP sources', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream1')
-      addRtspSource(wrapper, 'rtsp://192.168.1.200:554/stream2')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream1', label: '' })
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.200:554/stream2', label: '' })
 
-      expect(wrapper.vm.settings.audio.rtsp_urls).toHaveLength(2)
-      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.200:554/stream2')
+      const rtspSources = wrapper.vm.settings.audio.sources.filter(s => s.type === 'rtsp')
+      expect(rtspSources).toHaveLength(2)
     })
 
-    it('edits RTSP source URL and label', async () => {
+    it('edits source label and URL', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream', 'Old label')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream', label: 'Old label' })
+      const sourceId = wrapper.vm.settings.audio.sources.find(s => s.type === 'rtsp').id
 
       wrapper.vm.handleStreamSave({
-        url: 'rtsp://192.168.1.200:554/new',
-        label: 'New label',
-        originalUrl: 'rtsp://192.168.1.100:554/stream',
+        id: sourceId,
+        updates: { url: 'rtsp://192.168.1.200:554/new', label: 'New label' },
       })
 
-      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.200:554/new')
-      expect(wrapper.vm.settings.audio.rtsp_urls).not.toContain('rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.settings.audio.rtsp_labels['rtsp://192.168.1.200:554/new']).toBe('New label')
-      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.200:554/new')
+      const updated = wrapper.vm.settings.audio.sources.find(s => s.id === sourceId)
+      expect(updated.url).toBe('rtsp://192.168.1.200:554/new')
+      expect(updated.label).toBe('New label')
     })
 
-    it('deletes RTSP source and switches to microphone when active', async () => {
+    it('deletes source by id', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.recordingMode).toBe('rtsp')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream', label: '' })
+      const sourceId = wrapper.vm.settings.audio.sources.find(s => s.type === 'rtsp').id
 
-      wrapper.vm.handleStreamDelete('rtsp://192.168.1.100:554/stream')
+      wrapper.vm.handleStreamDelete(sourceId)
 
-      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
-      expect(wrapper.vm.settings.audio.rtsp_url).toBe('')
-      expect(wrapper.vm.settings.audio.rtsp_urls).toHaveLength(0)
+      expect(wrapper.vm.settings.audio.sources.find(s => s.id === sourceId)).toBeUndefined()
     })
 
-    it('deletes inactive RTSP source without switching mode', async () => {
+    it('deletes one RTSP source without affecting others', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream1')
-      addRtspSource(wrapper, 'rtsp://192.168.1.200:554/stream2')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream1', label: '' })
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.200:554/stream2', label: '' })
 
-      // Active is stream2, delete stream1
-      wrapper.vm.handleStreamDelete('rtsp://192.168.1.100:554/stream1')
+      const sources = wrapper.vm.settings.audio.sources
+      const firstRtsp = sources.find(s => s.url === 'rtsp://192.168.1.100:554/stream1')
 
-      expect(wrapper.vm.recordingMode).toBe('rtsp')
-      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.200:554/stream2')
-      expect(wrapper.vm.settings.audio.rtsp_urls).toHaveLength(1)
+      wrapper.vm.handleStreamDelete(firstRtsp.id)
+
+      const remaining = wrapper.vm.settings.audio.sources.filter(s => s.type === 'rtsp')
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0].url).toBe('rtsp://192.168.1.200:554/stream2')
     })
 
-    it('switches active source between cards', async () => {
+    it('toggles source enabled flag', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.recordingMode).toBe('rtsp')
+      const micSource = wrapper.vm.settings.audio.sources[0]
+      expect(micSource.enabled).toBe(true)
 
-      wrapper.vm.selectRtspSource(null)
-      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
+      wrapper.vm.toggleSource(micSource.id)
+      expect(micSource.enabled).toBe(false)
 
-      wrapper.vm.selectRtspSource('rtsp://192.168.1.100:554/stream')
-      expect(wrapper.vm.recordingMode).toBe('rtsp')
-      expect(wrapper.vm.settings.audio.rtsp_url).toBe('rtsp://192.168.1.100:554/stream')
+      wrapper.vm.toggleSource(micSource.id)
+      expect(micSource.enabled).toBe(true)
     })
 
-    it('preserves rtsp_urls when switching to microphone', async () => {
+    it('increments next_source_id when adding sources', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      addRtspSource(wrapper, 'rtsp://192.168.1.100:554/stream')
+      expect(wrapper.vm.settings.audio.next_source_id).toBe(1)
 
-      wrapper.vm.selectRtspSource(null)
-      expect(wrapper.vm.recordingMode).toBe('pulseaudio')
-      expect(wrapper.vm.settings.audio.rtsp_urls).toContain('rtsp://192.168.1.100:554/stream')
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.100:554/stream1', label: '' })
+      expect(wrapper.vm.settings.audio.next_source_id).toBe(2)
+
+      addSource(wrapper, { type: 'rtsp', url: 'rtsp://192.168.1.200:554/stream2', label: '' })
+      expect(wrapper.vm.settings.audio.next_source_id).toBe(3)
     })
   })
 
@@ -825,10 +831,10 @@ describe('Settings', () => {
       const wrapper = mountSettings()
       await flushPromises()
 
-      // Set up state that will fail validation (RTSP mode without URL)
-      wrapper.vm.recordingMode = 'rtsp'
-      wrapper.vm.settings.audio.recording_mode = 'rtsp'
-      wrapper.vm.settings.audio.rtsp_url = ''
+      // Set up state that will fail validation (RTSP source without URL)
+      wrapper.vm.settings.audio.sources.push({
+        id: 'source_99', type: 'rtsp', url: '', label: 'Bad source', enabled: true
+      })
       wrapper.vm.showUnsavedModal = true
       let navigationResolved = null
       wrapper.vm.navigationResolver = (value) => { navigationResolved = value }
@@ -841,7 +847,7 @@ describe('Settings', () => {
       // Modal should stay open, navigation should NOT be resolved
       expect(wrapper.vm.showUnsavedModal).toBe(true)
       expect(navigationResolved).toBe(null)
-      expect(wrapper.vm.settingsSaveError).toContain('RTSP URL')
+      expect(wrapper.vm.settingsSaveError).toContain('requires a URL')
     })
 
     it('handleUnsavedSave keeps modal open on API failure', async () => {
@@ -1062,6 +1068,124 @@ describe('Settings', () => {
       resolveRequest({ data: { success: true } })
       await firstCall
       expect(wrapper.vm.metricUnitsSaving).toBe(false)
+    })
+  })
+
+  describe('Recorder Status & Error Display', () => {
+    const { RUNNING, DEGRADED, STOPPED } = RECORDER_STATES
+
+    // Helper: build a multi-source status object matching the backend shape
+    const makeStatus = (state, sources = {}) => ({ state, sources })
+
+    const makeSource = (label, sourceState, lastError = null) => ({
+      label,
+      type: 'rtsp',
+      state: sourceState,
+      is_healthy: sourceState === RUNNING,
+      consecutive_failures: sourceState === RUNNING ? 0 : 5,
+      last_error_message: lastError,
+      last_error_time: lastError ? Date.now() / 1000 : null,
+      last_success_time: Date.now() / 1000
+    })
+
+    it('does not show error details when all sources are running', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      wrapper.vm.recorderStatus = makeStatus(RUNNING, {
+        source_0: makeSource('Microphone', RUNNING)
+      })
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.showRecorderError).toBe(false)
+      expect(wrapper.find('details').exists()).toBe(false)
+    })
+
+    it('shows error details when a source is degraded with an error message', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      wrapper.vm.recorderStatus = makeStatus(DEGRADED, {
+        source_0: makeSource('Microphone', RUNNING),
+        source_1: makeSource('Backyard Cam', DEGRADED, 'Connection timed out')
+      })
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.showRecorderError).toBe(true)
+      expect(wrapper.vm.sourceErrors).toHaveLength(1)
+      expect(wrapper.vm.sourceErrors[0]).toEqual({
+        label: 'Backyard Cam',
+        state: DEGRADED,
+        message: 'Connection timed out'
+      })
+    })
+
+    it('shows error details for multiple failing sources', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      wrapper.vm.recorderStatus = makeStatus(STOPPED, {
+        source_0: makeSource('Microphone', STOPPED, 'Device not found'),
+        source_1: makeSource('Backyard Cam', DEGRADED, 'Connection refused')
+      })
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.sourceErrors).toHaveLength(2)
+      const labels = wrapper.vm.sourceErrors.map(e => e.label)
+      expect(labels).toContain('Microphone')
+      expect(labels).toContain('Backyard Cam')
+    })
+
+    it('hides error details when source has no error message', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      wrapper.vm.recorderStatus = makeStatus(DEGRADED, {
+        source_0: makeSource('Microphone', DEGRADED, null)
+      })
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.showRecorderError).toBe(false)
+    })
+
+    it('shows correct status dot and label for each aggregate state', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      // Running
+      wrapper.vm.recorderStatus = makeStatus(RUNNING, {
+        source_0: makeSource('Mic', RUNNING)
+      })
+      await wrapper.vm.$nextTick()
+      expect(wrapper.vm.recorderStateLabel).toBe('Audio Healthy')
+      expect(wrapper.vm.recorderDotClass).toContain('bg-green-500')
+
+      // Degraded
+      wrapper.vm.recorderStatus = makeStatus(DEGRADED, {
+        source_0: makeSource('Mic', DEGRADED, 'err')
+      })
+      await wrapper.vm.$nextTick()
+      expect(wrapper.vm.recorderStateLabel).toBe('Audio Degraded')
+      expect(wrapper.vm.recorderDotClass).toContain('bg-amber-500')
+
+      // Stopped
+      wrapper.vm.recorderStatus = makeStatus(STOPPED, {})
+      await wrapper.vm.$nextTick()
+      expect(wrapper.vm.recorderStateLabel).toBe('Audio Stopped')
+      expect(wrapper.vm.recorderDotClass).toContain('bg-red-500')
+    })
+
+    it('shows per-source state dots on source pills', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      wrapper.vm.recorderStatus = makeStatus(DEGRADED, {
+        source_0: makeSource('Microphone', DEGRADED, 'High failure rate')
+      })
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.getSourceState('source_0')).toBe(DEGRADED)
+      expect(wrapper.vm.getSourceState('nonexistent')).toBeUndefined()
     })
   })
 

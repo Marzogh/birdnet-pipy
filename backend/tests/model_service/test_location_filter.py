@@ -1,6 +1,7 @@
 """Tests for LocationFilter abstraction and implementations."""
 
 import datetime
+import logging
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -82,13 +83,16 @@ class TestDateToGeomodelWeek:
 class TestNoFilter:
     """Test NoFilter passthrough."""
 
-    def test_filter_returns_none(self):
-        from model_service.location_filter import NoFilter
+    def test_filter_returns_disabled_context(self):
+        from model_service.location_filter import LocationContext, NoFilter
 
         f = NoFilter()
         f.load()
         result = f.filter(42.0, -76.0, datetime.datetime(2025, 6, 15))
-        assert result is None
+        assert isinstance(result, LocationContext)
+        assert result.source == "disabled"
+        assert result.allowed_species is None
+        assert result.probabilities is None
 
 
 # ---------------------------------------------------------------------------
@@ -96,32 +100,38 @@ class TestNoFilter:
 # ---------------------------------------------------------------------------
 
 class TestModelBackedFilter:
-    """Test ModelBackedFilter delegation to model.filter_by_location()."""
+    """Test ModelBackedFilter delegation to model.get_location_probabilities()."""
 
     def test_delegates_to_model(self):
         from model_service.location_filter import ModelBackedFilter
 
         model = MagicMock()
-        model.filter_by_location.return_value = ["Species A_Common A"]
+        model.get_location_probabilities.return_value = {
+            "Species A_Common A": 0.2,
+            "Species B_Common B": 0.01,
+        }
 
         f = ModelBackedFilter(model)
         f.load()
         dt = datetime.datetime(2025, 6, 15)  # ISO week 24
         result = f.filter(42.0, -76.0, dt, threshold=0.03)
 
-        model.filter_by_location.assert_called_once_with(42.0, -76.0, 24, 0.03)
-        assert result == ["Species A_Common A"]
+        model.get_location_probabilities.assert_called_once_with(42.0, -76.0, 24)
+        assert result.source == "meta_model_v2.4"
+        assert result.allowed_species == frozenset(["Species A_Common A"])
+        assert result.probability_for("Species A_Common A") == 0.2
+        assert result.probability_for("Species B_Common B") == 0.01
 
     def test_converts_datetime_to_iso_week(self):
         from model_service.location_filter import ModelBackedFilter
 
         model = MagicMock()
-        model.filter_by_location.return_value = None
+        model.get_location_probabilities.return_value = {}
 
         f = ModelBackedFilter(model)
         # January 1, 2025 → ISO week 1
         f.filter(0.0, 0.0, datetime.datetime(2025, 1, 1))
-        _, _, week_arg, _ = model.filter_by_location.call_args[0]
+        _, _, week_arg = model.get_location_probabilities.call_args[0]
         assert week_arg == 1
 
 
@@ -207,14 +217,16 @@ class TestGeoModelFilter:
         dt = datetime.datetime(2025, 6, 15)
         result = mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.03)
 
-        assert result is not None
+        assert result.source == "geomodel_v3"
         # Robin above threshold → included
-        assert "Turdus migratorius_American Robin" in result
+        assert "Turdus migratorius_American Robin" in result.allowed_species
         # Cardinal below threshold → excluded
-        assert "Cardinalis cardinalis_Northern Cardinal" not in result
+        assert "Cardinalis cardinalis_Northern Cardinal" not in result.allowed_species
         # Unmapped BirdNET species → always included
-        assert "Cyanocitta cristata_Blue Jay" in result
-        assert "Corvus brachyrhynchos_American Crow" in result
+        assert "Cyanocitta cristata_Blue Jay" in result.allowed_species
+        assert "Corvus brachyrhynchos_American Crow" in result.allowed_species
+        assert result.probability_for("Turdus migratorius_American Robin") == 0.8
+        assert result.probability_for("Cyanocitta cristata_Blue Jay") is None
 
     def test_filter_with_high_threshold_excludes_more(self, mock_geo_filter):
         """Higher threshold filters more aggressively."""
@@ -225,13 +237,13 @@ class TestGeoModelFilter:
         result = mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.6)
 
         # Robin 0.5 < 0.6 → excluded; Cardinal 0.3 < 0.6 → excluded
-        assert "Turdus migratorius_American Robin" not in result
-        assert "Cardinalis cardinalis_Northern Cardinal" not in result
+        assert "Turdus migratorius_American Robin" not in result.allowed_species
+        assert "Cardinalis cardinalis_Northern Cardinal" not in result.allowed_species
         # Unmapped still included
-        assert "Cyanocitta cristata_Blue Jay" in result
+        assert "Cyanocitta cristata_Blue Jay" in result.allowed_species
 
     def test_filter_caches_results(self, mock_geo_filter):
-        """Same (lat, lon, week, threshold) returns cached result."""
+        """Same (lat, lon, week) reuses cached geomodel probabilities."""
         probs = np.array([[0.8, 0.5, 0.1]])
         mock_geo_filter._session.run.return_value = [probs]
 
@@ -239,20 +251,24 @@ class TestGeoModelFilter:
         result1 = mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.03)
         result2 = mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.03)
 
-        assert result1 == result2
+        assert result1.allowed_species == result2.allowed_species
         # ONNX session.run called only once
         assert mock_geo_filter._session.run.call_count == 1
 
-    def test_filter_different_threshold_separate_cache(self, mock_geo_filter):
-        """Different thresholds produce separate cache entries."""
+    def test_filter_different_threshold_reuses_cached_probabilities(self, mock_geo_filter):
+        """Different thresholds reuse cached geomodel probabilities."""
         probs = np.array([[0.8, 0.5, 0.1]])
         mock_geo_filter._session.run.return_value = [probs]
 
         dt = datetime.datetime(2025, 6, 15)
-        mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.03)
-        mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.6)
+        result1 = mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.03)
+        result2 = mock_geo_filter.filter(42.0, -76.0, dt, threshold=0.6)
 
-        assert mock_geo_filter._session.run.call_count == 2
+        assert "Turdus migratorius_American Robin" in result1.allowed_species
+        assert "Cardinalis cardinalis_Northern Cardinal" in result1.allowed_species
+        assert "Turdus migratorius_American Robin" in result2.allowed_species
+        assert "Cardinalis cardinalis_Northern Cardinal" not in result2.allowed_species
+        assert mock_geo_filter._session.run.call_count == 1
 
     def test_filter_uses_geomodel_week(self, mock_geo_filter):
         """Filter converts datetime to geomodel week, not ISO week."""
@@ -298,24 +314,28 @@ class TestProcessAudioFileWithLocationFilter:
 
     @pytest.fixture
     def mock_location_filter(self):
-        from model_service.location_filter import LocationFilter
+        from model_service.location_filter import LocationContext, LocationFilter
 
         f = MagicMock(spec=LocationFilter)
+        f.filter.return_value = LocationContext.disabled(0.03)
         return f
 
     def test_mapped_species_above_threshold_allowed(self, monkeypatch, mock_model, mock_location_filter):
         """Species in the location filter's output pass through."""
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         # Model detects Robin
         mock_model.predict.return_value = [
             ("Turdus migratorius_American Robin", 0.9),
         ]
 
-        # Location filter allows Robin
-        mock_location_filter.filter.return_value = [
-            "Turdus migratorius_American Robin",
-        ]
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset(["Turdus migratorius_American Robin"]),
+            probabilities={"Turdus migratorius_American Robin": 0.8},
+        )
 
         monkeypatch.setattr(
             inference_server, "split_audio",
@@ -338,15 +358,19 @@ class TestProcessAudioFileWithLocationFilter:
     def test_species_not_in_filter_rejected(self, monkeypatch, mock_model, mock_location_filter):
         """Species NOT in the location filter's output are rejected."""
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         mock_model.predict.return_value = [
             ("Turdus migratorius_American Robin", 0.9),
         ]
 
         # Location filter does NOT include Robin
-        mock_location_filter.filter.return_value = [
-            "Cardinalis cardinalis_Northern Cardinal",
-        ]
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset(["Cardinalis cardinalis_Northern Cardinal"]),
+            probabilities={"Cardinalis cardinalis_Northern Cardinal": 0.7},
+        )
 
         monkeypatch.setattr(
             inference_server, "split_audio",
@@ -368,6 +392,7 @@ class TestProcessAudioFileWithLocationFilter:
     def test_unmapped_species_pass_through(self, monkeypatch, mock_model, mock_location_filter):
         """Unmapped species (included in filter output) pass through."""
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         # Model detects Blue Jay (which is unmapped in geomodel)
         mock_model.predict.return_value = [
@@ -375,10 +400,15 @@ class TestProcessAudioFileWithLocationFilter:
         ]
 
         # Location filter output includes Blue Jay as unmapped
-        mock_location_filter.filter.return_value = [
-            "Turdus migratorius_American Robin",
-            "Cyanocitta cristata_Blue Jay",  # unmapped → always included
-        ]
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset([
+                "Turdus migratorius_American Robin",
+                "Cyanocitta cristata_Blue Jay",
+            ]),
+            probabilities={"Turdus migratorius_American Robin": 0.8},
+        )
 
         monkeypatch.setattr(
             inference_server, "split_audio",
@@ -399,13 +429,14 @@ class TestProcessAudioFileWithLocationFilter:
         assert results[0]["common_name"] == "Blue Jay"
 
     def test_no_filter_allows_all(self, monkeypatch, mock_model, mock_location_filter):
-        """When filter returns None, all detections pass through."""
+        """When filtering is disabled, all detections pass through."""
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         mock_model.predict.return_value = [
             ("Turdus migratorius_American Robin", 0.9),
         ]
-        mock_location_filter.filter.return_value = None
+        mock_location_filter.filter.return_value = LocationContext.disabled(0.03)
 
         monkeypatch.setattr(
             inference_server, "split_audio",
@@ -427,9 +458,10 @@ class TestProcessAudioFileWithLocationFilter:
     def test_uses_file_timestamp_not_now(self, monkeypatch, mock_model, mock_location_filter):
         """Filter is called with the recording timestamp parsed from filename."""
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         mock_model.predict.return_value = []
-        mock_location_filter.filter.return_value = None
+        mock_location_filter.filter.return_value = LocationContext.disabled(0.03)
 
         monkeypatch.setattr(
             inference_server, "split_audio",
@@ -454,13 +486,17 @@ class TestProcessAudioFileWithLocationFilter:
     def test_blocked_species_override_location_filter(self, monkeypatch, mock_model, mock_location_filter):
         """Blocked species are rejected even if location filter allows them."""
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         mock_model.predict.return_value = [
             ("Turdus migratorius_American Robin", 0.9),
         ]
-        mock_location_filter.filter.return_value = [
-            "Turdus migratorius_American Robin",
-        ]
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset(["Turdus migratorius_American Robin"]),
+            probabilities={"Turdus migratorius_American Robin": 0.8},
+        )
 
         monkeypatch.setattr(
             inference_server, "split_audio",
@@ -479,3 +515,75 @@ class TestProcessAudioFileWithLocationFilter:
         )
 
         assert len(results) == 0
+
+    def test_detection_log_includes_location_probability(self, monkeypatch, mock_model, mock_location_filter, caplog):
+        """Confirmed detections log mapped location probability and source."""
+        from model_service import inference_server
+        from model_service.location_filter import LocationContext
+
+        mock_model.predict.return_value = [
+            ("Turdus migratorius_American Robin", 0.9),
+        ]
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset(["Turdus migratorius_American Robin"]),
+            probabilities={"Turdus migratorius_American Robin": 0.8},
+        )
+
+        monkeypatch.setattr(
+            inference_server, "split_audio",
+            lambda *a, **kw: [np.zeros(96000, dtype=np.float32)]
+        )
+
+        with caplog.at_level(logging.INFO):
+            inference_server.process_audio_file(
+                model=mock_model,
+                location_filter=mock_location_filter,
+                audio_file_path="/tmp/20250615_103000.wav",
+                lat=42.0, lon=-76.0,
+                sensitivity=0.75, cutoff=0.60,
+                overlap=0.0, recording_length=9.0,
+                allowed_species=[], blocked_species=[],
+            )
+
+        detection_logs = [record for record in caplog.records if record.message == "Bird detected"]
+        assert len(detection_logs) == 1
+        assert detection_logs[0].location_source == "geomodel_v3"
+        assert detection_logs[0].location_prob == 80.0
+
+    def test_detection_log_marks_unmapped_species(self, monkeypatch, mock_model, mock_location_filter, caplog):
+        """Confirmed detections log unmapped when the species has no geomodel entry."""
+        from model_service import inference_server
+        from model_service.location_filter import LocationContext
+
+        mock_model.predict.return_value = [
+            ("Cyanocitta cristata_Blue Jay", 0.85),
+        ]
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset(["Cyanocitta cristata_Blue Jay"]),
+            probabilities={"Turdus migratorius_American Robin": 0.8},
+        )
+
+        monkeypatch.setattr(
+            inference_server, "split_audio",
+            lambda *a, **kw: [np.zeros(96000, dtype=np.float32)]
+        )
+
+        with caplog.at_level(logging.INFO):
+            inference_server.process_audio_file(
+                model=mock_model,
+                location_filter=mock_location_filter,
+                audio_file_path="/tmp/20250615_103000.wav",
+                lat=42.0, lon=-76.0,
+                sensitivity=0.75, cutoff=0.60,
+                overlap=0.0, recording_length=9.0,
+                allowed_species=[], blocked_species=[],
+            )
+
+        detection_logs = [record for record in caplog.records if record.message == "Bird detected"]
+        assert len(detection_logs) == 1
+        assert detection_logs[0].location_source == "geomodel_v3"
+        assert detection_logs[0].location_prob == "unmapped"

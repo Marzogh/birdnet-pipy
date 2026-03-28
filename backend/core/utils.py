@@ -1,4 +1,5 @@
 import os
+import re
 from io import BytesIO
 
 import matplotlib
@@ -23,7 +24,25 @@ if os.path.exists(SPECTROGRAM_FONT_PATH):
     font_manager.fontManager.addfont(SPECTROGRAM_FONT_PATH)
 
 
-def build_detection_filenames(common_name, confidence, timestamp, audio_extension='mp3'):
+def sanitize_source_label(label):
+    """Sanitize a source label for use as a filename suffix.
+
+    Strips whitespace, replaces spaces with underscores, removes characters
+    not in [A-Za-z0-9_-], and truncates to 30 characters.
+
+    Returns empty string if label is empty/None or contains only whitespace.
+    """
+    if not label:
+        return ""
+    result = label.strip()
+    if not result:
+        return ""
+    result = result.replace(' ', '_')
+    result = re.sub(r'[^A-Za-z0-9_-]', '', result)
+    return result[:30]
+
+
+def build_detection_filenames(common_name, confidence, timestamp, audio_extension='mp3', audio_source=None):
     """
     Generate standardized filenames for bird detection audio and spectrogram files.
 
@@ -32,6 +51,8 @@ def build_detection_filenames(common_name, confidence, timestamp, audio_extensio
         confidence (float): Detection confidence score (0.0 to 1.0)
         timestamp (str or datetime): ISO timestamp string or datetime object
         audio_extension (str): File extension for audio file ('mp3' or 'wav'). Default: 'mp3'
+        audio_source (str or None): Filename suffix for the source (e.g., sanitized label "Backyard_Mic").
+            If provided, appended before extension.
 
     Returns:
         dict: Dictionary with 'audio_filename' and 'spectrogram_filename' keys
@@ -40,6 +61,9 @@ def build_detection_filenames(common_name, confidence, timestamp, audio_extensio
         >>> build_detection_filenames("American Robin", 0.85, "2025-11-24T10:30:45.123456")
         {'audio_filename': 'American_Robin_85_2025-11-24-birdnet-10-30-45.mp3',
          'spectrogram_filename': 'American_Robin_85_2025-11-24-birdnet-10-30-45.webp'}
+        >>> build_detection_filenames("American Robin", 0.85, "2025-11-24T10:30:45.123456", audio_source="Backyard_Mic")
+        {'audio_filename': 'American_Robin_85_2025-11-24-birdnet-10-30-45_Backyard_Mic.mp3',
+         'spectrogram_filename': 'American_Robin_85_2025-11-24-birdnet-10-30-45_Backyard_Mic.webp'}
     """
 
     # Normalize common name to use underscores
@@ -67,8 +91,10 @@ def build_detection_filenames(common_name, confidence, timestamp, audio_extensio
     time_part_safe = time_part.replace(':', '-')
 
     # Build filenames using consistent format
-    audio_filename = f"{common_name_underscored}_{confidence_rounded}_{date_part}-birdnet-{time_part_safe}.{audio_extension}"
-    spectrogram_filename = f"{common_name_underscored}_{confidence_rounded}_{date_part}-birdnet-{time_part_safe}.webp"
+    base = f"{common_name_underscored}_{confidence_rounded}_{date_part}-birdnet-{time_part_safe}"
+    suffix = f"_{audio_source}" if audio_source else ""
+    audio_filename = f"{base}{suffix}.{audio_extension}"
+    spectrogram_filename = f"{base}{suffix}.webp"
 
     return {
         'audio_filename': audio_filename,

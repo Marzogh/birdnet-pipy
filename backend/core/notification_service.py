@@ -9,7 +9,7 @@ import threading
 from datetime import datetime
 
 from core.logging_config import get_logger
-from core.runtime_config import get_runtime_settings
+from core.runtime_config import get_runtime_settings, resolve_source_label
 
 logger = get_logger(__name__)
 
@@ -136,6 +136,11 @@ class NotificationService:
             return f"Rare species: {common_name}"
         return f"Bird detected: {common_name}"
 
+    @staticmethod
+    def _resolve_source_label(source_id):
+        """Look up human-readable label for a source ID from runtime settings."""
+        return resolve_source_label(source_id, fallback=source_id)
+
     def _build_message(self, detection, triggers):
         """Build notification message body."""
         common_name = detection.get('common_name', 'Unknown')
@@ -151,6 +156,12 @@ class NotificationService:
             f"Confidence: {confidence * 100:.0f}%",
             f"Time: {time_str}",
         ]
+
+        # Include source label if available
+        audio_source = detection.get('audio_source')
+        if audio_source:
+            source_label = self._resolve_source_label(audio_source)
+            lines.append(f"Source: {source_label}")
 
         reasons = []
         if 'new_species' in triggers:

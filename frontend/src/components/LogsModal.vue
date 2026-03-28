@@ -43,7 +43,7 @@
             <label class="block text-xs font-medium text-gray-600 mb-1">Service</label>
             <select
               v-model="serviceFilter"
-              class="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              class="border border-gray-300 rounded px-2 py-1.5 text-sm h-[34px]"
               @change="applyFilters"
             >
               <option value="">
@@ -70,7 +70,7 @@
               v-model="searchQuery"
               type="text"
               placeholder="Filter by message..."
-              class="border border-gray-300 rounded px-2 py-1.5 text-sm w-full"
+              class="border border-gray-300 rounded px-2 py-1.5 text-sm w-full h-[34px]"
               @input="onSearchInput"
             >
           </div>
@@ -134,7 +134,7 @@
               <div
                 v-for="(entry, i) in displayEntries"
                 :key="i"
-                class="whitespace-pre-wrap break-all"
+                class="whitespace-pre"
               >
                 <span class="text-gray-500">{{ formatTimestamp(entry.timestamp) }}</span>
                 <span :class="levelClass(entry.level)">{{ padLevel(entry.level) }}</span>

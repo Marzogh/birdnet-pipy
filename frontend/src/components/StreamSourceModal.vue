@@ -31,15 +31,50 @@
         </button>
 
         <h3 class="text-lg font-semibold text-gray-900 mb-4">
-          {{ isEditing ? 'Edit Stream' : 'Add Stream' }}
+          {{ isEditing ? 'Edit Source' : 'Add Source' }}
         </h3>
 
         <form
           class="space-y-3"
           @submit.prevent="handleSubmit"
         >
-          <!-- URL field -->
-          <div>
+          <!-- Source type selector (only when adding) -->
+          <div v-if="!isEditing">
+            <label class="block text-sm text-gray-600 mb-1">Type</label>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="flex-1 px-3 py-2 text-sm rounded-lg border transition-colors"
+                :class="sourceType === 'pulseaudio'
+                  ? 'border-blue-400 bg-blue-50 text-blue-700 font-medium'
+                  : 'border-gray-200 text-gray-600 hover:bg-gray-50'"
+                :disabled="hasMicSource"
+                :title="hasMicSource ? 'A microphone source already exists' : ''"
+                @click="sourceType = 'pulseaudio'"
+              >
+                Microphone
+              </button>
+              <button
+                type="button"
+                class="flex-1 px-3 py-2 text-sm rounded-lg border transition-colors"
+                :class="sourceType === 'rtsp'
+                  ? 'border-blue-400 bg-blue-50 text-blue-700 font-medium'
+                  : 'border-gray-200 text-gray-600 hover:bg-gray-50'"
+                @click="sourceType = 'rtsp'"
+              >
+                RTSP Stream
+              </button>
+            </div>
+            <p
+              v-if="hasMicSource && sourceType !== 'rtsp'"
+              class="text-xs text-amber-600 mt-1"
+            >
+              Only one microphone source is supported
+            </p>
+          </div>
+
+          <!-- URL field (RTSP only) -->
+          <div v-if="sourceType === 'rtsp'">
             <label
               for="stream-url"
               class="block text-sm text-gray-600 mb-1"
@@ -63,11 +98,17 @@
             >Label <span class="text-gray-400 font-normal">(optional)</span></label>
             <input
               id="stream-label"
+              ref="labelInput"
               v-model="label"
               type="text"
+              maxlength="30"
               class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-              placeholder="e.g. Backyard mic"
+              :placeholder="sourceType === 'rtsp' ? 'e.g. Backyard mic' : 'e.g. Local Mic'"
+              @input="sanitizeLabelInput"
             >
+            <p class="text-xs text-gray-400 mt-0.5">
+              Letters, numbers, spaces, hyphens, underscores. Max 30 characters.
+            </p>
           </div>
 
           <!-- Error display -->
@@ -94,12 +135,12 @@
               class="text-xs text-red-500 hover:text-red-700 transition-colors"
               @click="handleDelete"
             >
-              Remove stream
+              Remove source
             </button>
             <span v-else />
             <button
               type="submit"
-              :disabled="!url.trim() || testing"
+              :disabled="!canSubmit || testing"
               class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:bg-gray-400"
             >
               {{ submitLabel }}
@@ -113,6 +154,7 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
+import { sanitizeLabel } from '@/utils/inputHelpers'
 import api from '@/services/api'
 
 export default {
@@ -122,7 +164,7 @@ export default {
       type: Object,
       default: null
     },
-    existingUrls: {
+    existingSources: {
       type: Array,
       default: () => []
     }
@@ -130,6 +172,8 @@ export default {
   emits: ['close', 'add', 'save', 'delete'],
   setup(props, { emit }) {
     const urlInput = ref(null)
+    const labelInput = ref(null)
+    const sourceType = ref(props.source?.type || 'rtsp')
     const url = ref(props.source?.url || '')
     const label = ref(props.source?.label || '')
     const testing = ref(false)
@@ -138,9 +182,26 @@ export default {
 
     const isEditing = computed(() => !!props.source)
 
+    const hasMicSource = computed(() =>
+      props.existingSources.some(s => s.type === 'pulseaudio')
+    )
+
+    // Auto-select RTSP if mic already exists and we're adding
+    if (!isEditing.value && hasMicSource.value) {
+      sourceType.value = 'rtsp'
+    }
+
+    const canSubmit = computed(() => {
+      if (sourceType.value === 'rtsp') return !!url.value.trim()
+      return true // mic always valid
+    })
+
     const submitLabel = computed(() => {
       if (testing.value) return 'Testing...'
-      return isEditing.value ? 'Test & Save' : 'Test & Add'
+      if (sourceType.value === 'rtsp') {
+        return isEditing.value ? 'Test & Save' : 'Test & Add'
+      }
+      return isEditing.value ? 'Save' : 'Add'
     })
 
     const clearErrors = () => {
@@ -148,7 +209,28 @@ export default {
       canForceSubmit.value = false
     }
 
-    const validate = () => {
+    const sanitizeLabelInput = () => {
+      label.value = sanitizeLabel(label.value)
+    }
+
+    const sanitizeLabelForFilename = (val) =>
+      (val || '').trim().replace(/ /g, '_').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 30).toLowerCase()
+
+    const validateLabel = () => {
+      const sanitized = sanitizeLabelForFilename(label.value)
+      const otherSanitized = props.existingSources
+        .filter(s => !isEditing.value || s.id !== props.source.id)
+        .map(s => sanitizeLabelForFilename(s.label))
+      if (otherSanitized.includes(sanitized)) {
+        error.value = sanitized
+          ? 'Another source resolves to the same filename suffix'
+          : 'Another source also has an empty label — each source needs a unique label for filenames'
+        return false
+      }
+      return true
+    }
+
+    const validateRtsp = () => {
       const trimmed = url.value.trim()
       if (!trimmed) {
         error.value = 'URL is required'
@@ -158,11 +240,11 @@ export default {
         error.value = 'Must start with rtsp:// or rtsps://'
         return null
       }
-      // Check duplicates (exclude current URL in edit mode)
-      const others = isEditing.value
-        ? props.existingUrls.filter(u => u !== props.source.url)
-        : props.existingUrls
-      if (others.includes(trimmed)) {
+      // Check duplicates (exclude current source in edit mode)
+      const otherUrls = props.existingSources
+        .filter(s => s.type === 'rtsp' && (!isEditing.value || s.id !== props.source.id))
+        .map(s => s.url)
+      if (otherUrls.includes(trimmed)) {
         error.value = 'This URL is already added'
         return null
       }
@@ -191,22 +273,45 @@ export default {
       }
     }
 
-    const submitSource = (validatedUrl) => {
+    const buildSourceObject = (validatedUrl) => {
       const trimmedLabel = label.value.trim()
-      if (isEditing.value) {
-        emit('save', {
+      if (sourceType.value === 'rtsp') {
+        return {
+          type: 'rtsp',
           url: validatedUrl,
-          label: trimmedLabel,
-          originalUrl: props.source.url,
-        })
+          label: trimmedLabel || ''
+        }
+      }
+      return {
+        type: 'pulseaudio',
+        device: 'default',
+        label: trimmedLabel || 'Local Mic'
+      }
+    }
+
+    const submitSource = (validatedUrl) => {
+      if (isEditing.value) {
+        const updates = {}
+        updates.label = label.value.trim()
+        if (sourceType.value === 'rtsp') {
+          updates.url = validatedUrl
+        }
+        emit('save', { id: props.source.id, updates })
       } else {
-        emit('add', { url: validatedUrl, label: trimmedLabel })
+        emit('add', buildSourceObject(validatedUrl))
       }
     }
 
     const handleSubmit = async () => {
       clearErrors()
-      const validatedUrl = validate()
+      if (!validateLabel()) return
+
+      if (sourceType.value === 'pulseaudio') {
+        submitSource(null)
+        return
+      }
+
+      const validatedUrl = validateRtsp()
       if (!validatedUrl) return
 
       const success = await testStream(validatedUrl)
@@ -216,13 +321,20 @@ export default {
     }
 
     const handleForceSubmit = () => {
-      const validatedUrl = validate()
+      clearErrors()
+      if (!validateLabel()) return
+
+      if (sourceType.value === 'pulseaudio') {
+        submitSource(null)
+        return
+      }
+      const validatedUrl = validateRtsp()
       if (!validatedUrl) return
       submitSource(validatedUrl)
     }
 
     const handleDelete = () => {
-      emit('delete', props.source.url)
+      emit('delete', props.source.id)
     }
 
     const handleBackdropClick = () => {
@@ -232,21 +344,28 @@ export default {
     }
 
     onMounted(() => {
-      if (urlInput.value) {
+      if (sourceType.value === 'rtsp' && urlInput.value) {
         urlInput.value.focus()
+      } else if (labelInput.value) {
+        labelInput.value.focus()
       }
     })
 
     return {
       urlInput,
+      labelInput,
+      sourceType,
       url,
       label,
       testing,
       error,
       canForceSubmit,
       isEditing,
+      hasMicSource,
+      canSubmit,
       submitLabel,
       clearErrors,
+      sanitizeLabelInput,
       handleSubmit,
       handleForceSubmit,
       handleDelete,

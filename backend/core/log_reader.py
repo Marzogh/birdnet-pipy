@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 
 from config.constants import LOG_DEFAULT_LINES, LOG_MAX_LINES
+from core.logging_config import make_json_safe
 
 # Pattern: [ISO-timestamp] message
 _ICECAST_LINE_RE = re.compile(r'^\[([^\]]+)\]\s*(.*)')
@@ -51,7 +52,7 @@ def _parse_json_log_line(line):
 
     # Collect extra fields
     standard_keys = {'timestamp', 'level', 'service', 'module', 'function', 'line', 'message', 'exception'}
-    extra = {k: v for k, v in obj.items() if k not in standard_keys}
+    extra = {k: make_json_safe(v) for k, v in obj.items() if k not in standard_keys}
 
     return {
         'timestamp': obj['timestamp'],

@@ -180,7 +180,7 @@ class TestSettingsMerge:
         # User only specifies some settings
         partial_settings = {
             'location': {'latitude': 50.0},  # Only latitude, not longitude
-            'audio': {'stream_url': 'http://custom.stream'}
+            'audio': {'recording_length': 12}
         }
 
         with patch('os.path.exists', return_value=True):
@@ -189,9 +189,8 @@ class TestSettingsMerge:
 
                 # User values should be there
                 assert settings['location']['latitude'] == 50.0
-                assert settings['audio']['stream_url'] == 'http://custom.stream'
+                assert settings['audio']['recording_length'] == 12
 
                 # Default values should still be there
                 assert settings['location']['longitude'] == -76.45  # default
-                assert settings['audio']['recording_length'] == 9  # default
                 assert settings['detection']['sensitivity'] == 0.75  # completely default section

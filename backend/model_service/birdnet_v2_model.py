@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from collections import OrderedDict
 
 import numpy as np
 
@@ -56,8 +57,9 @@ class BirdNetModel(BirdDetectionModel):
         # Data (lazy-loaded)
         self._labels = None
 
-        # Cache for meta-model results (lat, lon, week -> species list)
-        self._meta_model_cache = {}
+        # Cache raw meta-model probabilities by (lat, lon, week).
+        self._meta_probs_cache: OrderedDict[tuple, dict[str, float]] = OrderedDict()
+        self._meta_probs_cache_max_size = 128
 
         # Lock for thread-safe inference
         self._inference_lock = threading.Lock()
@@ -131,43 +133,65 @@ class BirdNetModel(BirdDetectionModel):
     def filter_by_location(self, lat: float, lon: float, week: int, threshold: float = DEFAULT_SPECIES_FILTER_THRESHOLD) -> list[str] | None:
         """Get species likely at a location using the meta-model.
 
-        Results are cached by (lat, lon, week, threshold).
+        Raw probabilities are cached by (lat, lon, week) and the threshold
+        is applied per call.
         """
+        probabilities = self.get_location_probabilities(lat, lon, week)
+        if probabilities is None:
+            return None
+
+        return [
+            label
+            for label, probability in sorted(
+                probabilities.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if probability >= threshold
+        ]
+
+    def get_location_probabilities(self, lat: float, lon: float, week: int) -> dict[str, float] | None:
+        """Return raw meta-model probabilities for one location/week."""
         if self._meta_model is None:
             raise RuntimeError("Meta model not loaded. Call load() first.")
+        if self._labels is None:
+            self._load_labels()
 
-        cache_key = (lat, lon, week, threshold)
-
-        if cache_key in self._meta_model_cache:
-            logger.debug("Meta model cache hit", extra={
-                'lat': lat, 'lon': lon, 'week': week,
-                'cached_species_count': len(self._meta_model_cache[cache_key])
-            })
-            return self._meta_model_cache[cache_key]
-
-        logger.debug("Meta model cache miss - running inference", extra={
-            'lat': lat, 'lon': lon, 'week': week
-        })
-
-        meta_model_input = np.expand_dims(
-            np.array([lat, lon, week], dtype='float32'), 0)
+        cache_key = (lat, lon, week)
 
         with self._inference_lock:
+            if cache_key in self._meta_probs_cache:
+                self._meta_probs_cache.move_to_end(cache_key)
+                logger.debug("Meta model cache hit", extra={
+                    'lat': lat,
+                    'lon': lon,
+                    'week': week,
+                    'cached_species_count': len(self._meta_probs_cache[cache_key]),
+                })
+                return self._meta_probs_cache[cache_key]
+
+            logger.debug("Meta model cache miss - running inference", extra={
+                'lat': lat,
+                'lon': lon,
+                'week': week,
+            })
+
+            meta_model_input = np.expand_dims(
+                np.array([lat, lon, week], dtype='float32'), 0)
             self._meta_model.set_tensor(self.meta_input_layer_index, meta_model_input)
             self._meta_model.invoke()
             meta_model_output = self._meta_model.get_tensor(
                 self.meta_output_layer_index)[0].copy()
 
-        # Filter species above threshold, sort by probability descending
-        local_species = [
-            label for _, label in sorted(
-                ((p, label) for p, label in zip(meta_model_output, self._labels, strict=True) if p >= threshold),
-                key=lambda x: x[0], reverse=True
-            )
-        ]
+            probabilities = {
+                label: float(p)
+                for label, p in zip(self._labels, meta_model_output, strict=True)
+            }
+            self._meta_probs_cache[cache_key] = probabilities
+            if len(self._meta_probs_cache) > self._meta_probs_cache_max_size:
+                self._meta_probs_cache.popitem(last=False)
 
-        self._meta_model_cache[cache_key] = local_species
-        return local_species
+        return probabilities
 
     # =========================================================================
     # Internal loading

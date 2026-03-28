@@ -37,10 +37,7 @@ def mock_config_settings(temp_recording_dir):
         'BIRDNET_SERVER_ENDPOINT': 'http://birdnet:5001/api/analyze_audio_file',
         'ANALYSIS_CHUNK_LENGTH': 3,
         'API_PORT': 5002,
-        'SAMPLE_RATE': 48000,
-        'RECORDING_MODE': 'pulseaudio',
-        'PULSEAUDIO_SOURCE': 'default',
-        'STREAM_URL': 'http://localhost:8888/stream.mp3'
+        'SAMPLE_RATE': 48000
     }
     return settings
 

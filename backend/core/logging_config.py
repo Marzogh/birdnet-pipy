@@ -1,6 +1,7 @@
 import json
 import logging
 import logging.handlers
+import math
 import os
 import sys
 from datetime import datetime
@@ -67,6 +68,17 @@ class HumanReadableFormatter(logging.Formatter):
 
         return base_msg
 
+def make_json_safe(obj):
+    """Recursively replace NaN/Inf floats with None for valid JSON output."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [make_json_safe(v) for v in obj]
+    return obj
+
+
 class StructuredFormatter(logging.Formatter):
     """Custom formatter that outputs JSON-structured logs"""
 
@@ -94,7 +106,10 @@ class StructuredFormatter(logging.Formatter):
             if key not in _STANDARD_RECORD_KEYS:
                 log_obj[key] = value
 
-        return json.dumps(log_obj)
+        try:
+            return json.dumps(log_obj, allow_nan=False)
+        except ValueError:
+            return json.dumps(make_json_safe(log_obj))
 
 # Map service names to log filenames
 _SERVICE_LOG_FILES = {

@@ -31,7 +31,11 @@ from core.runtime_config import get_runtime_settings
 from core.utils import build_detection_filenames
 from model_service.base_model import BirdDetectionModel
 from model_service.label_utils import get_common_name, get_scientific_name
-from model_service.location_filter import LocationFilter
+from model_service.location_filter import (
+    GeoModelFilter,
+    LocationFilter,
+    ModelBackedFilter,
+)
 from model_service.model_factory import (
     create_location_filter,
     create_model,
@@ -64,6 +68,19 @@ except Exception:
 
 # Create location filter (factory owns load + fallback)
 location_filter = create_location_filter(model_type, model=model)
+
+# Log location filter configuration
+if isinstance(location_filter, GeoModelFilter):
+    _filter_desc = 'standalone geomodel (ONNX)'
+elif isinstance(location_filter, ModelBackedFilter):
+    _filter_desc = 'embedded meta model (TFLite)'
+else:
+    _filter_desc = 'disabled'
+
+logger.info("Location filter initialized", extra={
+    'filter_type': _filter_desc,
+    'model_type': model_type.value,
+})
 
 
 def split_audio(path, chunk_length, sample_rate, total_duration, overlap=0.0, minlen=1.5):
@@ -276,17 +293,22 @@ def process_audio_file(
 
     # Location-based species filtering (uses recording timestamp, not request time)
     meta_start = time.time()
-    local_species_list = location_filter.filter(lat, lon, file_timestamp, threshold=species_filter_threshold)
+    location_context = location_filter.filter(
+        lat, lon, file_timestamp, threshold=species_filter_threshold
+    )
     meta_time = time.time() - meta_start
 
-    if local_species_list is not None:
+    if location_context.allowed_species is not None:
         logger.debug("Location filter applied", extra={
             'meta_time': round(meta_time, 3),
-            'local_species_count': len(local_species_list)
+            'local_species_count': len(location_context.allowed_species),
+            'location_source': location_context.source,
+            'filter_threshold': round(location_context.threshold * 100, 1),
         })
     else:
         logger.debug("Location filtering not available", extra={
-            'model': model.name
+            'model': model.name,
+            'location_source': location_context.source,
         })
 
     # Get overlap and chunk length from runtime settings/model
@@ -371,16 +393,16 @@ def process_audio_file(
                 continue
 
             # Rule 3: Normal mode - use location-based filter
-            if local_species_list is None:
+            if location_context.allowed_species is None:
                 # Model doesn't support location filtering, accept all
                 filtered_species_list.append(species_detection)
-            elif species_label in local_species_list:
+            elif species_label in location_context.allowed_species:
                 filtered_species_list.append(species_detection)
             else:
                 logger.debug("Species not in local species list", extra={'species': scientific_name})
 
         if filtered_species_list:
-            species_info = [(get_common_name(s[0]), round(s[1]*100)) for s in filtered_species_list]
+            species_info = [(get_common_name(s[0]), round(s[1]*100, 1)) for s in filtered_species_list]
             logger.debug(f"Chunk {chunk_index}/{len(audio_chunks)-1} analyzed", extra={
                 'detections': len(filtered_species_list),
                 'species': species_info[0] if species_info else None
@@ -396,12 +418,17 @@ def process_audio_file(
             detections_count += 1
 
             # Log each confirmed detection
-            logger.info("Bird detected", extra={
+            detection_extra = {
                 'species': result['common_name'],
-                'confidence': round(result['confidence'] * 100),
+                'confidence': round(result['confidence'] * 100, 1),
                 'chunk': chunk_index,
                 'time': result['timestamp']
-            })
+            }
+            if location_context.source != 'disabled':
+                loc_prob = location_context.probability_for(species[0])
+                detection_extra['location_source'] = location_context.source
+                detection_extra['location_prob'] = round(loc_prob * 100, 1) if loc_prob is not None else 'unmapped'
+            logger.info("Bird detected", extra=detection_extra)
 
     # Log inference loop timing
     inference_time = time.time() - inference_start
@@ -531,6 +558,8 @@ if __name__ == '__main__':
         'port': settings.BIRDNET_SERVICE_PORT,
         'model': model.name,
         'model_version': model.version,
+        'num_species': len(model.get_labels()),
+        'location_filter': _filter_desc,
         'timezone': os.environ.get('TZ', 'UTC')
     })
     app.run(host='0.0.0.0', debug=False, port=settings.BIRDNET_SERVICE_PORT)

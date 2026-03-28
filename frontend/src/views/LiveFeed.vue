@@ -27,6 +27,24 @@
         :dismissible="false"
         :auto-dismiss="0"
       />
+      <div
+        v-if="streams.length > 1"
+        class="flex flex-wrap gap-2 mb-4"
+      >
+        <button
+          v-for="s in streams"
+          :key="s.source_id"
+          type="button"
+          class="inline-flex items-center px-2.5 py-0.5 rounded-full border text-xs font-medium transition-colors"
+          :class="s.source_id === selectedSourceId
+            ? 'border-blue-200 bg-blue-50 text-gray-800'
+            : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'"
+          :disabled="isLoading"
+          @click="selectSourceById(s.source_id)"
+        >
+          {{ s.label }}
+        </button>
+      </div>
       <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-4">
         <button
           class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow focus:outline-none focus:ring-2 focus:ring-blue-300 flex items-center justify-center min-w-[120px] flex-shrink-0 disabled:bg-gray-400 disabled:cursor-not-allowed"
@@ -47,15 +65,15 @@
             class="text-sm break-words"
             :class="hasError ? 'text-amber-600 animate-pulse-fast' : 'text-gray-500'"
           >Status: {{ statusMessage }}</span>
-          <div class="hidden sm:block text-xs text-gray-400 mt-1">
+          <div
+            v-if="streams.length <= 1"
+            class="hidden sm:block text-xs text-gray-400 mt-1"
+          >
             <template v-if="streamDescription">
               {{ streamDescription }}
             </template>
-            <template v-else-if="streamType === 'none'">
-              ⚠️ No stream available
-            </template>
             <template v-else>
-              ❓ Unknown
+              ⚠️ No stream available
             </template>
           </div>
         </div>
@@ -82,6 +100,7 @@ import { io } from 'socket.io-client'
 import AlertBanner from '@/components/AlertBanner.vue'
 import BirdDetectionList from './BirdDetectionList.vue'
 import api from '@/services/api'
+import { RECORDER_STATES } from '@/utils/recorderStates'
 
 export default {
   name: 'LiveFeed',
@@ -97,22 +116,21 @@ export default {
     const hasError = ref(false)
     const statusMessage = ref('Click Start to begin')
     const birdDetections = ref([])
-    const streamUrl = ref('')
-    const streamType = ref('none')
-    const streamDescription = ref('')
+    const streams = ref([])
+    const selectedSourceId = ref('')
     const recorderStatus = ref(null)
+
+    const currentSource = computed(() =>
+      streams.value.find(s => s.source_id === selectedSourceId.value)
+    )
+    const streamUrl = computed(() => currentSource.value?.url || '')
+    const streamDescription = computed(() => currentSource.value?.label || '')
 
     const recorderWarning = computed(() => {
       const status = recorderStatus.value
-      if (!status || status.state === 'running') return ''
-      const modeLabels = {
-        pulseaudio: 'Microphone',
-        rtsp: 'RTSP stream',
-        http_stream: 'HTTP stream'
-      }
-      const label = modeLabels[status.recording_mode] || 'Audio'
-      if (status.state === 'stopped') return `${label} recording has stopped`
-      if (status.state === 'degraded') return `${label} recording is experiencing issues`
+      if (!status || status.state === RECORDER_STATES.RUNNING) return ''
+      if (status.state === RECORDER_STATES.STOPPED) return 'Audio recording has stopped'
+      if (status.state === RECORDER_STATES.DEGRADED) return 'Audio recording is experiencing issues'
       return ''
     })
 
@@ -297,32 +315,50 @@ export default {
       }
     }
 
+    const startPlayback = async () => {
+      const success = await startAudio()
+      if (success) {
+        if (!isSafari) {
+          drawSpectrogram()
+        }
+        isPlaying.value = true
+      }
+    }
+
     const toggleAudio = async () => {
       if (isPlaying.value) {
         stopPlayback()
         await stopAudio()
       } else {
-        const success = await startAudio()
-        if (success) {
-          if (!isSafari) {
-            drawSpectrogram()
-          }
-          isPlaying.value = true
-        }
+        await startPlayback()
+      }
+    }
+
+    const selectSourceById = async (sourceId) => {
+      if (sourceId === selectedSourceId.value) return
+      if (!streams.value.some(s => s.source_id === sourceId)) return
+      const wasPlaying = isPlaying.value
+      if (wasPlaying) {
+        stopPlayback()
+        await stopAudio()
+      }
+      selectedSourceId.value = sourceId
+      if (wasPlaying) {
+        await startPlayback()
       }
     }
 
     const fetchStreamConfig = async () => {
       try {
         const { data: config } = await api.get('/stream/config')
-        streamUrl.value = config.stream_url || ''
-        streamType.value = config.stream_type || 'none'
-        streamDescription.value = config.description || ''
+        streams.value = config.streams || []
+        selectedSourceId.value = streams.value[0]?.source_id || ''
+
         if (config.recorder_status) {
           recorderStatus.value = config.recorder_status
         }
 
-        if (!streamUrl.value || streamType.value === 'none') {
+        if (!streamUrl.value) {
           statusMessage.value = 'No audio stream configured'
         }
       } catch (error) {
@@ -450,11 +486,13 @@ export default {
       statusMessage,
       toggleAudio,
       birdDetections,
+      streams,
+      selectedSourceId,
       streamUrl,
-      streamType,
       streamDescription,
       isSafari,
       recorderWarning,
+      selectSourceById,
       handleAudioError,
       handleAudioBuffering,
       handleAudioPlaying,

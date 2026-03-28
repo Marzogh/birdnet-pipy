@@ -1,6 +1,7 @@
 """Tests for BirdNetModel eBird code functionality."""
 
 import threading
+from collections import OrderedDict
 
 import pytest
 
@@ -25,7 +26,8 @@ class TestBirdNetModelEbirdCodes:
         loader.meta_input_layer_index = None
         loader.meta_output_layer_index = None
         loader._labels = None
-        loader._meta_model_cache = {}
+        loader._meta_probs_cache = OrderedDict()
+        loader._meta_probs_cache_max_size = 128
         loader._inference_lock = threading.Lock()
         return loader
 

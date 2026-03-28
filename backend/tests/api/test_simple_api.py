@@ -422,56 +422,35 @@ class TestSimpleAPI:
                 app, _ = create_app()
                 client = app.test_client()
 
-                # Test invalid HTTP stream URL (must start with http:// or https://)
-                invalid_stream = {
-                    'audio': {
-                        'recording_mode': 'http_stream',
-                        'stream_url': 'ftp://example.com/stream'
-                    }
-                }
-                response = client.put('/api/settings',
-                                    data=json.dumps(invalid_stream),
-                                    content_type='application/json')
-                assert response.status_code == 400
-                assert 'Invalid Stream URL' in response.get_json()['error']
-
-                # Test invalid RTSP URL (must start with rtsp:// or rtsps://)
+                # Test invalid RTSP URL in source (must start with rtsp:// or rtsps://)
                 invalid_rtsp = {
                     'audio': {
-                        'recording_mode': 'rtsp',
-                        'rtsp_url': 'http://example.com/stream'
+                        'sources': [
+                            {'id': 'source_0', 'type': 'rtsp', 'url': 'http://example.com/stream', 'label': 'Test', 'enabled': True}
+                        ],
+                        'next_source_id': 1
                     }
                 }
                 response = client.put('/api/settings',
                                     data=json.dumps(invalid_rtsp),
                                     content_type='application/json')
                 assert response.status_code == 400
-                assert 'Invalid RTSP URL' in response.get_json()['error']
+                assert 'rtsp://' in response.get_json()['error']
 
-                # Test missing URL when required
-                missing_stream_url = {
+                # Test invalid source type
+                invalid_type = {
                     'audio': {
-                        'recording_mode': 'http_stream',
-                        'stream_url': ''
+                        'sources': [
+                            {'id': 'source_0', 'type': 'invalid', 'label': 'Test', 'enabled': True}
+                        ],
+                        'next_source_id': 1
                     }
                 }
                 response = client.put('/api/settings',
-                                    data=json.dumps(missing_stream_url),
+                                    data=json.dumps(invalid_type),
                                     content_type='application/json')
                 assert response.status_code == 400
-                assert 'Stream URL required' in response.get_json()['error']
-
-                missing_rtsp_url = {
-                    'audio': {
-                        'recording_mode': 'rtsp',
-                        'rtsp_url': ''
-                    }
-                }
-                response = client.put('/api/settings',
-                                    data=json.dumps(missing_rtsp_url),
-                                    content_type='application/json')
-                assert response.status_code == 400
-                assert 'RTSP URL required' in response.get_json()['error']
+                assert 'Invalid source type' in response.get_json()['error']
 
     def test_update_channel_setting(self):
         """Test update channel setting endpoint (no restart)."""
@@ -702,8 +681,7 @@ class TestSimpleAPI:
                 response = client.get('/api/stream/config')
                 assert response.status_code == 200
                 data = response.get_json()
-                assert 'stream_url' in data
-                assert 'stream_type' in data
+                assert isinstance(data, dict)
 
     def test_detection_trends_endpoint(self, api_client, real_db_manager):
         """Test /api/detections/trends endpoint."""

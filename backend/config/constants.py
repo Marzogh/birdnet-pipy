@@ -14,17 +14,22 @@ class ModelType(Enum):
     BIRDNET_V3 = "birdnet_v3"
 
 
+class RecorderState:
+    """Recorder health state constants for type-safe comparisons."""
+    RUNNING = 'running'
+    DEGRADED = 'degraded'
+    STOPPED = 'stopped'
+
+
 class RecordingMode:
     """Recording mode constants for type-safe comparisons."""
     PULSEAUDIO = 'pulseaudio'
-    HTTP_STREAM = 'http_stream'
     RTSP = 'rtsp'
 
 
 # Recording modes with UI labels
 RECORDING_MODES = {
     RecordingMode.PULSEAUDIO: 'Local Microphone',
-    RecordingMode.HTTP_STREAM: 'HTTP Stream',
     RecordingMode.RTSP: 'RTSP Stream',
 }
 

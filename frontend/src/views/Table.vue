@@ -400,7 +400,7 @@
         <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-t border-gray-200">
           <select
             v-model="perPageModel"
-            class="px-2 py-1 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            class="h-9 px-2 py-1 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
           >
             <option :value="25">
               25

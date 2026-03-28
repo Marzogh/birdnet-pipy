@@ -12,6 +12,7 @@ Key features:
 - Preserves all database records
 """
 
+import json
 import os
 import shutil
 import time
@@ -96,10 +97,18 @@ def get_detection_files(detection):
     Returns:
         dict with audio_path and spectrogram_path
     """
+    extra = detection.get('extra', {})
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except (json.JSONDecodeError, TypeError):
+            extra = {}
+    source_label = extra.get('source_label')
     filenames = build_detection_filenames(
         detection['common_name'],
         detection['confidence'],
-        detection['timestamp']
+        detection['timestamp'],
+        audio_source=source_label or None
     )
 
     return {

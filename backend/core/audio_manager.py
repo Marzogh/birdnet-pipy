@@ -1,10 +1,9 @@
 """
 Audio Recording Modules
 
-Provides three recording methods:
-1. HttpStreamRecorder - Records from HTTP audio streams
-2. RtspRecorder - Records from RTSP streams (IP cameras, etc)
-3. PulseAudioRecorder - Records from PulseAudio server via socket
+Provides two recording methods:
+1. RtspRecorder - Records from RTSP streams (IP cameras, etc)
+2. PulseAudioRecorder - Records from PulseAudio server via socket
 
 All output mono WAV files at target sample rate (48kHz).
 """
@@ -36,19 +35,6 @@ _FFMPEG_SKIP_PREFIXES = (
 # Regex to strip memory addresses from ffmpeg component tags, e.g.
 # [rtsp @ 0x55564a562e00] → [rtsp]
 _FFMPEG_ADDR_RE = re.compile(r'\[(\w+)#?\d*\s*@\s*0x[0-9a-f]+\]')
-
-
-def _close_process_pipes(*procs: subprocess.Popen | None) -> None:
-    """Close all open pipes on the given subprocess(es) to prevent FD leaks."""
-    for proc in procs:
-        if proc is None:
-            continue
-        for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            if pipe and not pipe.closed:
-                try:
-                    pipe.close()
-                except OSError:
-                    pass
 
 
 def _parse_ffmpeg_error(stderr: str) -> str:
@@ -89,88 +75,41 @@ def _summarize_stream_error(stderr: str) -> str:
     return first_line
 
 
-def test_stream_url(url: str, stream_type: str) -> tuple:
-    """Probe a stream URL to check if it's accessible.
+def test_stream_url(url: str) -> tuple:
+    """Probe an RTSP stream URL to check if it's accessible.
 
     Args:
-        url: The stream URL to test
-        stream_type: Either RecordingMode.HTTP_STREAM or RecordingMode.RTSP
+        url: The RTSP stream URL to test
 
     Returns:
         (success: bool, message: str)
     """
-    # Validate URL format
-    if stream_type == RecordingMode.HTTP_STREAM:
-        if not url.startswith(('http://', 'https://')):
-            return (False, 'Invalid URL format: must start with http:// or https://')
-    elif stream_type == RecordingMode.RTSP:
-        if not url.startswith(('rtsp://', 'rtsps://')):
-            return (False, 'Invalid URL format: must start with rtsp:// or rtsps://')
-    else:
-        return (False, f'Invalid stream type: {stream_type}')
+    if not url.startswith(('rtsp://', 'rtsps://')):
+        return (False, 'Invalid URL format: must start with rtsp:// or rtsps://')
 
     safe_url = sanitize_url(url)
 
     try:
-        if stream_type == RecordingMode.HTTP_STREAM:
-            curl_proc = subprocess.Popen(
-                ['curl', '-s', '--max-time', '5', url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            ffmpeg_proc = subprocess.Popen(
-                ['ffmpeg', '-i', 'pipe:0', '-t', '1', '-f', 'null', '-'],
-                stdin=curl_proc.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            # Allow curl to receive SIGPIPE if ffmpeg exits
-            curl_proc.stdout.close()
-            try:
-                _, stderr = ffmpeg_proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                ffmpeg_proc.kill()
-                curl_proc.kill()
-                ffmpeg_proc.wait()
-                curl_proc.wait()
-                return (False, 'Connection timed out')
-            finally:
-                _close_process_pipes(curl_proc, ffmpeg_proc)
-
-            # Clean up curl (may already have exited — terminate is safe on dead processes)
-            curl_proc.terminate()
-            try:
-                curl_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                curl_proc.kill()
-                curl_proc.wait()
-
-            if ffmpeg_proc.returncode == 0:
-                return (True, 'Stream is accessible')
-            error_msg = _summarize_stream_error(stderr.decode(errors='replace'))
-            return (False, f'Stream probe failed: {error_msg}')
-
-        else:  # rtsp
-            result = subprocess.run(
-                [
-                    'ffmpeg',
-                    '-rtsp_transport', 'tcp',
-                    '-timeout', '5000000',
-                    '-allowed_media_types', 'audio',
-                    '-fflags', '+genpts+discardcorrupt',
-                    '-use_wallclock_as_timestamps', '1',
-                    '-i', url,
-                    '-t', '1',
-                    '-f', 'null', '-',
-                ],
-                timeout=10,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                return (True, 'Stream is accessible')
-            error_msg = _summarize_stream_error(result.stderr)
-            return (False, f'Stream probe failed: {error_msg}')
+        result = subprocess.run(
+            [
+                'ffmpeg',
+                '-rtsp_transport', 'tcp',
+                '-timeout', '5000000',
+                '-allowed_media_types', 'audio',
+                '-fflags', '+genpts+discardcorrupt',
+                '-use_wallclock_as_timestamps', '1',
+                '-i', url,
+                '-t', '1',
+                '-f', 'null', '-',
+            ],
+            timeout=10,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return (True, 'Stream is accessible')
+        error_msg = _summarize_stream_error(result.stderr)
+        return (False, f'Stream probe failed: {error_msg}')
 
     except subprocess.TimeoutExpired:
         return (False, 'Connection timed out')
@@ -389,89 +328,6 @@ class BaseRecorder(ABC):
         self.start()
 
 
-class HttpStreamRecorder(BaseRecorder):
-    """
-    Simple HTTP audio stream recorder.
-    Records fixed-duration chunks with timestamp-based filenames.
-    Uses curl piped to ffmpeg for stream capture.
-    """
-
-    def __init__(self, stream_url: str, chunk_duration: float,
-                 output_dir: str, target_sample_rate: int):
-        """
-        Initialize HTTP stream recorder.
-
-        Args:
-            stream_url: HTTP URL of audio stream
-            chunk_duration: Duration of each chunk in seconds
-            output_dir: Directory to save recordings
-            target_sample_rate: Sample rate for output in Hz
-        """
-        super().__init__(chunk_duration, output_dir, target_sample_rate)
-        self.stream_url = stream_url
-
-    def _get_thread_name(self) -> str:
-        return "HTTPRecordingThread"
-
-    def _execute_recording(self, temp_path: str) -> bool:
-        """
-        Execute curl | ffmpeg pipeline for HTTP stream recording.
-        Uses subprocess.Popen to safely pipe without shell injection.
-        """
-        # Start curl process to fetch stream
-        curl_cmd = ['curl', '-s', self.stream_url]
-        curl_proc = subprocess.Popen(
-            curl_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-
-        # Start ffmpeg process to convert and save
-        ffmpeg_cmd = ['ffmpeg', '-i', 'pipe:0'] + self._get_ffmpeg_output_args(temp_path)
-
-        ffmpeg_proc = None
-        try:
-            ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd,
-                stdin=curl_proc.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
-            )
-
-            # Allow curl to receive SIGPIPE if ffmpeg exits
-            curl_proc.stdout.close()
-
-            # Wait for ffmpeg with timeout
-            ffmpeg_proc.wait(timeout=self.chunk_duration + 10)
-
-            # Clean up curl process
-            curl_proc.terminate()
-            curl_proc.wait(timeout=2)
-
-            if ffmpeg_proc.returncode != 0:
-                ffmpeg_stderr = ffmpeg_proc.stderr.read().decode('utf-8', errors='replace') if ffmpeg_proc.stderr else ""
-                curl_stderr = curl_proc.stderr.read().decode('utf-8', errors='replace')[:200] if curl_proc.stderr else ""
-                error_detail = _parse_ffmpeg_error(ffmpeg_stderr)
-                if curl_stderr.strip():
-                    error_detail += f"\ncurl: {curl_stderr.strip()}"
-                self._log_recording_error(
-                    f"HTTP stream recording failed (url={self.stream_url}): {error_detail}"
-                )
-
-            return ffmpeg_proc.returncode == 0
-
-        except subprocess.TimeoutExpired:
-            # Kill both processes and reap zombies
-            if ffmpeg_proc:
-                ffmpeg_proc.kill()
-                ffmpeg_proc.wait()
-            curl_proc.kill()
-            curl_proc.wait()
-            raise
-        finally:
-            _close_process_pipes(curl_proc, ffmpeg_proc)
-
-
 class RtspRecorder(BaseRecorder):
     """
     RTSP audio stream recorder.
@@ -597,19 +453,17 @@ def create_recorder(
     output_dir: str,
     target_sample_rate: int,
     source_name: str = None,
-    stream_url: str = None,
     rtsp_url: str = None
 ) -> BaseRecorder:
     """
     Factory function to create the appropriate recorder based on recording mode.
 
     Args:
-        recording_mode: 'pulseaudio', 'http_stream', or 'rtsp'
+        recording_mode: 'pulseaudio' or 'rtsp'
         chunk_duration: Duration of each chunk in seconds
         output_dir: Directory to save recordings
         target_sample_rate: Sample rate for output in Hz
         source_name: PulseAudio source name (required for pulseaudio mode)
-        stream_url: HTTP stream URL (required for http_stream mode)
         rtsp_url: RTSP URL (required for rtsp mode)
 
     Returns:
@@ -632,15 +486,6 @@ def create_recorder(
             raise ValueError("rtsp_url must start with rtsp:// or rtsps://")
         return RtspRecorder(
             rtsp_url=rtsp_url,
-            chunk_duration=chunk_duration,
-            output_dir=output_dir,
-            target_sample_rate=target_sample_rate
-        )
-    elif recording_mode == RecordingMode.HTTP_STREAM:
-        if not stream_url:
-            raise ValueError("stream_url required for http_stream recording mode")
-        return HttpStreamRecorder(
-            stream_url=stream_url,
             chunk_duration=chunk_duration,
             output_dir=output_dir,
             target_sample_rate=target_sample_rate

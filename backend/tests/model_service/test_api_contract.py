@@ -214,6 +214,7 @@ class TestProcessAudioFileErrorHandling:
 
     def test_returns_empty_results_on_input_shape_mismatch(self, monkeypatch, caplog):
         from model_service import inference_server
+        from model_service.location_filter import LocationContext
 
         model = MagicMock()
         model.name = "birdnet"
@@ -225,7 +226,7 @@ class TestProcessAudioFileErrorHandling:
         )
 
         location_filter = MagicMock()
-        location_filter.filter.return_value = None
+        location_filter.filter.return_value = LocationContext.disabled(0.03)
 
         # Simulate a stale 32kHz-sized chunk arriving after model change/restart.
         monkeypatch.setattr(

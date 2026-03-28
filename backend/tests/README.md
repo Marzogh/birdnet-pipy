@@ -115,12 +115,12 @@ Tests for audio recording modules without actual subprocess execution.
 
 | File | Tests | Description |
 |------|-------|-------------|
-| `test_audio_manager.py` | 66 | HttpStreamRecorder, RtspRecorder, PulseAudioRecorder: initialization, chunk recording, atomic operations, thread lifecycle, error handling |
+| `test_audio_manager.py` | 44 | RtspRecorder, PulseAudioRecorder: initialization, chunk recording, atomic operations, thread lifecycle, error handling |
 
 **Key Fixtures:**
 - `temp_output_dir` - Temporary directory for recordings
 - `mock_subprocess_success/failure` - Mocked subprocess execution
-- `http_recorder_params`, `pulse_recorder_params`, `rtsp_recorder_params` - Standard recorder configs
+- `pulse_recorder_params`, `rtsp_recorder_params` - Standard recorder configs
 
 ### Database Tests (`tests/database/`)
 Tests for DatabaseManager CRUD operations and queries.
@@ -190,7 +190,6 @@ sample_api_detection      # Sample detection with API-specific fields
 temp_output_dir         # Temporary output directory
 mock_subprocess_success # Mocked successful subprocess
 mock_subprocess_failure # Mocked failed subprocess
-http_recorder_params    # HTTP stream recorder config
 pulse_recorder_params   # PulseAudio recorder config
 rtsp_recorder_params    # RTSP recorder config
 ```

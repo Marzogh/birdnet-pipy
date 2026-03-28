@@ -100,6 +100,9 @@ class BirdNetV3Model(BirdDetectionModel):
         # V3.0 returns (embeddings, predictions) — predictions are already probabilities
         probs = outputs[1][0].astype(np.float32)
 
+        # V3 model returns NaN for all species on silent audio — treat as zero confidence
+        np.nan_to_num(probs, copy=False, nan=0.0)
+
         # Apply sensitivity scaling: probs^(1/sensitivity)
         if sensitivity <= 0:
             raise ValueError(f"Sensitivity must be positive, got {sensitivity}")

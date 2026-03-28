@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- Added 2-step SetupWizard replacing LocationSetupModal — guides through location and audio source configuration on first use
+- Added multi-source audio recording — record from multiple microphones and RTSP streams simultaneously (#22)
+- Added multi-stream source selector pills to LiveFeed for switching between active audio sources with animated expand-on-hover
+- Added location filter probability logging for top detections
+- Added CLI script to regenerate buggy spectrograms
+- Changed detection filenames to use source label instead of source ID
+- Improved location context: replaced mutable `last_probabilities` with immutable `LocationContext`, moved probability logging to caller
+- Centralized recorder state strings as shared constants
+- Refactored LiveFeed stream state derivation to use computed properties
+- Fixed spectrogram generation producing cropped images (restored `bbox_inches='tight'`)
+- Fixed several audio sources migration issues: missing default Local Mic on fresh installs, microphone not preserved during migration, migration skipped when defaults already set the sources key, and migrated RTSP sources getting generic labels
+- Fixed per-source audio error details lost in multi-stream setup
+- Fixed service restart triggered when only audio source label changes
+- Fixed filename collisions when different source labels sanitize to identical strings
+- Fixed recorder health broadcast failing on first attempt, causing 60s startup delay
+- Fixed health cache not refreshed after restart; kept Icecast alive with no active sources
+- Fixed NaN values in model logs and improved system logs modal UX
+- Fixed inconsistent percentage rounding in location probability logs
+- Fixed security vulnerability in happy-dom (GHSA-6q6h-j7hj-3r64)
+
 ## [0.5.8] - 2026-03-25
 
 - Added location-based species filtering (geomodel) for BirdNET V3.0 — bundled geomodel filters detections by geographic probability with thread-safe caching

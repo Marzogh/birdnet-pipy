@@ -108,11 +108,9 @@
       </router-view>
     </main>
 
-    <!-- Location Setup Modal -->
-    <LocationSetupModal
-      :is-visible="showLocationSetup"
-      @close="showLocationSetup = false"
-      @location-saved="onLocationSaved"
+    <!-- Setup Wizard -->
+    <SetupWizard
+      :is-visible="showSetupWizard"
     />
 
     <!-- Login Modal -->
@@ -132,14 +130,14 @@ import { useAuth } from '@/composables/useAuth'
 import { useUnitSettings } from '@/composables/useUnitSettings'
 import { useAppStatus } from '@/composables/useAppStatus'
 import { DISPLAY_NAME } from './version'
-import LocationSetupModal from '@/components/LocationSetupModal.vue'
+import SetupWizard from '@/components/SetupWizard.vue'
 import LoginModal from '@/components/LoginModal.vue'
 import api from '@/services/api'
 
 export default {
   name: 'App',
   components: {
-    LocationSetupModal,
+    SetupWizard,
     LoginModal
   },
   setup() {
@@ -150,7 +148,7 @@ export default {
     const unitSettings = useUnitSettings()
     const { stationName, setStationName, setLocationConfigured } = useAppStatus()
 
-    const showLocationSetup = ref(false)
+    const showSetupWizard = ref(false)
     const showLoginModal = ref(false)
 
     // Update browser tab title when station name changes
@@ -166,9 +164,9 @@ export default {
         setStationName(settings.display?.station_name)
         // Show setup modal if location or timezone has not been configured
         if (!settings.location?.configured || !settings.location?.timezone) {
-          logger.info('Location or timezone not configured, showing setup modal')
+          logger.info('Location or timezone not configured, showing setup wizard')
           setLocationConfigured(false)
-          showLocationSetup.value = true
+          showSetupWizard.value = true
         } else {
           setLocationConfigured(true)
         }
@@ -185,11 +183,6 @@ export default {
       if (auth.needsLogin.value) {
         showLoginModal.value = true
       }
-    }
-
-    const onLocationSaved = async (location) => {
-      logger.info('Location saved', location)
-      await checkLocationSetup()
     }
 
     const onLoginSuccess = async () => {
@@ -258,9 +251,8 @@ export default {
 
     return {
       DISPLAY_NAME,
-      showLocationSetup,
+      showSetupWizard,
       showLoginModal,
-      onLocationSaved,
       onLoginSuccess,
       onLoginCancel,
       handleLogout,

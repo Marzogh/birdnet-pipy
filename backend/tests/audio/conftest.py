@@ -1,7 +1,7 @@
 """
 Audio test fixtures and configuration.
 
-Provides fixtures for testing HttpStreamRecorder, RtspRecorder, and PulseAudioRecorder
+Provides fixtures for testing RtspRecorder and PulseAudioRecorder
 without actual subprocess execution or audio hardware.
 """
 import tempfile
@@ -50,17 +50,6 @@ def mock_datetime_now():
         mock_dt.now.return_value = fixed_time
         mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
         yield mock_dt, fixed_time
-
-
-@pytest.fixture
-def http_recorder_params():
-    """Standard parameters for HttpStreamRecorder."""
-    return {
-        'stream_url': 'http://test-stream:8888/audio.mp3',
-        'chunk_duration': 3.0,
-        'output_dir': '/tmp/test',
-        'target_sample_rate': 48000
-    }
 
 
 @pytest.fixture

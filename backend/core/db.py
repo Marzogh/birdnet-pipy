@@ -58,6 +58,10 @@ class DatabaseManager:
                 cursor.execute("UPDATE detections SET extra = '{}' WHERE extra IS NULL")
                 logger.info("Migrated database: added 'extra' column to detections table")
 
+            if 'audio_source' not in existing_columns:
+                cursor.execute("ALTER TABLE detections ADD COLUMN audio_source TEXT")
+                logger.info("Migrated database: added 'audio_source' column")
+
             conn.commit()
 
     def database_exists(self):
@@ -76,8 +80,8 @@ class DatabaseManager:
 
         query = """
         INSERT INTO detections (timestamp, group_timestamp, scientific_name, common_name, confidence,
-                                latitude, longitude, cutoff, sensitivity, overlap, extra)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                latitude, longitude, cutoff, sensitivity, overlap, extra, audio_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self.get_db_connection() as conn:
             cur = conn.cursor()
@@ -92,7 +96,8 @@ class DatabaseManager:
                 detection['cutoff'],
                 detection['sensitivity'],
                 detection['overlap'],
-                extra
+                extra,
+                detection.get('audio_source')
             ))
             conn.commit()
             return cur.lastrowid
@@ -105,7 +110,7 @@ class DatabaseManager:
             partition = "PARTITION BY common_name"
             rank_order = "ORDER BY timestamp DESC"
         else:
-            partition = "PARTITION BY group_timestamp, common_name"
+            partition = "PARTITION BY group_timestamp, common_name, audio_source"
             rank_order = "ORDER BY confidence DESC"
 
         # Pre-fetch recent rows so the window function scans ~hundreds
@@ -151,7 +156,8 @@ class DatabaseManager:
             sensitivity,
             overlap,
             week,
-            extra
+            extra,
+            audio_source
         FROM detections
         WHERE id IN (
             SELECT id FROM (
@@ -540,7 +546,7 @@ class DatabaseManager:
         # LIMIT is parameterized using -1 for unlimited (SQLite treats negative LIMIT as no limit)
         if sort == 'best':
             query = """
-            SELECT id, timestamp, common_name, confidence, extra
+            SELECT id, timestamp, common_name, confidence, extra, audio_source
             FROM detections
             WHERE common_name = ?
             ORDER BY confidence DESC
@@ -548,7 +554,7 @@ class DatabaseManager:
             """
         else:  # default to 'recent'
             query = """
-            SELECT id, timestamp, common_name, confidence, extra
+            SELECT id, timestamp, common_name, confidence, extra, audio_source
             FROM detections
             WHERE common_name = ?
             ORDER BY timestamp DESC
@@ -860,13 +866,14 @@ class DatabaseManager:
                 common_name,
                 confidence,
                 timestamp,
+                audio_source,
                 ROW_NUMBER() OVER (
                     PARTITION BY common_name
                     ORDER BY confidence DESC
                 ) as confidence_rank
             FROM detections
         )
-        SELECT id, common_name, confidence, timestamp
+        SELECT id, common_name, confidence, timestamp, audio_source
         FROM RankedDetections
         WHERE confidence_rank > ?
         ORDER BY timestamp ASC
@@ -946,7 +953,8 @@ class DatabaseManager:
             sensitivity,
             overlap,
             week,
-            extra
+            extra,
+            audio_source
         FROM detections
         WHERE {where_clause}
         ORDER BY {sort} {order}
@@ -1003,7 +1011,8 @@ class DatabaseManager:
             sensitivity,
             overlap,
             week,
-            extra
+            extra,
+            audio_source
         FROM detections
         WHERE {where_clause}
         ORDER BY timestamp DESC, id DESC
@@ -1062,7 +1071,8 @@ class DatabaseManager:
             sensitivity,
             overlap,
             week,
-            extra
+            extra,
+            audio_source
         FROM detections
         WHERE {where_clause}
         ORDER BY timestamp DESC, id DESC
@@ -1110,7 +1120,8 @@ class DatabaseManager:
             sensitivity,
             overlap,
             week,
-            extra
+            extra,
+            audio_source
         FROM detections
         WHERE id = ?
         """
@@ -1289,11 +1300,15 @@ class DatabaseManager:
         detection['extra'] = self._parse_extra(detection.get('extra'))
 
         if include_filenames:
+            # Label from extra is frozen at detection time, so filenames stay
+            # stable even if the source is renamed later
+            source_label = detection.get('extra', {}).get('source_label')
             filenames = build_detection_filenames(
                 detection['common_name'],
                 detection['confidence'],
                 detection['timestamp'],
-                audio_extension='mp3'
+                audio_extension='mp3',
+                audio_source=source_label or None
             )
             detection['audio_filename'] = filenames['audio_filename']
             detection['spectrogram_filename'] = filenames['spectrogram_filename']

@@ -4,7 +4,7 @@ Provides a LocationFilter abstraction that decouples location filtering
 from the audio detection model. Implementations include:
 
 - NoFilter: passthrough (no filtering)
-- ModelBackedFilter: adapter wrapping a model's filter_by_location() (V2.4)
+- ModelBackedFilter: adapter wrapping a model's get_location_probabilities() (V2.4)
 - GeoModelFilter: standalone ONNX geomodel inference (V3.0+)
 """
 
@@ -13,6 +13,10 @@ import logging
 import threading
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Literal
 
 import numpy as np
 
@@ -21,6 +25,40 @@ from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
 from .label_utils import get_scientific_name, parse_geomodel_labels
 
 logger = logging.getLogger(__name__)
+
+LocationSource = Literal["disabled", "meta_model_v2.4", "geomodel_v3"]
+
+
+@dataclass(frozen=True, slots=True)
+class LocationContext:
+    """Location-filter result for one analysis request.
+
+    ``allowed_species`` is ``None`` when location filtering is disabled.
+    ``probabilities`` contains only mapped species; unmapped species return
+    ``None`` from ``probability_for()`` and can still be present in
+    ``allowed_species``.
+    """
+
+    source: LocationSource
+    threshold: float
+    allowed_species: frozenset[str] | None
+    probabilities: Mapping[str, float] | None
+
+    @classmethod
+    def disabled(cls, threshold: float) -> "LocationContext":
+        """Return a context representing disabled location filtering."""
+        return cls(
+            source="disabled",
+            threshold=threshold,
+            allowed_species=None,
+            probabilities=None,
+        )
+
+    def probability_for(self, label: str) -> float | None:
+        """Return the mapped probability for a BirdNET label, if any."""
+        if self.probabilities is None:
+            return None
+        return self.probabilities.get(label)
 
 
 def _date_to_geomodel_week(dt: datetime.datetime) -> int:
@@ -55,8 +93,8 @@ class LocationFilter(ABC):
         lon: float,
         dt: datetime.datetime,
         threshold: float = DEFAULT_SPECIES_FILTER_THRESHOLD,
-    ) -> list[str] | None:
-        """Return species labels likely at a location and time.
+    ) -> LocationContext:
+        """Return location filtering context for a location and time.
 
         Args:
             lat: Latitude in degrees (-90 to 90).
@@ -66,8 +104,8 @@ class LocationFilter(ABC):
             threshold: Minimum probability to include a species.
 
         Returns:
-            List of BirdNET species labels (e.g. "SciName_CommonName")
-            that should be allowed, or None if filtering is not available.
+            Immutable location context containing allowed species and
+            mapped probabilities for logging.
         """
 
 
@@ -78,11 +116,11 @@ class NoFilter(LocationFilter):
         pass
 
     def filter(self, lat, lon, dt, threshold=DEFAULT_SPECIES_FILTER_THRESHOLD):
-        return None
+        return LocationContext.disabled(threshold)
 
 
 class ModelBackedFilter(LocationFilter):
-    """Adapter that delegates to a model's filter_by_location() method.
+    """Adapter that delegates to a model's get_location_probabilities() method.
 
     Used for V2.4 which has an embedded meta model.
     """
@@ -96,7 +134,21 @@ class ModelBackedFilter(LocationFilter):
 
     def filter(self, lat, lon, dt, threshold=DEFAULT_SPECIES_FILTER_THRESHOLD):
         week = dt.isocalendar()[1]
-        return self._model.filter_by_location(lat, lon, week, threshold)
+        probabilities = self._model.get_location_probabilities(lat, lon, week)
+        if probabilities is None:
+            return LocationContext.disabled(threshold)
+
+        allowed_species = frozenset(
+            label
+            for label, probability in probabilities.items()
+            if probability >= threshold
+        )
+        return LocationContext(
+            source="meta_model_v2.4",
+            threshold=threshold,
+            allowed_species=allowed_species,
+            probabilities=MappingProxyType(dict(probabilities)),
+        )
 
 
 class GeoModelFilter(LocationFilter):
@@ -127,7 +179,7 @@ class GeoModelFilter(LocationFilter):
         # BirdNET labels with no geomodel equivalent (always allowed through)
         self._unmapped_labels: list[str] = []
 
-        self._cache: OrderedDict[tuple, list[str]] = OrderedDict()
+        self._probabilities_cache: OrderedDict[tuple, dict[str, float]] = OrderedDict()
         self._cache_max_size = 128
         self._inference_lock = threading.Lock()
 
@@ -178,47 +230,63 @@ class GeoModelFilter(LocationFilter):
             if sci not in mapped_sci_names
         ]
 
-    def filter(self, lat, lon, dt, threshold=DEFAULT_SPECIES_FILTER_THRESHOLD):
-        if self._session is None:
-            raise RuntimeError("GeoModelFilter not loaded. Call load() first.")
-
-        geomodel_week = _date_to_geomodel_week(dt)
-        cache_key = (lat, lon, geomodel_week, threshold)
+    def _get_probabilities(self, lat: float, lon: float, geomodel_week: int) -> dict[str, float]:
+        """Return mapped geomodel probabilities for one location/week."""
+        cache_key = (lat, lon, geomodel_week)
 
         with self._inference_lock:
-            if cache_key in self._cache:
-                self._cache.move_to_end(cache_key)
+            if cache_key in self._probabilities_cache:
+                self._probabilities_cache.move_to_end(cache_key)
                 logger.debug("Geomodel cache hit", extra={
-                    'lat': lat, 'lon': lon, 'week': geomodel_week,
-                    'cached_species_count': len(self._cache[cache_key]),
+                    'lat': lat,
+                    'lon': lon,
+                    'week': geomodel_week,
+                    'mapped_species_count': len(self._probabilities_cache[cache_key]),
                 })
-                return self._cache[cache_key]
+                return self._probabilities_cache[cache_key]
 
-            # Run ONNX inference
             model_input = np.array([[lat, lon, geomodel_week]], dtype=np.float32)
             output = self._session.run(
                 [self._output_name], {self._input_name: model_input}
             )
             probs = output[0][0]  # shape: (n_species,)
 
-            # Filter by threshold, map to BirdNET labels
-            local_species = []
-            for idx, birdnet_label in self._index_to_birdnet_label.items():
-                if idx < len(probs) and probs[idx] >= threshold:
-                    local_species.append(birdnet_label)
+            probabilities = {
+                birdnet_label: float(probs[idx])
+                for idx, birdnet_label in self._index_to_birdnet_label.items()
+                if idx < len(probs)
+            }
 
-            # Always include unmapped BirdNET species (no data to exclude them)
-            local_species.extend(self._unmapped_labels)
-
-            self._cache[cache_key] = local_species
-            if len(self._cache) > self._cache_max_size:
-                self._cache.popitem(last=False)
+            self._probabilities_cache[cache_key] = probabilities
+            if len(self._probabilities_cache) > self._cache_max_size:
+                self._probabilities_cache.popitem(last=False)
 
         logger.debug("Geomodel inference", extra={
-            'lat': lat, 'lon': lon, 'week': geomodel_week,
-            'above_threshold': len(local_species) - len(self._unmapped_labels),
+            'lat': lat,
+            'lon': lon,
+            'week': geomodel_week,
+            'mapped_species_count': len(probabilities),
             'unmapped': len(self._unmapped_labels),
-            'total_allowed': len(local_species),
         })
+        return probabilities
 
-        return local_species
+    def filter(self, lat, lon, dt, threshold=DEFAULT_SPECIES_FILTER_THRESHOLD):
+        if self._session is None:
+            raise RuntimeError("GeoModelFilter not loaded. Call load() first.")
+
+        geomodel_week = _date_to_geomodel_week(dt)
+        probabilities = self._get_probabilities(lat, lon, geomodel_week)
+
+        allowed_species = {
+            label
+            for label, probability in probabilities.items()
+            if probability >= threshold
+        }
+        allowed_species.update(self._unmapped_labels)
+
+        return LocationContext(
+            source="geomodel_v3",
+            threshold=threshold,
+            allowed_species=frozenset(allowed_species),
+            probabilities=MappingProxyType(dict(probabilities)),
+        )

@@ -7,6 +7,7 @@ import numpy as np
 
 from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
 
+from .label_utils import get_common_name
 from .label_utils import get_ebird_code as _lookup_ebird_code
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ class BirdDetectionModel(ABC):
             raw_scores = list(zip(labels, scores, strict=True))
             raw_scores_sorted = sorted(raw_scores, key=lambda x: x[1], reverse=True)[:3]
             top3_info = [
-                (label.split('_', 1)[-1], round(float(score) * 100, 1))
+                (get_common_name(label), round(float(score) * 100, 1))
                 for label, score in raw_scores_sorted
             ]
             chunk_str = f"Chunk {chunk_index}" if chunk_index is not None else "Chunk"

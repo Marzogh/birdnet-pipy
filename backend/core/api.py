@@ -26,8 +26,6 @@ from config.constants import (
     RECORDING_LENGTH_OPTIONS,
     UPDATE_CHANNELS,
     VALID_MODEL_TYPES,
-    VALID_RECORDING_MODES,
-    RecordingMode,
 )
 from config.settings import (
     API_PORT,
@@ -888,7 +886,8 @@ def export_detections_csv():
     # Write header
     writer.writerow([
         'id', 'timestamp', 'group_timestamp', 'scientific_name', 'common_name',
-        'confidence', 'latitude', 'longitude', 'cutoff', 'sensitivity', 'overlap', 'week', 'extra'
+        'confidence', 'latitude', 'longitude', 'cutoff', 'sensitivity', 'overlap',
+        'week', 'extra', 'audio_source'
     ])
 
     # Write data rows
@@ -911,7 +910,8 @@ def export_detections_csv():
             detection.get('sensitivity', ''),
             detection.get('overlap', ''),
             detection.get('week', ''),
-            extra_value
+            extra_value,
+            detection.get('audio_source', '')
         ])
 
     # Generate filename with timestamp
@@ -1131,59 +1131,22 @@ def get_available_species():
 @require_feature('live_feed')
 @handle_api_errors
 def get_stream_config():
-    """Provide stream configuration for frontend based on recording mode"""
+    """Provide stream configuration for frontend based on enabled sources."""
     settings = load_user_settings()
     audio = settings.get('audio') or {}
-    recording_mode = audio.get('recording_mode', RecordingMode.PULSEAUDIO)
-    rtsp_url = audio.get('rtsp_url')
-    stream_url = audio.get('stream_url')
+    sources = audio.get('sources', [])
+    enabled = [s for s in sources if s.get('enabled', True)]
 
-    if recording_mode == RecordingMode.PULSEAUDIO:
-        # PulseAudio mode - provide Icecast stream URL
-        config = {
-            'stream_url': '/stream/stream.mp3',
-            'stream_type': 'icecast',
-            'description': 'Local Icecast audio stream'
-        }
-    elif recording_mode == RecordingMode.RTSP:
-        # RTSP mode - use Icecast to transcode RTSP to MP3 for browser
-        if rtsp_url:
-            config = {
-                'stream_url': '/stream/stream.mp3',
-                'stream_type': 'icecast',
-                'description': 'RTSP stream via Icecast'
-            }
-        else:
-            # rtsp mode but no URL configured
-            config = {
-                'stream_url': None,
-                'stream_type': 'none',
-                'description': 'RTSP mode selected but no URL configured'
-            }
-    elif recording_mode == RecordingMode.HTTP_STREAM:
-        # HTTP stream mode - use custom stream URL
-        if stream_url:
-            config = {
-                'stream_url': stream_url,
-                'stream_type': 'custom',
-                'description': 'User-defined audio stream'
-            }
-        else:
-            # http_stream mode but no URL configured
-            config = {
-                'stream_url': None,
-                'stream_type': 'none',
-                'description': 'HTTP stream mode selected but no URL configured'
-            }
-    else:
-        # Unknown mode
-        config = {
-            'stream_url': None,
-            'stream_type': 'none',
-            'description': 'Unknown recording mode'
-        }
+    streams = []
+    for source in enabled:
+        sid = source.get('id', '')
+        streams.append({
+            'source_id': sid,
+            'label': source.get('label', sid),
+            'url': f'/stream/{sid}.mp3',
+        })
 
-    return jsonify(config)
+    return jsonify({'streams': streams})
 
 @api.route('/api/broadcast/detection', methods=['POST'])
 @require_internal
@@ -1654,26 +1617,46 @@ def update_settings():
         current_settings = load_user_settings()
         new_settings = deep_merge_settings(current_settings, incoming_settings)
 
-        # Validate recording mode settings
+        # Validate audio settings
         if 'audio' in incoming_settings:
             incoming_audio = incoming_settings['audio']
-            recording_mode = incoming_audio.get('recording_mode')
-            if recording_mode and recording_mode not in VALID_RECORDING_MODES:
-                return jsonify({'error': f'Invalid recording_mode. Must be one of: {", ".join(VALID_RECORDING_MODES)}'}), 400
 
-            # Validate RTSP URL if provided
-            rtsp_url = incoming_audio.get('rtsp_url')
-            if recording_mode == RecordingMode.RTSP and not rtsp_url:
-                return jsonify({'error': 'RTSP URL required when recording_mode is "rtsp"'}), 400
-            if rtsp_url and not rtsp_url.startswith(('rtsp://', 'rtsps://')):
-                return jsonify({'error': 'Invalid RTSP URL. Must start with rtsp:// or rtsps://'}), 400
+            # Validate sources array if provided
+            sources = incoming_audio.get('sources')
+            if sources is not None:
+                if not isinstance(sources, list):
+                    return jsonify({'error': 'sources must be an array'}), 400
+                seen_ids = set()
+                mic_count = 0
+                for source in sources:
+                    sid = source.get('id', '')
+                    if not sid or not sid.startswith('source_'):
+                        return jsonify({'error': f'Invalid source id: {sid}. Must match source_<int>'}), 400
+                    if sid in seen_ids:
+                        return jsonify({'error': f'Duplicate source id: {sid}'}), 400
+                    seen_ids.add(sid)
 
-            # Validate HTTP stream URL if required
-            stream_url = incoming_audio.get('stream_url')
-            if recording_mode == RecordingMode.HTTP_STREAM and not stream_url:
-                return jsonify({'error': 'Stream URL required when recording_mode is "http_stream"'}), 400
-            if stream_url and not stream_url.startswith(('http://', 'https://')):
-                return jsonify({'error': 'Invalid Stream URL. Must start with http:// or https://'}), 400
+                    stype = source.get('type', '')
+                    if stype not in ('pulseaudio', 'rtsp'):
+                        return jsonify({'error': f'Invalid source type: {stype}. Must be pulseaudio or rtsp'}), 400
+                    if stype == 'rtsp':
+                        url = source.get('url', '')
+                        if not url or not url.startswith(('rtsp://', 'rtsps://')):
+                            return jsonify({'error': f'RTSP source {sid} must have a valid rtsp:// or rtsps:// URL'}), 400
+                    if stype == 'pulseaudio':
+                        mic_count += 1
+                if mic_count > 1:
+                    return jsonify({'error': 'Only one microphone source is allowed'}), 400
+
+                # Validate next_source_id if provided
+                next_id = incoming_audio.get('next_source_id')
+                if next_id is not None and seen_ids:
+                    max_suffix = max(
+                        (int(sid.split('_', 1)[1]) for sid in seen_ids),
+                        default=-1
+                    )
+                    if next_id <= max_suffix:
+                        return jsonify({'error': f'next_source_id ({next_id}) must be greater than max existing id suffix ({max_suffix})'}), 400
 
             # Validate recording_length
             recording_length = incoming_audio.get('recording_length')
@@ -1806,15 +1789,12 @@ def test_stream():
     try:
         data = request.json or {}
         url = data.get('url', '').strip()
-        stream_type = data.get('type', '')
 
         if not url:
             return jsonify({'error': 'No URL provided'}), 400
-        if stream_type not in (RecordingMode.HTTP_STREAM, RecordingMode.RTSP):
-            return jsonify({'error': 'Invalid type: must be "http_stream" or "rtsp"'}), 400
 
         from core.audio_manager import test_stream_url
-        success, message = test_stream_url(url, stream_type)
+        success, message = test_stream_url(url)
 
         return jsonify({'success': success, 'message': message}), 200
 
