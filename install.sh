@@ -445,6 +445,82 @@ configure_pulseaudio() {
     print_info "PulseAudio will be started by birdnet-service.sh"
 }
 
+# Update a single key in .env without overwriting other settings.
+# Uses grep -v + append to avoid sed metacharacter issues.
+set_env_var() {
+    local key="$1" value="$2"
+    local env_file="$PROJECT_ROOT/.env"
+
+    if [ -f "$env_file" ]; then
+        grep -v "^${key}=" "$env_file" > "${env_file}.tmp" || true
+        mv "${env_file}.tmp" "$env_file"
+    fi
+    echo "${key}=${value}" >> "$env_file"
+}
+
+# Try to pull pre-built images from GHCR, fall back to local build.
+# Skips pull for non-ARM64, non-release branches, and non-1000 UID systems.
+pull_or_build() {
+    if [ "$SKIP_BUILD" = true ]; then
+        build_application "$@"
+        return $?
+    fi
+
+    local commit=$(git rev-parse HEAD)
+    local repo="Suncuss/BirdNET-PiPy"
+    local target_branch="${TARGET_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+    local can_pull=true
+
+    case "$target_branch" in
+        main|staging) set_env_var "BIRDNET_CHANNEL" "$target_branch" ;;
+        *)
+            set_env_var "BIRDNET_CHANNEL" "main"
+            print_status "Branch '$target_branch' has no pre-built images, building locally..."
+            can_pull=false
+            ;;
+    esac
+
+    # Pre-built images are ARM64 only (Raspberry Pi target)
+    local arch
+    arch=$(uname -m)
+    if [ "$can_pull" = true ] && [ "$arch" != "aarch64" ]; then
+        print_status "Architecture $arch has no pre-built images, building locally..."
+        can_pull=false
+    fi
+
+    # Pre-built images are baked with UID/GID 1000 (default Pi user)
+    if [ "$can_pull" = true ] && [ "$ACTUAL_UID" != "1000" ]; then
+        print_status "Non-standard UID ($ACTUAL_UID), building locally for correct permissions..."
+        can_pull=false
+    fi
+
+    if [ "$can_pull" = false ]; then
+        build_application "$@"
+        return $?
+    fi
+
+    # Check if the image build workflow completed for this commit
+    local api_response
+    api_response=$(curl -s --connect-timeout 3 --max-time 5 \
+        "https://api.github.com/repos/$repo/actions/workflows/build-images.yml/runs?head_sha=$commit&status=completed&per_page=1" 2>/dev/null) || true
+
+    if [[ "$api_response" == *'"conclusion":"success"'* ]]; then
+        print_status "Pre-built images available, pulling from registry..."
+        cd "$PROJECT_ROOT"
+        if sudo -u "$ACTUAL_USER" docker compose pull; then
+            refresh_version_info
+            docker image prune -f >/dev/null 2>&1 || true
+            print_status "Images pulled successfully"
+            return 0
+        fi
+        print_warning "Pull failed, falling back to local build..."
+    else
+        print_status "Pre-built images not ready, building locally..."
+    fi
+
+    build_application "$@"
+}
+
 # Build Docker images
 # Optional arg: $1 = space-separated list of services to build
 build_application() {
@@ -612,108 +688,6 @@ restart_containers_on_failure() {
     docker compose up -d || true
 }
 
-# Determine which Docker services need rebuilding based on changed files
-# Sets REBUILD_SERVICES: space-separated service names, "all", or "" (no rebuild needed)
-# Args: $1 = old commit, $2 = new commit
-determine_rebuild_services() {
-    local old_commit="$1"
-    local new_commit="$2"
-
-    local need_full_rebuild=false
-    local need_backend=false
-    local need_frontend=false
-    local need_icecast=false
-
-    local changed_files
-    changed_files=$(git diff --name-only "$old_commit".."$new_commit")
-
-    if [ -z "$changed_files" ]; then
-        REBUILD_SERVICES=""
-        return
-    fi
-
-    while IFS= read -r file; do
-        # 1. Full-rebuild triggers
-        case "$file" in
-            docker-compose.yml|build.sh|backend/.dockerignore)
-                need_full_rebuild=true
-                continue
-                ;;
-        esac
-
-        # 2. Service-specific rebuild triggers
-        case "$file" in
-            backend/Dockerfile|backend/requirements.txt|backend/docker-entrypoint.sh)
-                need_backend=true
-                continue
-                ;;
-        esac
-
-        # Frontend rebuild
-        if [[ "$file" == frontend/* ]]; then
-            need_frontend=true
-            continue
-        fi
-
-        # Icecast rebuild
-        if [[ "$file" == deployment/audio/* ]]; then
-            need_icecast=true
-            continue
-        fi
-
-        # 3. Known-safe no-rebuild patterns
-        # Backend runtime code (bind-mounted)
-        if [[ "$file" == backend/*.py || "$file" == backend/*/*.py || "$file" == backend/*/*/*.py ]] || \
-           [[ "$file" == backend/assets/* || "$file" == backend/scripts/* ]]; then
-            continue
-        fi
-
-        # Backend dev/test-only files
-        case "$file" in
-            backend/tests/*|backend/requirements-test.txt|backend/docker-test.sh| \
-            backend/run-tests.sh|backend/pytest.ini|backend/ruff.toml)
-                continue
-                ;;
-        esac
-
-        # Documentation, scripts, and other non-build files
-        case "$file" in
-            docs/*|scripts/*|.github/*|.claude/*|data/*)
-                continue
-                ;;
-        esac
-
-        case "$file" in
-            *.md|install.sh|uninstall.sh|.gitignore)
-                continue
-                ;;
-        esac
-
-        # 4. Fallback: unrecognized file → full rebuild (conservative)
-        print_info "Unrecognized file triggers full rebuild: $file"
-        need_full_rebuild=true
-    done <<< "$changed_files"
-
-    # Build result
-    if [ "$need_full_rebuild" = true ]; then
-        REBUILD_SERVICES="all"
-        return
-    fi
-
-    local services=""
-    if [ "$need_frontend" = true ]; then
-        services="frontend"
-    fi
-    if [ "$need_backend" = true ]; then
-        services="${services:+$services }model-server api main"
-    fi
-    if [ "$need_icecast" = true ]; then
-        services="${services:+$services }icecast"
-    fi
-
-    REBUILD_SERVICES="$services"
-}
-
 # Perform system update (called when --update flag is used)
 # This handles: git sync, build, and system config updates
 # Uses TARGET_BRANCH if specified, otherwise current branch or main
@@ -761,7 +735,7 @@ perform_update() {
         if [ "$current_commit_short" != "$version_commit" ]; then
             print_warning "version.json is stale (shows $version_commit, expected $current_commit_short)"
             print_status "Rebuilding to fix version mismatch..."
-            if build_application; then
+            if pull_or_build; then
                 print_status "Rebuild successful, version.json updated"
             else
                 print_warning "Rebuild failed - version.json may still be stale"
@@ -819,29 +793,11 @@ perform_update() {
     find "$PROJECT_ROOT" -maxdepth 1 -mindepth 1 -not -name data \
         -exec chown -R "$ACTUAL_USER:$ACTUAL_USER" {} +
 
-    # Step 5: Determine what needs rebuilding and build
-    determine_rebuild_services "$LOCAL" "$REMOTE"
-
-    if [ -z "$REBUILD_SERVICES" ]; then
-        print_status "No Docker image rebuild needed (only runtime/non-build files changed)"
-        if ! refresh_version_info; then
-            update_warnings=true
-            print_warning "Continuing update with stale version info"
-        fi
-    elif [ "$REBUILD_SERVICES" = "all" ]; then
-        print_status "Full Docker rebuild needed"
-        if ! build_application; then
-            print_error "Build failed!"
-            restart_containers_on_failure
-            exit 1
-        fi
-    else
-        print_status "Selective rebuild needed: $REBUILD_SERVICES"
-        if ! build_application "$REBUILD_SERVICES"; then
-            print_error "Build failed!"
-            restart_containers_on_failure
-            exit 1
-        fi
+    # Step 5: Pull pre-built images or build locally
+    if ! pull_or_build; then
+        print_error "Failed to pull or build images!"
+        restart_containers_on_failure
+        exit 1
     fi
 
     # Step 6: Update system configurations (root operations)
@@ -1067,7 +1023,7 @@ main() {
 
     # Application setup
     fix_data_permissions
-    build_application
+    pull_or_build
     chmod +x "$PROJECT_ROOT/deployment/birdnet-service.sh"
 
     # Service setup

@@ -93,16 +93,17 @@ cd frontend && npm run test                 # Frontend tests
 
 ## Testing Guidelines
 
-**Testing Patterns:**
-- All backend tests run in isolated Docker containers
-- API tests use real temporary SQLite databases (not mocks)
-- External services (Wikimedia API, socketio) are mocked
-- Subprocess calls (ffmpeg, curl, sox) are mocked in audio tests
-- Frontend uses Vitest with happy-dom
+Three test suites cover backend, frontend, and install scripts. Each has its own README with detailed patterns, fixtures, and examples.
 
 **Before Committing:**
 1. Run backend tests: `cd backend && ./docker-test.sh`
 2. Run frontend tests: `cd frontend && npm run test`
+3. Run install tests (only when `install.sh`, `uninstall.sh`, or `build.sh` change): `cd scripts/install-tests && ./docker-test-install.sh`
+
+**Key Patterns:**
+- Backend (pytest, Docker): Real temporary SQLite databases for API/DB tests; mocked subprocess calls (ffmpeg, sox) and external services (Wikimedia, socketio). See `backend/tests/README.md`.
+- Frontend (Vitest, happy-dom): Mocked API and composable dependencies; `@vue/test-utils` for component mounting. See `frontend/tests/README.md`.
+- Install (BATS, Docker-in-Docker): Debian container with systemd and nested Docker for realistic install/update testing. Slow (~5-10 min). See `scripts/install-tests/README.md`.
 
 ## Branch Sync Rules
 

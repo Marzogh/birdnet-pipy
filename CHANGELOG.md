@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added pre-built Docker image support — install pulls ARM64 images from GHCR on release branches for faster setup, falls back to local build for non-ARM64 platforms, non-standard UIDs, or non-release branches
+- Added GitHub Actions CI workflow for building and pushing Docker images to GHCR
+- Added install script unit tests for `set_env_var` function
 - Added 2-step SetupWizard replacing LocationSetupModal — guides through location and audio source configuration on first use
 - Added multi-source audio recording — record from multiple microphones and RTSP streams simultaneously (#22)
 - Added multi-stream source selector pills to LiveFeed for switching between active audio sources with animated expand-on-hover
@@ -21,6 +24,9 @@
 - Fixed NaN values in model logs and improved system logs modal UX
 - Fixed inconsistent percentage rounding in location probability logs
 - Fixed security vulnerability in happy-dom (GHSA-6q6h-j7hj-3r64)
+- Fixed `set_env_var` creating duplicate keys when the target key is the only line in the env file
+- Fixed `.env` overwrite during GHCR pull — now preserves existing settings like `ICECAST_PASSWORD`
+- Fixed `BIRDNET_CHANNEL` not sanitized on non-release branches, breaking docker compose builds
 
 ## [0.5.8] - 2026-03-25
 
