@@ -86,6 +86,66 @@ setup() {
     [[ "$output" == *"Unknown service in --services: not-a-service"* ]]
 }
 
+@test "unit: build.sh --services rejects api (shares model-server image)" {
+    run bash "$PROJECT_DIR/build.sh" --services "api"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown service in --services: api"* ]]
+}
+
+@test "unit: build.sh --services rejects main (shares model-server image)" {
+    run bash "$PROJECT_DIR/build.sh" --services "main"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown service in --services: main"* ]]
+}
+
+@test "unit: only model-server has build directive for backend image" {
+    # Regression test: api and main must NOT have build: directives.
+    # When multiple services share the same image tag and all define build:,
+    # Docker BuildKit races to tag the same image in parallel, causing
+    # "image already exists" failures. Only model-server should build it.
+    local compose="$PROJECT_DIR/docker-compose.yml"
+    assert_file_exists "$compose"
+
+    # model-server MUST have a build: directive
+    run bash -c "docker compose -f '$compose' config --format json | python3 -c \"
+import sys, json
+cfg = json.load(sys.stdin)
+ms = cfg['services'].get('model-server', {})
+assert 'build' in ms, 'model-server must have build: directive'
+print('model-server: build directive present')
+\""
+    echo "output: $output"
+    [ "$status" -eq 0 ]
+
+    # api and main must NOT have build: directives
+    for svc in api main; do
+        run bash -c "docker compose -f '$compose' config --format json | python3 -c \"
+import sys, json
+cfg = json.load(sys.stdin)
+svc_cfg = cfg['services'].get('$svc', {})
+assert 'build' not in svc_cfg, '$svc must not have build: directive'
+print('$svc: no build directive (correct)')
+\""
+        echo "$svc output: $output"
+        [ "$status" -eq 0 ]
+    done
+}
+
+@test "unit: backend services share the same image tag" {
+    # All three backend services must reference the same image
+    local compose="$PROJECT_DIR/docker-compose.yml"
+    run bash -c "docker compose -f '$compose' config --format json | python3 -c \"
+import sys, json
+cfg = json.load(sys.stdin)
+images = {s: cfg['services'][s]['image'] for s in ('model-server', 'api', 'main')}
+unique = set(images.values())
+assert len(unique) == 1, f'backend services have different images: {images}'
+print(f'all backend services use: {unique.pop()}')
+\""
+    echo "output: $output"
+    [ "$status" -eq 0 ]
+}
+
 @test "unit: build.sh --version-only generates version.json" {
     rm -f "$PROJECT_DIR/data/version.json"
     run bash -c "cd \"$PROJECT_DIR\" && ./build.sh --version-only"

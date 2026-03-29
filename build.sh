@@ -113,8 +113,7 @@ build_sequential() {
     # icecast is tiny, frontend is medium, backend is largest (pip install)
     local all_services=("icecast" "frontend" "model-server")
 
-    # Note: model-server, api, and main share the same image (backend/Dockerfile)
-    # Docker will use cached image for api and main after model-server is built
+    # Note: api and main share model-server's image (no build: directive)
 
     # Filter to requested services if specified
     local services=()
@@ -225,7 +224,7 @@ show_usage() {
     echo "For Pi Zero 2W, run with sudo to enable automatic swap creation:"
     echo "  sudo ./build.sh"
     echo ""
-    echo "Valid services for --services: model-server, api, main, icecast, frontend"
+    echo "Valid services for --services: model-server, icecast, frontend"
 }
 
 # Parse command line arguments
@@ -281,7 +280,7 @@ if [ -n "$BUILD_SERVICES" ]; then
     read -r -a SELECTED_SERVICES <<< "$BUILD_SERVICES"
     for svc in "${SELECTED_SERVICES[@]}"; do
         case "$svc" in
-            model-server|api|main|icecast|frontend)
+            model-server|icecast|frontend)
                 ;;
             *)
                 print_error "Unknown service in --services: $svc"

@@ -23,12 +23,7 @@ services:
 
   api:
     image: ghcr.io/suncuss/birdnet-pipy-backend:${BIRDNET_CHANNEL:-main}
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
+    # No build: — shares image built by model-server service
     command: python -m core.api
     restart: unless-stopped
     volumes:
@@ -47,12 +42,7 @@ services:
 
   main:
     image: ghcr.io/suncuss/birdnet-pipy-backend:${BIRDNET_CHANNEL:-main}
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
+    # No build: — shares image built by model-server service
     command: python -m core.main
     restart: unless-stopped
     ulimits:
