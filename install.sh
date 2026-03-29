@@ -504,7 +504,7 @@ pull_or_build() {
     api_response=$(curl -s --connect-timeout 3 --max-time 5 \
         "https://api.github.com/repos/$repo/actions/workflows/build-images.yml/runs?head_sha=$commit&status=completed&per_page=1" 2>/dev/null) || true
 
-    if [[ "$api_response" == *'"conclusion":"success"'* ]]; then
+    if [[ "$api_response" == *'"conclusion"'*'"success"'* ]]; then
         print_status "Pre-built images available, pulling from registry..."
         cd "$PROJECT_ROOT"
         if sudo -u "$ACTUAL_USER" docker compose pull; then
