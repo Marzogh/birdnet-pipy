@@ -22,11 +22,6 @@
         ref="spectrogramCanvas"
         class="w-full h-48 mb-4 rounded-lg"
       />
-      <AlertBanner
-        :message="recorderWarning"
-        :dismissible="false"
-        :auto-dismiss="0"
-      />
       <div
         v-if="streams.length > 1"
         class="flex flex-wrap gap-2 mb-4"
@@ -97,15 +92,12 @@
 <script>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { io } from 'socket.io-client'
-import AlertBanner from '@/components/AlertBanner.vue'
 import BirdDetectionList from './BirdDetectionList.vue'
 import api from '@/services/api'
-import { RECORDER_STATES } from '@/utils/recorderStates'
 
 export default {
   name: 'LiveFeed',
   components: {
-    AlertBanner,
     BirdDetectionList
   },
   setup() {
@@ -118,21 +110,12 @@ export default {
     const birdDetections = ref([])
     const streams = ref([])
     const selectedSourceId = ref('')
-    const recorderStatus = ref(null)
 
     const currentSource = computed(() =>
       streams.value.find(s => s.source_id === selectedSourceId.value)
     )
     const streamUrl = computed(() => currentSource.value?.url || '')
     const streamDescription = computed(() => currentSource.value?.label || '')
-
-    const recorderWarning = computed(() => {
-      const status = recorderStatus.value
-      if (!status || status.state === RECORDER_STATES.RUNNING) return ''
-      if (status.state === RECORDER_STATES.STOPPED) return 'Audio recording has stopped'
-      if (status.state === RECORDER_STATES.DEGRADED) return 'Audio recording is experiencing issues'
-      return ''
-    })
 
     let audioContext, analyser, source, dataArray, animationId
     let canvasCtx, canvasWidth, canvasHeight
@@ -354,10 +337,6 @@ export default {
         streams.value = config.streams || []
         selectedSourceId.value = streams.value[0]?.source_id || ''
 
-        if (config.recorder_status) {
-          recorderStatus.value = config.recorder_status
-        }
-
         if (!streamUrl.value) {
           statusMessage.value = 'No audio stream configured'
         }
@@ -376,10 +355,6 @@ export default {
 
       socket.on('disconnect', (reason) => {
         console.log(`[LiveFeed] WebSocket disconnected: ${reason}`)
-      })
-
-      socket.on('recorder_status', (status) => {
-        recorderStatus.value = status
       })
 
       socket.on('bird_detected', (detection) => {
@@ -491,7 +466,6 @@ export default {
       streamUrl,
       streamDescription,
       isSafari,
-      recorderWarning,
       selectSourceById,
       handleAudioError,
       handleAudioBuffering,

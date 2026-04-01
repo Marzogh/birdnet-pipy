@@ -108,6 +108,51 @@
       </router-view>
     </main>
 
+    <!-- Status FAB — recorder warning takes priority over update; hidden on Settings -->
+    <router-link
+      v-if="recorderHealth.showRecorderWarning.value && $route.name !== 'Settings'"
+      to="/settings"
+      class="fixed bottom-4 right-4 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-full shadow-lg hidden md:flex items-center gap-2 z-50 transition-colors"
+      title="Audio recording issues detected"
+      @click="recorderHealth.dismissWarning()"
+    >
+      <svg
+        class="w-5 h-5"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+        />
+      </svg>
+      <span class="text-sm font-medium">Audio Recording Issues</span>
+    </router-link>
+    <router-link
+      v-else-if="systemUpdate.showUpdateIndicator.value && $route.name !== 'Settings'"
+      to="/settings"
+      class="fixed bottom-4 right-4 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-full shadow-lg hidden md:flex items-center gap-2 z-50 transition-colors"
+      title="System update available"
+    >
+      <svg
+        class="w-5 h-5"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M5 10l7-7 7 7M12 3v18"
+        />
+      </svg>
+      <span class="text-sm font-medium">Update Available</span>
+    </router-link>
+
     <!-- Setup Wizard -->
     <SetupWizard
       :is-visible="showSetupWizard"
@@ -129,6 +174,8 @@ import { useLogger } from '@/composables/useLogger'
 import { useAuth } from '@/composables/useAuth'
 import { useUnitSettings } from '@/composables/useUnitSettings'
 import { useAppStatus } from '@/composables/useAppStatus'
+import { useSystemUpdate } from '@/composables/useSystemUpdate'
+import { useRecorderHealth } from '@/composables/useRecorderHealth'
 import { DISPLAY_NAME } from './version'
 import SetupWizard from '@/components/SetupWizard.vue'
 import LoginModal from '@/components/LoginModal.vue'
@@ -147,6 +194,8 @@ export default {
     const auth = useAuth()
     const unitSettings = useUnitSettings()
     const { stationName, setStationName, setLocationConfigured } = useAppStatus()
+    const systemUpdate = useSystemUpdate()
+    const recorderHealth = useRecorderHealth()
 
     const showSetupWizard = ref(false)
     const showLoginModal = ref(false)
@@ -243,6 +292,10 @@ export default {
       } else {
         checkLocationSetup()
       }
+
+      // Silent checks for status indicators
+      systemUpdate.checkForUpdates({ silent: true }).catch(() => {})
+      recorderHealth.checkStatus()
     })
 
     onUnmounted(() => {
@@ -257,7 +310,9 @@ export default {
       onLoginCancel,
       handleLogout,
       auth,
-      stationName
+      stationName,
+      systemUpdate,
+      recorderHealth
     }
   }
 }

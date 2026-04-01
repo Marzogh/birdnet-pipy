@@ -277,10 +277,12 @@
         <!-- Error details (only when source is unhealthy) -->
         <details
           v-if="showRecorderError"
+          open
           class="mt-2.5"
         >
           <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600 select-none">
-            Show error details
+            <span class="show-label">Show error details</span>
+            <span class="hide-label">Hide error details</span>
           </summary>
           <div class="mt-1 space-y-1.5 relative group">
             <div
@@ -2685,4 +2687,10 @@ export default {
   input[type="range"]:hover::-moz-range-thumb {
     background-color: theme('colors.blue.700');
   }
+
+  /* Toggle show/hide label based on details open state */
+  details .hide-label { display: none; }
+  details .show-label { display: inline; }
+  details[open] .hide-label { display: inline; }
+  details[open] .show-label { display: none; }
   </style>

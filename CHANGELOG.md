@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Added global recorder health warning pill — amber FAB appears on all pages (except Settings) when audio sources are degraded or stopped, with 24-hour dismiss and priority over the update indicator
+- Added recorder status to stream config API response for REST-based health checks
+- Added auto-expanded error details on Settings page when audio sources have issues
+- Added 200 per-page option and scroll-to-top button in Table view
+- Fixed GHCR pull check never matched due to JSON whitespace in image inspect
+- Fixed parallel build race caused by duplicate build directives
 - Added pre-built Docker image support — install pulls ARM64 images from GHCR on release branches for faster setup, falls back to local build for non-ARM64 platforms, non-standard UIDs, or non-release branches
 - Added GitHub Actions CI workflow for building and pushing Docker images to GHCR
 - Added install script unit tests for `set_env_var` function

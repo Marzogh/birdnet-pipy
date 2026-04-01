@@ -1146,7 +1146,10 @@ def get_stream_config():
             'url': f'/stream/{sid}.mp3',
         })
 
-    return jsonify({'streams': streams})
+    result = {'streams': streams}
+    if _recorder_status:
+        result['recorder_status'] = _recorder_status
+    return jsonify(result)
 
 @api.route('/api/broadcast/detection', methods=['POST'])
 @require_internal
