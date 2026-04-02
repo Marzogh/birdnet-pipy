@@ -902,7 +902,7 @@ describe('Settings', () => {
       }
       await wrapper.vm.$nextTick()
 
-      expect(wrapper.text()).toContain('Add Service')
+      expect(wrapper.text()).toContain('Add')
       expect(wrapper.text()).toContain('Every Detection')
       expect(wrapper.text()).toContain('First of Day')
       expect(wrapper.text()).toContain('Rare Species')
@@ -936,7 +936,7 @@ describe('Settings', () => {
       }))
     })
 
-    it('removeAppriseUrl removes URL from list and saves immediately', async () => {
+    it('openEditNotification then delete triggers confirm and removes URL on confirm', async () => {
       const wrapper = mountSettings()
       await flushPromises()
 
@@ -946,11 +946,17 @@ describe('Settings', () => {
       }
       await wrapper.vm.$nextTick()
 
+      // Open the edit modal for the first service
+      wrapper.vm.openEditNotification(0)
+      await wrapper.vm.$nextTick()
+      expect(wrapper.vm.showAddNotificationModal).toBe(true)
+
       mockApi.put = vi.fn().mockResolvedValue({ data: { success: true } })
 
-      // removeAppriseUrl now shows confirmation first
-      wrapper.vm.removeAppriseUrl(0)
+      // Delete from modal closes modal and opens confirm
+      wrapper.vm.handleDeleteNotificationFromModal()
       await wrapper.vm.$nextTick()
+      expect(wrapper.vm.showAddNotificationModal).toBe(false)
       expect(wrapper.vm.confirmRemoveIndex).toBe(0)
 
       // Confirm the removal

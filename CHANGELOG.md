@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Improved notification URL editing: round-trip verification falls back to custom editor when parsers lose query params, and duplicate URLs are deduplicated on save
 - Added global recorder health warning pill — amber FAB appears on all pages (except Settings) when audio sources are degraded or stopped, with 24-hour dismiss and priority over the update indicator
 - Added recorder status to stream config API response for REST-based health checks
 - Added auto-expanded error details on Settings page when audio sources have issues

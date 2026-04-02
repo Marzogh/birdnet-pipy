@@ -678,64 +678,62 @@
         <div class="mb-4">
           <label class="block text-sm text-gray-600 mb-1">Notification Services</label>
 
-          <!-- Existing URLs list -->
-          <ul
-            v-if="settings.notifications.apprise_urls?.length"
-            class="mb-2 space-y-1"
-          >
-            <li
-              v-for="(url, index) in settings.notifications.apprise_urls"
+          <!-- Service pills -->
+          <div class="flex flex-wrap gap-2">
+            <div
+              v-for="(url, index) in (settings.notifications.apprise_urls || [])"
               :key="index"
-              class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg border border-gray-200"
+              class="group inline-flex items-center rounded-full border border-blue-200 bg-blue-50 cursor-pointer transition-colors"
+              :title="maskAppriseUrl(url)"
+              @click="openEditNotification(index)"
             >
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">
-                  {{ appriseServiceName(url) }}
-                </span>
-                <span class="truncate text-xs text-gray-400 font-mono">{{ maskAppriseUrl(url) }}</span>
-              </div>
+              <span
+                class="pl-3.5 pr-3 py-1.5 text-sm font-medium text-gray-800 truncate max-w-48 md:group-hover:pr-1 transition-[padding] duration-200"
+              >{{ appriseServiceName(url) }}</span>
               <button
-                class="flex-shrink-0 ml-2 text-gray-400 hover:text-red-500 transition-colors"
-                title="Remove"
-                @click="removeAppriseUrl(index)"
+                type="button"
+                class="text-gray-400 hover:text-blue-600 flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out p-1 pr-2.5 md:max-w-0 md:p-0 md:pr-0 md:group-hover:max-w-8 md:group-hover:p-1 md:group-hover:pr-2.5"
+                title="Edit"
+                @click.stop="openEditNotification(index)"
               >
                 <svg
-                  class="w-4 h-4"
+                  class="w-3.5 h-3.5"
                   fill="none"
                   stroke="currentColor"
+                  stroke-width="2"
                   viewBox="0 0 24 24"
                 >
                   <path
                     stroke-linecap="round"
                     stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M6 18L18 6M6 6l12 12"
+                    d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z"
                   />
                 </svg>
               </button>
-            </li>
-          </ul>
+            </div>
 
-          <!-- Add Service button -->
-          <button
-            class="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 border border-dashed border-gray-200 rounded-lg transition-colors"
-            @click="showAddNotificationModal = true"
-          >
-            <svg
-              class="w-3.5 h-3.5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke-width="2"
-              stroke="currentColor"
+            <!-- Add Service pill -->
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-dashed border-gray-200 text-xs text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-colors"
+              @click="showAddNotificationModal = true"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M12 4.5v15m7.5-7.5h-15"
-              />
-            </svg>
-            Add Service
-          </button>
+              <svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke-width="2"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+              Add
+            </button>
+          </div>
           <p class="text-xs text-gray-400 mt-1">
             Powered by <a
               href="https://appriseit.com/"
@@ -1398,11 +1396,14 @@
       @close="showMigrationModal = false"
     />
 
-    <!-- Add Notification Modal -->
+    <!-- Add/Edit Notification Modal -->
     <AddNotificationModal
       v-if="showAddNotificationModal"
-      @close="showAddNotificationModal = false"
+      :edit-url="editingNotificationUrl"
+      @close="closeNotificationModal"
       @add="handleAddNotificationUrl"
+      @save="handleSaveNotificationUrl"
+      @delete="handleDeleteNotificationFromModal"
     />
 
     <!-- Confirm Remove Notification URL -->
@@ -1679,6 +1680,12 @@ export default {
 
     // Notification modal state
     const showAddNotificationModal = ref(false)
+    const editingNotificationIndex = ref(null)
+    const editingNotificationUrl = computed(() =>
+      editingNotificationIndex.value !== null
+        ? settings.value.notifications.apprise_urls?.[editingNotificationIndex.value] ?? null
+        : null
+    )
     const confirmRemoveIndex = ref(null)
 
     // Last successfully saved notification settings — used as rollback target on failed autosave
@@ -2128,6 +2135,16 @@ export default {
       settings.value.birdweather.id = value || null
     }
 
+    const openEditNotification = (index) => {
+      editingNotificationIndex.value = index
+      showAddNotificationModal.value = true
+    }
+
+    const closeNotificationModal = () => {
+      showAddNotificationModal.value = false
+      editingNotificationIndex.value = null
+    }
+
     // Handle URL added from the notification modal (test already succeeded)
     const handleAddNotificationUrl = (url) => {
       if (!settings.value.notifications.apprise_urls) {
@@ -2136,8 +2153,35 @@ export default {
       if (!settings.value.notifications.apprise_urls.includes(url)) {
         settings.value.notifications.apprise_urls.push(url)
       }
-      showAddNotificationModal.value = false
+      closeNotificationModal()
       saveNotificationSettings()
+    }
+
+    // Handle URL updated from the edit modal (test already succeeded)
+    const handleSaveNotificationUrl = (url) => {
+      const index = editingNotificationIndex.value
+      const urls = settings.value.notifications.apprise_urls
+      if (index !== null && urls) {
+        const duplicate = urls.findIndex((u, i) => u === url && i !== index)
+        if (duplicate !== -1) {
+          // URL already exists at another position — remove that duplicate, keep the edited slot
+          urls.splice(duplicate, 1)
+        }
+        // Update the edited entry (adjust index if the removed duplicate was before it)
+        const adjusted = duplicate !== -1 && duplicate < index ? index - 1 : index
+        urls[adjusted] = url
+      }
+      closeNotificationModal()
+      saveNotificationSettings()
+    }
+
+    // Handle delete triggered from edit modal — delegate to confirm modal
+    const handleDeleteNotificationFromModal = () => {
+      const index = editingNotificationIndex.value
+      closeNotificationModal()
+      if (index !== null) {
+        confirmRemoveIndex.value = index
+      }
     }
 
     // Notification autosave — persists to dedicated endpoint, no restart needed
@@ -2183,11 +2227,6 @@ export default {
     const setRareWindow = (value) => {
       settings.value.notifications.rare_window_days = value
       saveNotificationSettings()
-    }
-
-    // Remove an Apprise URL from the list (with confirmation)
-    const removeAppriseUrl = (index) => {
-      confirmRemoveIndex.value = index
     }
 
     const confirmRemoveAppriseUrl = () => {
@@ -2602,8 +2641,12 @@ export default {
       showMigrationModal,
       // Notifications
       showAddNotificationModal,
+      editingNotificationUrl,
+      openEditNotification,
+      closeNotificationModal,
       handleAddNotificationUrl,
-      removeAppriseUrl,
+      handleSaveNotificationUrl,
+      handleDeleteNotificationFromModal,
       confirmRemoveIndex,
       confirmRemoveAppriseUrl,
       cancelRemoveAppriseUrl,
