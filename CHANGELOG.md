@@ -2,22 +2,21 @@
 
 ## [Unreleased]
 
-- Improved notification URL editing: round-trip verification falls back to custom editor when parsers lose query params, and duplicate URLs are deduplicated on save
+## [0.6.0] - 2026-04-02
+
+- Added multi-source audio recording — record from multiple microphones and RTSP streams simultaneously (#22)
+- Added 2-step SetupWizard replacing LocationSetupModal — guides through location and audio source configuration on first use
+- Added pre-built Docker image support — install pulls ARM64 images from GHCR on release branches for faster setup, falls back to local build for non-ARM64 platforms, non-standard UIDs, or non-release branches
+- Added GitHub Actions CI workflow for building and pushing Docker images to GHCR
+- Added edit support for notification services with pill-based URL management
 - Added global recorder health warning pill — amber FAB appears on all pages (except Settings) when audio sources are degraded or stopped, with 24-hour dismiss and priority over the update indicator
 - Added recorder status to stream config API response for REST-based health checks
 - Added auto-expanded error details on Settings page when audio sources have issues
 - Added 200 per-page option and scroll-to-top button in Table view
-- Fixed GHCR pull check never matched due to JSON whitespace in image inspect
-- Fixed parallel build race caused by duplicate build directives
-- Added pre-built Docker image support — install pulls ARM64 images from GHCR on release branches for faster setup, falls back to local build for non-ARM64 platforms, non-standard UIDs, or non-release branches
-- Added GitHub Actions CI workflow for building and pushing Docker images to GHCR
-- Added install script unit tests for `set_env_var` function
-- Added 2-step SetupWizard replacing LocationSetupModal — guides through location and audio source configuration on first use
-- Added multi-source audio recording — record from multiple microphones and RTSP streams simultaneously (#22)
-- Added multi-stream source selector pills to LiveFeed for switching between active audio sources with animated expand-on-hover
 - Added location filter probability logging for top detections
 - Added CLI script to regenerate buggy spectrograms
 - Changed detection filenames to use source label instead of source ID
+- Improved notification URL parsing: round-trip verification falls back to custom editor when parsers lose query params, and duplicate URLs are deduplicated on save
 - Improved location context: replaced mutable `last_probabilities` with immutable `LocationContext`, moved probability logging to caller
 - Centralized recorder state strings as shared constants
 - Refactored LiveFeed stream state derivation to use computed properties
@@ -34,6 +33,8 @@
 - Fixed `set_env_var` creating duplicate keys when the target key is the only line in the env file
 - Fixed `.env` overwrite during GHCR pull — now preserves existing settings like `ICECAST_PASSWORD`
 - Fixed `BIRDNET_CHANNEL` not sanitized on non-release branches, breaking docker compose builds
+- Fixed GHCR pull check never matched due to JSON whitespace in image inspect
+- Fixed parallel build race caused by duplicate build directives
 
 ## [0.5.8] - 2026-03-25
 
