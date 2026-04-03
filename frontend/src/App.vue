@@ -295,7 +295,9 @@ export default {
 
       // Silent checks for status indicators
       systemUpdate.checkForUpdates({ silent: true }).catch(() => {})
-      recorderHealth.checkStatus()
+      if (!auth.needsLogin.value) {
+        recorderHealth.checkStatus()
+      }
     })
 
     onUnmounted(() => {
