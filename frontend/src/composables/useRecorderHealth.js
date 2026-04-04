@@ -39,9 +39,12 @@ export function useRecorderHealth() {
 
   const checkStatus = async () => {
     try {
-      const { data } = await api.get('/stream/config')
-      if (data.recorder_status) {
-        recorderStatus.value = data.recorder_status
+      const { data } = await api.get('/recorder/status')
+      if ('state' in data) {
+        const prev = recorderStatus.value
+        if (!prev || prev.state !== data.state) {
+          recorderStatus.value = data
+        }
       }
     } catch {
       // Silent failure — recorder health is non-critical UI

@@ -1146,10 +1146,7 @@ def get_stream_config():
             'url': f'/stream/{sid}.mp3',
         })
 
-    result = {'streams': streams}
-    if _recorder_status:
-        result['recorder_status'] = _recorder_status
-    return jsonify(result)
+    return jsonify({'streams': streams})
 
 @api.route('/api/broadcast/detection', methods=['POST'])
 @require_internal
@@ -1192,6 +1189,19 @@ def broadcast_recorder_status_endpoint():
             'error': str(e)
         })
         return jsonify({'error': str(e)}), 500
+
+@api.route('/api/recorder/status', methods=['GET'])
+@log_api_request
+@require_auth
+@handle_api_errors
+def get_recorder_status():
+    """Return current recorder health status.
+
+    Requires authentication — the payload may contain source labels,
+    types, and error details that should not be exposed publicly.
+    Decoupled from live feed so it is not gated by live_feed_public.
+    """
+    return jsonify(_recorder_status or {})
 
 def write_flag(flag_name, content=None):
     """Write flag file to trigger host action.

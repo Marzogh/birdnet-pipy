@@ -240,6 +240,7 @@ export default {
 
       // Load settings (including unit preference) after login
       await checkLocationSetup()
+      recorderHealth.checkStatus()
 
       // Redirect to stored destination if any
       const redirect = sessionStorage.getItem('authRedirect')

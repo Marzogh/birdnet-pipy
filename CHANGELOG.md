@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Fixed login modal appearing for unauthenticated guests on the dashboard when live feed public access was disabled — recorder health check was piggybacking on a live-feed-gated endpoint
+- Decoupled recorder health from live feed into a dedicated auth-protected endpoint (`/api/recorder/status`), preventing source labels and error details from leaking to anonymous users
+- Added recorder health check after login so the navbar indicator appears without a page reload
+
 ## [0.6.0] - 2026-04-02
 
 - Added multi-source audio recording — record from multiple microphones and RTSP streams simultaneously (#22)
@@ -10,7 +14,6 @@
 - Added GitHub Actions CI workflow for building and pushing Docker images to GHCR
 - Added edit support for notification services with pill-based URL management
 - Added global recorder health warning pill — amber FAB appears on all pages (except Settings) when audio sources are degraded or stopped, with 24-hour dismiss and priority over the update indicator
-- Added recorder status to stream config API response for REST-based health checks
 - Added auto-expanded error details on Settings page when audio sources have issues
 - Added 200 per-page option and scroll-to-top button in Table view
 - Added location filter probability logging for top detections

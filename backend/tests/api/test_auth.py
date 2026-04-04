@@ -780,3 +780,61 @@ class TestFeatureAccess:
         assert access['charts_public'] is True
         assert access['table_public'] is True
         assert access['live_feed_public'] is False
+
+    def test_recorder_status_requires_auth(self, feature_client):
+        """GET /api/recorder/status returns 401 when not authenticated."""
+        client, _ = feature_client
+        response = client.get('/api/recorder/status')
+        assert response.status_code == 401
+
+    def test_recorder_status_accessible_when_authenticated(self, feature_client):
+        """GET /api/recorder/status returns 200 when authenticated."""
+        client, _ = feature_client
+        self._login(client)
+        response = client.get('/api/recorder/status')
+        assert response.status_code == 200
+
+    def test_recorder_status_returns_empty_when_no_status(self, feature_client):
+        """GET /api/recorder/status returns empty dict when no status has been reported."""
+        client, _ = feature_client
+        self._login(client)
+        response = client.get('/api/recorder/status')
+        assert response.status_code == 200
+        assert response.get_json() == {}
+
+    @pytest.fixture
+    def _with_recorder_status(self):
+        """Set recorder status for test and clean up afterwards."""
+        import core.api
+        core.api._recorder_status = {'state': 'degraded', 'message': 'Source failed'}
+        yield core.api._recorder_status
+        core.api._recorder_status = {}
+
+    def test_recorder_status_returns_data_after_broadcast(self, feature_client, _with_recorder_status):
+        """GET /api/recorder/status returns status after it's been broadcast."""
+        client, _ = feature_client
+        self._login(client)
+
+        response = client.get('/api/recorder/status')
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['state'] == 'degraded'
+        assert data['message'] == 'Source failed'
+
+    def test_recorder_status_not_gated_by_live_feed(self, feature_client):
+        """GET /api/recorder/status works when authenticated even with live_feed_public=false."""
+        client, settings_file = feature_client
+        self._set_access(settings_file, live_feed_public=False)
+        self._login(client)
+        response = client.get('/api/recorder/status')
+        assert response.status_code == 200
+
+    def test_stream_config_no_longer_includes_recorder_status(self, feature_client, _with_recorder_status):
+        """GET /api/stream/config should not include recorder_status field."""
+        client, settings_file = feature_client
+        self._set_access(settings_file, live_feed_public=True)
+
+        response = client.get('/api/stream/config')
+        assert response.status_code == 200
+        data = response.get_json()
+        assert 'recorder_status' not in data
