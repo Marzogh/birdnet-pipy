@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from model_service.base_model import ChunkPrediction
+
 # ---------------------------------------------------------------------------
 # _date_to_geomodel_week
 # ---------------------------------------------------------------------------
@@ -304,12 +306,14 @@ class TestProcessAudioFileWithLocationFilter:
 
     @pytest.fixture
     def mock_model(self):
+
         model = MagicMock()
         model.name = "birdnet"
         model.version = "3.0"
         model.sample_rate = 32000
         model.chunk_length_seconds = 3.0
         model.get_ebird_code.return_value = None
+        model.predict_chunk.return_value = ChunkPrediction(raw_top3=(), candidates=())
         return model
 
     @pytest.fixture
@@ -326,9 +330,11 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service.location_filter import LocationContext
 
         # Model detects Robin
-        mock_model.predict.return_value = [
-            ("Turdus migratorius_American Robin", 0.9),
-        ]
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Turdus migratorius_American Robin", 0.9),),
+            candidates=(("Turdus migratorius_American Robin", 0.9),),
+        )
 
         mock_location_filter.filter.return_value = LocationContext(
             source="geomodel_v3",
@@ -360,9 +366,11 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service import inference_server
         from model_service.location_filter import LocationContext
 
-        mock_model.predict.return_value = [
-            ("Turdus migratorius_American Robin", 0.9),
-        ]
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Turdus migratorius_American Robin", 0.9),),
+            candidates=(("Turdus migratorius_American Robin", 0.9),),
+        )
 
         # Location filter does NOT include Robin
         mock_location_filter.filter.return_value = LocationContext(
@@ -395,9 +403,11 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service.location_filter import LocationContext
 
         # Model detects Blue Jay (which is unmapped in geomodel)
-        mock_model.predict.return_value = [
-            ("Cyanocitta cristata_Blue Jay", 0.85),
-        ]
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Cyanocitta cristata_Blue Jay", 0.85),),
+            candidates=(("Cyanocitta cristata_Blue Jay", 0.85),),
+        )
 
         # Location filter output includes Blue Jay as unmapped
         mock_location_filter.filter.return_value = LocationContext(
@@ -433,9 +443,11 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service import inference_server
         from model_service.location_filter import LocationContext
 
-        mock_model.predict.return_value = [
-            ("Turdus migratorius_American Robin", 0.9),
-        ]
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Turdus migratorius_American Robin", 0.9),),
+            candidates=(("Turdus migratorius_American Robin", 0.9),),
+        )
         mock_location_filter.filter.return_value = LocationContext.disabled(0.03)
 
         monkeypatch.setattr(
@@ -460,7 +472,8 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service import inference_server
         from model_service.location_filter import LocationContext
 
-        mock_model.predict.return_value = []
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(raw_top3=(), candidates=())
         mock_location_filter.filter.return_value = LocationContext.disabled(0.03)
 
         monkeypatch.setattr(
@@ -488,9 +501,11 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service import inference_server
         from model_service.location_filter import LocationContext
 
-        mock_model.predict.return_value = [
-            ("Turdus migratorius_American Robin", 0.9),
-        ]
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Turdus migratorius_American Robin", 0.9),),
+            candidates=(("Turdus migratorius_American Robin", 0.9),),
+        )
         mock_location_filter.filter.return_value = LocationContext(
             source="geomodel_v3",
             threshold=0.03,
@@ -521,9 +536,11 @@ class TestProcessAudioFileWithLocationFilter:
         from model_service import inference_server
         from model_service.location_filter import LocationContext
 
-        mock_model.predict.return_value = [
-            ("Turdus migratorius_American Robin", 0.9),
-        ]
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Turdus migratorius_American Robin", 0.9),),
+            candidates=(("Turdus migratorius_American Robin", 0.9),),
+        )
         mock_location_filter.filter.return_value = LocationContext(
             source="geomodel_v3",
             threshold=0.03,
@@ -552,14 +569,58 @@ class TestProcessAudioFileWithLocationFilter:
         assert detection_logs[0].location_source == "geomodel_v3"
         assert detection_logs[0].location_prob == 80.0
 
+    def test_chunk_log_includes_location_probability(self, monkeypatch, mock_model, mock_location_filter, caplog):
+        """Chunk-level top-3 log includes active location probabilities."""
+        from model_service import inference_server
+        from model_service.location_filter import LocationContext
+
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(
+                ("Turdus migratorius_American Robin", 0.9),
+                ("Cardinalis cardinalis_Northern Cardinal", 0.7),
+            ),
+            candidates=(("Turdus migratorius_American Robin", 0.9),),
+        )
+        mock_location_filter.filter.return_value = LocationContext(
+            source="geomodel_v3",
+            threshold=0.03,
+            allowed_species=frozenset(["Turdus migratorius_American Robin"]),
+            probabilities={"Turdus migratorius_American Robin": 0.8},
+        )
+
+        monkeypatch.setattr(
+            inference_server, "split_audio",
+            lambda *a, **kw: [np.zeros(96000, dtype=np.float32)]
+        )
+
+        with caplog.at_level(logging.INFO):
+            inference_server.process_audio_file(
+                model=mock_model,
+                location_filter=mock_location_filter,
+                audio_file_path="/tmp/20250615_103000.wav",
+                lat=42.0, lon=-76.0,
+                sensitivity=0.75, cutoff=0.60,
+                overlap=0.0, recording_length=9.0,
+                allowed_species=[], blocked_species=[],
+            )
+
+        chunk_logs = [record for record in caplog.records if record.message == "Chunk 0 raw model output"]
+        assert len(chunk_logs) == 1
+        assert chunk_logs[0].location_source == "geomodel_v3"
+        assert chunk_logs[0].top3 == [
+            {'species': 'American Robin', 'confidence': 90.0, 'location_prob': 80.0},
+            {'species': 'Northern Cardinal', 'confidence': 70.0, 'location_prob': 'unmapped'},
+        ]
+
     def test_detection_log_marks_unmapped_species(self, monkeypatch, mock_model, mock_location_filter, caplog):
         """Confirmed detections log unmapped when the species has no geomodel entry."""
         from model_service import inference_server
         from model_service.location_filter import LocationContext
 
-        mock_model.predict.return_value = [
-            ("Cyanocitta cristata_Blue Jay", 0.85),
-        ]
+        mock_model.predict_chunk.return_value = ChunkPrediction(
+            raw_top3=(("Cyanocitta cristata_Blue Jay", 0.85),),
+            candidates=(("Cyanocitta cristata_Blue Jay", 0.85),),
+        )
         mock_location_filter.filter.return_value = LocationContext(
             source="geomodel_v3",
             threshold=0.03,

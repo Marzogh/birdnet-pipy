@@ -350,12 +350,17 @@ def process_audio_file(
     allowed_species = allowed_species or []
     blocked_species = blocked_species or []
 
+    # Pre-compute loop-invariant values
+    loc_active = location_context.source != 'disabled'
+    cutoff_pct = round(cutoff * 100, 1)
+    threshold_pct = round(location_context.threshold * 100, 1) if loc_active else None
+
     # Time inference loop
     inference_start = time.time()
     for chunk_index, audio_chunk in enumerate(audio_chunks):
         # Run model inference (includes cutoff filtering and human detection)
         try:
-            species_in_audio_chunk = model.predict(
+            chunk_prediction = model.predict_chunk(
                 audio_chunk, sensitivity, cutoff, chunk_index=chunk_index)
         except Exception as error:
             if _is_input_shape_mismatch_error(error):
@@ -371,6 +376,31 @@ def process_audio_file(
                 return []
             raise
 
+        top3_info = []
+        for label, confidence in chunk_prediction.raw_top3:
+            entry = {
+                'species': get_common_name(label),
+                'confidence': round(confidence * 100, 1),
+            }
+            if loc_active:
+                loc_prob = location_context.probability_for(label)
+                entry['location_prob'] = (
+                    round(loc_prob * 100, 1) if loc_prob is not None else 'unmapped'
+                )
+            top3_info.append(entry)
+
+        chunk_log_extra = {
+            'top3': top3_info,
+            'cutoff': cutoff_pct,
+        }
+        if loc_active:
+            chunk_log_extra['location_source'] = location_context.source
+            chunk_log_extra['filter_threshold'] = threshold_pct
+        if chunk_prediction.human_detected:
+            chunk_log_extra['privacy_filtered'] = True
+        logger.info(f"Chunk {chunk_index} raw model output", extra=chunk_log_extra)
+
+        species_in_audio_chunk = chunk_prediction.candidates
         if species_in_audio_chunk:
             chunks_with_detections += 1
 
@@ -425,7 +455,7 @@ def process_audio_file(
                 'chunk': chunk_index,
                 'time': result['timestamp']
             }
-            if location_context.source != 'disabled':
+            if loc_active:
                 loc_prob = location_context.probability_for(species[0])
                 detection_extra['location_source'] = location_context.source
                 detection_extra['location_prob'] = round(loc_prob * 100, 1) if loc_prob is not None else 'unmapped'

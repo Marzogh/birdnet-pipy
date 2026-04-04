@@ -1,16 +1,22 @@
 """Abstract base class for bird detection models."""
 
-import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 import numpy as np
 
 from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
 
-from .label_utils import get_common_name
 from .label_utils import get_ebird_code as _lookup_ebird_code
 
-logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True, slots=True)
+class ChunkPrediction:
+    """Structured prediction data for one audio chunk."""
+
+    raw_top3: tuple[tuple[str, float], ...]
+    candidates: tuple[tuple[str, float], ...]
+    human_detected: bool = False
 
 
 class BirdDetectionModel(ABC):
@@ -47,7 +53,6 @@ class BirdDetectionModel(ABC):
     def load(self) -> None:
         """Load all model resources into memory. Must be called before predict()."""
 
-    @abstractmethod
     def predict(
         self,
         audio_chunk: np.ndarray,
@@ -55,7 +60,7 @@ class BirdDetectionModel(ABC):
         cutoff: float = 0.0,
         chunk_index: int | None = None
     ) -> list[tuple[str, float]]:
-        """Run inference on an audio chunk.
+        """Run inference on an audio chunk and return filtered candidates.
 
         Args:
             audio_chunk: Float32 array normalized to [-1, 1].
@@ -66,6 +71,17 @@ class BirdDetectionModel(ABC):
         Returns:
             List of (species_label, confidence) tuples, sorted by confidence descending.
         """
+        return list(self.predict_chunk(audio_chunk, sensitivity, cutoff, chunk_index).candidates)
+
+    @abstractmethod
+    def predict_chunk(
+        self,
+        audio_chunk: np.ndarray,
+        sensitivity: float = 1.0,
+        cutoff: float = 0.0,
+        chunk_index: int | None = None
+    ) -> ChunkPrediction:
+        """Run inference on an audio chunk and return structured chunk results."""
 
     @abstractmethod
     def get_labels(self) -> list[str]:
@@ -81,8 +97,8 @@ class BirdDetectionModel(ABC):
         scores: np.ndarray,
         cutoff: float,
         chunk_index: int | None = None
-    ) -> list[tuple[str, float]]:
-        """Log top results, apply cutoff threshold, filter and sort.
+    ) -> ChunkPrediction:
+        """Build raw top-3 and filtered candidates for one chunk.
 
         Shared post-processing used by all model implementations after
         model-specific inference and score transformation.
@@ -94,27 +110,23 @@ class BirdDetectionModel(ABC):
                 "Model and labels file may be out of sync."
             )
 
-        # Log top 3 raw confidence scores before cutoff filtering
-        if logger.isEnabledFor(logging.INFO):
-            raw_scores = list(zip(labels, scores, strict=True))
-            raw_scores_sorted = sorted(raw_scores, key=lambda x: x[1], reverse=True)[:3]
-            top3_info = [
-                (get_common_name(label), round(float(score) * 100, 1))
-                for label, score in raw_scores_sorted
-            ]
-            chunk_str = f"Chunk {chunk_index}" if chunk_index is not None else "Chunk"
-            logger.info(f"{chunk_str} raw model output", extra={
-                'top3': top3_info,
-                'cutoff': round(cutoff * 100, 1)
-            })
+        # Top-3: O(n) partial sort, then stable argsort on the 3 winners
+        # to preserve label order for tied scores (e.g. silent audio)
+        k = min(3, len(scores))
+        top3_idx = np.argpartition(scores, -k)[-k:]
+        top3_idx = top3_idx[np.argsort(scores[top3_idx], kind='stable')[::-1]]
+        raw_top3 = tuple((labels[i], float(scores[i])) for i in top3_idx)
 
-        # Apply cutoff threshold
-        scores = np.where(scores >= cutoff, scores, 0)
-
-        # Build results dict, filter zeros, sort descending
-        results_dict = dict(zip(labels, scores, strict=True))
-        results_dict = {k: v for k, v in results_dict.items() if v != 0}
-        return sorted(results_dict.items(), key=lambda x: x[1], reverse=True)
+        # Apply cutoff threshold and build candidates from passing species only
+        # Use strict > 0 to exclude exact-zero scores (matches old dict-filter behavior)
+        mask = (scores >= cutoff) & (scores > 0)
+        passing_idx = np.nonzero(mask)[0]
+        passing_scores = scores[passing_idx]
+        order = np.argsort(passing_scores)[::-1]
+        candidates = tuple(
+            (labels[passing_idx[i]], float(passing_scores[i])) for i in order
+        )
+        return ChunkPrediction(raw_top3=raw_top3, candidates=candidates)
 
     def filter_by_location(self, lat: float, lon: float, week: int, threshold: float = DEFAULT_SPECIES_FILTER_THRESHOLD) -> list[str] | None:
         """Get species likely at a location during a specific week.

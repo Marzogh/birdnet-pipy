@@ -13,7 +13,7 @@ except ImportError:
 
 from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
 
-from .base_model import BirdDetectionModel
+from .base_model import BirdDetectionModel, ChunkPrediction
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +89,13 @@ class BirdNetModel(BirdDetectionModel):
         self._load_meta_model()
         self._load_labels()
 
-    def predict(
+    def predict_chunk(
         self,
         audio_chunk: np.ndarray,
         sensitivity: float = 1.0,
         cutoff: float = 0.0,
         chunk_index: int | None = None
-    ) -> list[tuple[str, float]]:
+    ) -> ChunkPrediction:
         if self._model is None:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self._labels is None:
@@ -114,16 +114,20 @@ class BirdNetModel(BirdDetectionModel):
         # Apply custom sigmoid with sensitivity
         model_output = custom_sigmoid(model_output, sensitivity)
 
-        # Shared post-processing: log, cutoff, filter, sort
-        results = self._post_process(self._labels, model_output, cutoff, chunk_index)
+        # Shared post-processing: collect raw top-3 and filtered candidates
+        prediction = self._post_process(self._labels, model_output, cutoff, chunk_index)
 
         # Privacy filter: check for human detection
-        human_detection = any('Human' in species_label for species_label, _ in results)
+        human_detection = any('Human' in species_label for species_label, _ in prediction.candidates)
         if human_detection:
             logger.warning("Human detected in audio - chunk discarded for privacy")
-            return []
+            return ChunkPrediction(
+                raw_top3=prediction.raw_top3,
+                candidates=(),
+                human_detected=True,
+            )
 
-        return results
+        return prediction
 
     def get_labels(self) -> list[str]:
         if self._labels is None:

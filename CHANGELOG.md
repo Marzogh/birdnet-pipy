@@ -38,6 +38,9 @@
 - Fixed health cache not refreshed after restart; kept Icecast alive with no active sources
 - Fixed NaN values in model logs and improved system logs modal UX
 - Fixed inconsistent percentage rounding in location probability logs
+- Improved chunk-level logging: raw model top-3 now includes location filter probabilities for easier debugging
+- Optimized model post-processing with NumPy partial sort and masking instead of full Python sort over all species
+- Fixed zero-confidence species leaking into candidates when cutoff is 0.0
 - Fixed security vulnerability in happy-dom (GHSA-6q6h-j7hj-3r64)
 - Fixed `set_env_var` creating duplicate keys when the target key is the only line in the env file
 - Fixed `.env` overwrite during GHCR pull — now preserves existing settings like `ICECAST_PASSWORD`

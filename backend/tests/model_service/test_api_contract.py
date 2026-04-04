@@ -221,7 +221,7 @@ class TestProcessAudioFileErrorHandling:
         model.version = "2.4"
         model.sample_rate = 48000
         model.chunk_length_seconds = 3.0
-        model.predict.side_effect = ValueError(
+        model.predict_chunk.side_effect = ValueError(
             "Cannot set tensor: Dimension mismatch. Got 96000 but expected 144000 for dimension 1 of input 0."
         )
 
@@ -251,7 +251,7 @@ class TestProcessAudioFileErrorHandling:
             )
 
         assert results == []
-        assert model.predict.call_count == 1
+        assert model.predict_chunk.call_count == 1
         assert any(
             "Skipping audio file due to model input shape mismatch" in record.message
             for record in caplog.records
