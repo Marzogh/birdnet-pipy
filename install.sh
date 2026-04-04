@@ -445,6 +445,53 @@ configure_pulseaudio() {
     print_info "PulseAudio will be started by birdnet-service.sh"
 }
 
+# Ensure adequate swap on low-memory systems (e.g. Pi Zero 2W with 512MB RAM).
+# Swap is needed both for building and running (model inference + Docker containers).
+# Idempotent: skips if sufficient swap is already available.
+setup_swap() {
+    local threshold_kb=1048576  # 1GB
+    local needed_mb=2048        # 2GB swap
+    local swap_file="/swapfile-birdnet-pipy"
+
+    local ram_kb
+    ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+
+    # Only set up swap on low-memory systems
+    if [ "$ram_kb" -ge "$threshold_kb" ]; then
+        return 0
+    fi
+
+    local current_mb
+    current_mb=$(free -m | awk '/Swap:/ {print $2}')
+
+    if [ "$current_mb" -ge "$needed_mb" ]; then
+        print_status "Sufficient swap already available (${current_mb}MB)"
+        return 0
+    fi
+
+    print_status "Low memory detected ($(( ram_kb / 1024 ))MB RAM). Setting up ${needed_mb}MB swap..."
+
+    # Disable existing swap file if present
+    if [ -f "$swap_file" ]; then
+        swapoff "$swap_file" 2>/dev/null || true
+        rm -f "$swap_file"
+    fi
+
+    # Create swap file (fallocate is fast, dd is slow fallback)
+    if fallocate -l "${needed_mb}M" "$swap_file" 2>/dev/null; then
+        print_status "Swap file allocated with fallocate"
+    else
+        print_info "Using dd to create swap file (this may take a moment)..."
+        dd if=/dev/zero of="$swap_file" bs=1M count="$needed_mb" status=progress
+    fi
+
+    chmod 600 "$swap_file"
+    mkswap "$swap_file"
+    swapon "$swap_file"
+
+    print_status "Swap enabled (${needed_mb}MB)"
+}
+
 # Update a single key in .env without overwriting other settings.
 # Uses grep -v + append to avoid sed metacharacter issues.
 set_env_var() {
@@ -793,7 +840,8 @@ perform_update() {
     find "$PROJECT_ROOT" -maxdepth 1 -mindepth 1 -not -name data \
         -exec chown -R "$ACTUAL_USER:$ACTUAL_USER" {} +
 
-    # Step 5: Pull pre-built images or build locally
+    # Step 5: Ensure swap on low-memory systems, then pull or build
+    setup_swap || print_warning "Swap setup failed (continuing without swap)"
     if ! pull_or_build; then
         print_error "Failed to pull or build images!"
         restart_containers_on_failure
@@ -1023,6 +1071,7 @@ main() {
 
     # Application setup
     fix_data_permissions
+    setup_swap || print_warning "Swap setup failed (continuing without swap)"
     pull_or_build
     chmod +x "$PROJECT_ROOT/deployment/birdnet-service.sh"
 
