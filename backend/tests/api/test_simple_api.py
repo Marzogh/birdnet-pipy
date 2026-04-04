@@ -399,7 +399,7 @@ class TestSimpleAPI:
                                     data=json.dumps(new_settings),
                                     content_type='application/json')
                 assert response.status_code == 200
-                assert 'Settings successfully updated.' in response.get_json()['message']
+                assert 'Settings applied.' in response.get_json()['message']
                 mock_save.assert_called_once()
                 mock_flag.assert_not_called()
 

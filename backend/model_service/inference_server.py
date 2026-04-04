@@ -28,6 +28,7 @@ from scipy.io import wavfile
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logging_config import get_logger, log_execution_time, setup_logging
 from core.runtime_config import get_runtime_settings
+from core.timezone_service import get_timezone_str
 from core.utils import build_detection_filenames
 from model_service.base_model import BirdDetectionModel
 from model_service.label_utils import get_common_name, get_scientific_name
@@ -560,6 +561,6 @@ if __name__ == '__main__':
         'model_version': model.version,
         'num_species': len(model.get_labels()),
         'location_filter': _filter_desc,
-        'timezone': os.environ.get('TZ', 'UTC')
+        'timezone': get_timezone_str()
     })
     app.run(host='0.0.0.0', debug=False, port=settings.BIRDNET_SERVICE_PORT)

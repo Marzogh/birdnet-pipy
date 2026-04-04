@@ -4,7 +4,9 @@ import logging.handlers
 import math
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
+
+from core.timezone_service import get_timezone
 
 # Standard LogRecord attributes to exclude when collecting extra fields
 _STANDARD_RECORD_KEYS = frozenset({
@@ -35,7 +37,7 @@ class HumanReadableFormatter(logging.Formatter):
 
     def format(self, record):
         # Format timestamp
-        timestamp = datetime.fromtimestamp(record.created).strftime('%H:%M:%S')
+        timestamp = datetime.fromtimestamp(record.created, tz=dt_timezone.utc).astimezone(get_timezone()).strftime('%H:%M:%S')
 
         # Get color codes
         if self.use_color:
@@ -88,7 +90,7 @@ class StructuredFormatter(logging.Formatter):
 
     def format(self, record):
         log_obj = {
-            'timestamp': datetime.fromtimestamp(record.created).strftime('%Y-%m-%dT%H:%M:%S'),
+            'timestamp': datetime.fromtimestamp(record.created, tz=dt_timezone.utc).astimezone(get_timezone()).strftime('%Y-%m-%dT%H:%M:%S'),
             'level': record.levelname,
             'service': self.service_name,
             'module': record.module,

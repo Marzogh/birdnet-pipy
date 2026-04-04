@@ -184,9 +184,9 @@ class TestPulseAudioRecorderRecordChunk:
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=144000), \
              patch('os.rename'), \
-             patch('core.audio_manager.datetime') as mock_dt:
+             patch('core.audio_manager.local_now',
+                   return_value=datetime(2025, 11, 26, 10, 30, 0)):
 
-            mock_dt.now.return_value = datetime(2025, 11, 26, 10, 30, 0)
             mock_run.return_value = Mock(returncode=0)
 
             result = recorder._record_chunk()
@@ -208,9 +208,9 @@ class TestPulseAudioRecorderRecordChunk:
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=144000), \
              patch('os.rename') as mock_rename, \
-             patch('core.audio_manager.datetime') as mock_dt:
+             patch('core.audio_manager.local_now',
+                   return_value=datetime(2025, 11, 26, 10, 30, 0)):
 
-            mock_dt.now.return_value = datetime(2025, 11, 26, 10, 30, 0)
             mock_run.return_value = Mock(returncode=0)
 
             recorder._record_chunk()
@@ -487,9 +487,9 @@ class TestRtspRecorderRecordChunk:
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=144000), \
              patch('os.rename') as mock_rename, \
-             patch('core.audio_manager.datetime') as mock_dt:
+             patch('core.audio_manager.local_now',
+                   return_value=datetime(2025, 11, 26, 10, 30, 0)):
 
-            mock_dt.now.return_value = datetime(2025, 11, 26, 10, 30, 0)
             mock_run.return_value = Mock(returncode=0)
 
             recorder._record_chunk()

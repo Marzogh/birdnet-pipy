@@ -119,6 +119,13 @@ const mockSettings = {
   updates: {
     channel: 'release'
   },
+  storage: {
+    auto_cleanup_enabled: true,
+    trigger_percent: 85,
+    target_percent: 80,
+    keep_per_species: 60,
+    check_interval_minutes: 30
+  },
   access: {
     charts_public: false,
     table_public: false,

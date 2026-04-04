@@ -39,12 +39,14 @@ class TestClassifySettingChanges:
         assert plan["full_restart_required"] is False
         assert "audio.recording_length" in plan["component_restarts"]
 
-    def test_location_change_requires_full_restart(self):
-        plan = classify_setting_changes(["location.latitude", "location.longitude"])
+    def test_location_change_is_hot_applied(self):
+        """Location is read live from config — no restart needed."""
+        plan = classify_setting_changes(["location.latitude", "location.longitude", "location.timezone"])
 
-        assert plan["full_restart_required"] is True
-        assert "location.latitude" in plan["full_restart_paths"]
-        assert "location.longitude" in plan["full_restart_paths"]
+        assert plan["full_restart_required"] is False
+        assert "location.latitude" in plan["hot_applied"]
+        assert "location.longitude" in plan["hot_applied"]
+        assert "location.timezone" in plan["hot_applied"]
 
 
 class TestSourceLabelOnlyChanges:

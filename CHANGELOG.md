@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Added auto-cleanup trigger percentage display in Settings storage card
+- Hot-apply location changes (latitude, longitude, timezone) without requiring a service restart
+- Decoupled timezone from TZ environment variable — reads config directly with thread-safe caching
+- Fixed settings save status message overlapping the page heading on mobile
+- Fixed restart progress timer showing inaccurate elapsed time — was ignoring initial delay and only updating every 20 seconds
+- Fixed swap setup in install.sh for low-memory systems using GHCR pulls
 - Fixed login modal appearing for unauthenticated guests on the dashboard when live feed public access was disabled — recorder health check was piggybacking on a live-feed-gated endpoint
 - Decoupled recorder health from live feed into a dedicated auth-protected endpoint (`/api/recorder/status`), preventing source labels and error details from leaking to anonymous users
 - Added recorder health check after login so the navbar indicator appears without a page reload

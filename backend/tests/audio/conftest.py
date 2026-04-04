@@ -44,12 +44,10 @@ def mock_subprocess_failure():
 
 @pytest.fixture
 def mock_datetime_now():
-    """Mock datetime.now for consistent timestamps."""
+    """Mock local_now for consistent timestamps."""
     fixed_time = datetime(2025, 11, 26, 10, 30, 0)
-    with patch('core.audio_manager.datetime') as mock_dt:
-        mock_dt.now.return_value = fixed_time
-        mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
-        yield mock_dt, fixed_time
+    with patch('core.audio_manager.local_now', return_value=fixed_time) as mock_now:
+        yield mock_now, fixed_time
 
 
 @pytest.fixture

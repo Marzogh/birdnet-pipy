@@ -142,7 +142,7 @@ def classify_setting_changes(
     When old_settings and new_settings are provided, source label-only
     changes are classified as hot_applied instead of requiring a restart.
     """
-    full_restart_exact = {"model.type", "location.timezone", "location.latitude", "location.longitude"}
+    full_restart_exact = {"model.type"}
     full_restart_prefixes = ("audio.sources", "audio.next_source_id")
     component_prefixes = ("audio.",)
     component_exact = {"birdweather.id", "location.configured"}

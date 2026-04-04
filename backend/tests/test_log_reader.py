@@ -84,14 +84,17 @@ class TestParseIcecastLine:
     """Test icecast plain-text line parsing."""
 
     def test_standard_line(self):
-        result = _parse_icecast_line('[2026-03-14T12:00:00+00:00] Icecast server started on port 8888')
+        from unittest.mock import patch
+        from zoneinfo import ZoneInfo
+        import core.log_reader as lr_mod
+        with patch.object(lr_mod, 'get_timezone', return_value=ZoneInfo('Asia/Tokyo')):
+            result = lr_mod._parse_icecast_line('[2026-03-14T12:00:00+00:00] Icecast server started on port 8888')
         assert result is not None
         assert result['service'] == 'icecast'
         assert result['level'] == 'INFO'
         assert 'Icecast server started' in result['message']
-        # Timestamp should be converted to local time (no trailing Z)
-        assert not result['timestamp'].endswith('Z')
-        assert 'T' in result['timestamp']
+        # 12:00 UTC → 21:00 JST
+        assert result['timestamp'] == '2026-03-14T21:00:00'
 
     def test_error_keyword(self):
         result = _parse_icecast_line('[2026-03-14T12:00:00+00:00] ERROR: PulseAudio socket not available')

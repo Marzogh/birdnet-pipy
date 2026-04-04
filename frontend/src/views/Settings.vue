@@ -1,31 +1,31 @@
 <template>
   <div class="settings p-4 max-w-4xl mx-auto">
-    <!-- Header with Save button -->
     <div class="flex justify-between items-center mb-4">
-      <h1 class="text-xl font-semibold text-gray-800">
-        Settings
-      </h1>
-      <div class="flex items-center gap-2">
+      <div class="flex items-baseline gap-3 min-w-0">
+        <h1 class="text-xl font-semibold text-gray-800 shrink-0">
+          Settings
+        </h1>
         <span
           v-if="saveStatus"
           :class="saveStatus.type === 'success' ? 'text-green-600' : 'text-red-600'"
-          class="text-sm mr-2"
+          class="text-sm truncate"
         >
           {{ saveStatus.message }}
         </span>
-        <AppButton
-          :loading="loading"
-          loading-text="Saving..."
-          :disabled="serviceRestart.isRestarting.value || systemUpdate.isRestarting.value"
-          @click="saveSettings"
-        >
-          Save
-          <span
-            v-if="hasUnsavedChanges"
-            class="ml-1.5 w-2 h-2 bg-orange-500 rounded-full inline-block"
-          />
-        </AppButton>
       </div>
+      <AppButton
+        class="shrink-0 ml-4"
+        :loading="loading"
+        loading-text="Saving..."
+        :disabled="serviceRestart.isRestarting.value || systemUpdate.isRestarting.value"
+        @click="saveSettings"
+      >
+        Save
+        <span
+          v-if="hasUnsavedChanges"
+          class="ml-1.5 w-2 h-2 bg-orange-500 rounded-full inline-block"
+        />
+      </AppButton>
     </div>
 
     <!-- Error Banner (save errors or restart errors) -->
@@ -350,7 +350,7 @@
           <span>{{ storage.free_gb }}GB free of {{ storage.total_gb }}GB</span>
         </div>
         <p class="text-xs text-gray-400 mt-3">
-          Auto-cleanup removes oldest recordings when usage exceeds 85%.
+          Auto-cleanup removes oldest recordings when usage exceeds {{ settings.storage.trigger_percent }}%.
         </p>
       </div>
 
@@ -1704,6 +1704,7 @@ export default {
       species_filter: { allowed_species: [], blocked_species: [] },
       audio: {},
       spectrogram: {},
+      storage: { auto_cleanup_enabled: true, trigger_percent: 85, target_percent: 80 },
       updates: {},
       model: { type: 'birdnet' },
       display: {},
@@ -1985,7 +1986,7 @@ export default {
     }
 
     // Persist current settings to backend, handle restart if needed, show status
-    const persistAndRestart = async (statusMessage = 'Settings saved') => {
+    const persistAndRestart = async (statusMessage = 'Settings applied.') => {
       const result = await saveSettingsOnly()
       if (result) {
         appStatus.setStationName(settings.value.display?.station_name)
@@ -2335,7 +2336,7 @@ export default {
 
       const restartTriggered = await triggerRestartIfRequired(result, 'Applying species filter changes')
       if (!restartTriggered) {
-        showStatus('success', result?.message || 'Settings saved')
+        showStatus('success', result?.message || 'Settings applied.')
       }
     }
 
@@ -2498,7 +2499,7 @@ export default {
             navigationResolver.value(true)
             navigationResolver.value = null
           }
-          showStatus('success', result?.message || 'Settings saved')
+          showStatus('success', result?.message || 'Settings applied.')
         }
       }
       // On failure: modal stays open, error shown via settingsSaveError

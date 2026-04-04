@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 
 from config.constants import LOG_DEFAULT_LINES, LOG_MAX_LINES
+from core.timezone_service import get_timezone
 from core.logging_config import make_json_safe
 
 # Pattern: [ISO-timestamp] message
@@ -75,8 +76,8 @@ def _parse_icecast_line(line):
         timestamp_str, message = match.group(1), match.group(2)
         try:
             dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            # Convert to local time to match other services (which use datetime.fromtimestamp)
-            local_dt = dt.astimezone().replace(tzinfo=None)
+            # Convert UTC to configured local timezone
+            local_dt = dt.astimezone(get_timezone()).replace(tzinfo=None)
             timestamp = local_dt.strftime('%Y-%m-%dT%H:%M:%S')
         except ValueError:
             timestamp = timestamp_str
