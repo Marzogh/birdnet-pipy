@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-05
+
+- Enabled multi-language bird name support for BirdNET V3.0 — filled English fallbacks for 5,235 new species in the unified species table and removed the disabled language selector restriction
+- Removed 26 unused per-language V2.4 label files — all localization now goes through the unified species table
 - Added auto-cleanup trigger percentage display in Settings storage card
 - Hot-apply location changes (latitude, longitude, timezone) without requiring a service restart
 - Decoupled timezone from TZ environment variable — reads config directly with thread-safe caching

@@ -86,6 +86,7 @@ class TestParseIcecastLine:
     def test_standard_line(self):
         from unittest.mock import patch
         from zoneinfo import ZoneInfo
+
         import core.log_reader as lr_mod
         with patch.object(lr_mod, 'get_timezone', return_value=ZoneInfo('Asia/Tokyo')):
             result = lr_mod._parse_icecast_line('[2026-03-14T12:00:00+00:00] Icecast server started on port 8888')

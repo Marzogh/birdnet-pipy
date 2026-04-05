@@ -923,8 +923,7 @@
           <select
             id="birdNameLanguage"
             v-model="settings.display.bird_name_language"
-            :disabled="settings.model?.type === 'birdnet_v3'"
-            class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="block w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
           >
             <option
               v-for="option in birdNameLanguageOptions"
@@ -934,16 +933,7 @@
               {{ option.label }}
             </option>
           </select>
-          <p
-            v-if="settings.model?.type === 'birdnet_v3'"
-            class="text-xs text-amber-600 mt-1"
-          >
-            Localized bird names are not yet available for BirdNET v3.
-          </p>
-          <p
-            v-else
-            class="text-xs text-gray-400 mt-1"
-          >
+          <p class="text-xs text-gray-400 mt-1">
             Used for bird names shown across the app. Save to apply.
           </p>
         </div>

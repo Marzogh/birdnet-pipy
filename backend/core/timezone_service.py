@@ -7,7 +7,6 @@ stat() syscalls on the hot path (logging formatters call this on every
 log line).
 """
 
-import os
 import threading
 import time
 from datetime import datetime
