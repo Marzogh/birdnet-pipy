@@ -521,20 +521,6 @@ describe('Settings', () => {
       expect(remaining[0].url).toBe('rtsp://192.168.1.200:554/stream2')
     })
 
-    it('toggles source enabled flag', async () => {
-      const wrapper = mountSettings()
-      await flushPromises()
-
-      const micSource = wrapper.vm.settings.audio.sources[0]
-      expect(micSource.enabled).toBe(true)
-
-      wrapper.vm.toggleSource(micSource.id)
-      expect(micSource.enabled).toBe(false)
-
-      wrapper.vm.toggleSource(micSource.id)
-      expect(micSource.enabled).toBe(true)
-    })
-
     it('increments next_source_id when adding sources', async () => {
       const wrapper = mountSettings()
       await flushPromises()
@@ -1188,18 +1174,6 @@ describe('Settings', () => {
       expect(wrapper.vm.recorderDotClass).toContain('bg-red-500')
     })
 
-    it('shows per-source state dots on source pills', async () => {
-      const wrapper = mountSettings()
-      await flushPromises()
-
-      wrapper.vm.recorderStatus = makeStatus(DEGRADED, {
-        source_0: makeSource('Microphone', DEGRADED, 'High failure rate')
-      })
-      await wrapper.vm.$nextTick()
-
-      expect(wrapper.vm.getSourceState('source_0')).toBe(DEGRADED)
-      expect(wrapper.vm.getSourceState('nonexistent')).toBeUndefined()
-    })
   })
 
 })

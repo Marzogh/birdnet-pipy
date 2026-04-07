@@ -1,27 +1,54 @@
 import os
 import re
-from io import BytesIO
-
-import matplotlib
-import numpy as np
-
-matplotlib.use('Agg')
 import subprocess
+import threading
 
-import matplotlib.pyplot as plt
-from matplotlib import font_manager
-from PIL import Image
-from scipy.io import wavfile
-from scipy.signal import spectrogram
-
-from config.settings import SPECTROGRAM_FONT_PATH
 from core.runtime_config import get_runtime_settings
 
 BUFFER_SIZE = 1000
 
-# Register custom font once at import time (not per-call)
-if os.path.exists(SPECTROGRAM_FONT_PATH):
-    font_manager.fontManager.addfont(SPECTROGRAM_FONT_PATH)
+_spectrogram_runtime = None
+_spectrogram_runtime_lock = threading.Lock()
+
+
+def _get_spectrogram_runtime():
+    """Lazy-load heavy spectrogram dependencies on first use."""
+    global _spectrogram_runtime
+    if _spectrogram_runtime is not None:
+        return _spectrogram_runtime
+
+    with _spectrogram_runtime_lock:
+        if _spectrogram_runtime is not None:
+            return _spectrogram_runtime
+
+        from io import BytesIO
+
+        import matplotlib
+
+        matplotlib.use('Agg')
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from matplotlib import font_manager
+        from PIL import Image
+        from scipy.io import wavfile
+        from scipy.signal import spectrogram
+
+        from config.settings import SPECTROGRAM_FONT_PATH
+
+        if os.path.exists(SPECTROGRAM_FONT_PATH):
+            font_manager.fontManager.addfont(SPECTROGRAM_FONT_PATH)
+
+        _spectrogram_runtime = {
+            'BytesIO': BytesIO,
+            'Image': Image,
+            'font_manager': font_manager,
+            'np': np,
+            'plt': plt,
+            'spectrogram': spectrogram,
+            'wavfile': wavfile,
+        }
+        return _spectrogram_runtime
 
 
 def sanitize_source_label(label):
@@ -131,6 +158,14 @@ def trim_audio(source_file_path, output_audio_path, start, end, timeout=30):
 
 
 def generate_spectrogram(input_file_path, output_file_path, graph_title, start_time=0, end_time=None):
+    runtime = _get_spectrogram_runtime()
+    BytesIO = runtime['BytesIO']
+    Image = runtime['Image']
+    np = runtime['np']
+    plt = runtime['plt']
+    spectrogram = runtime['spectrogram']
+    wavfile = runtime['wavfile']
+
     spec_cfg = get_runtime_settings().get('spectrogram', {})
     max_dbfs = spec_cfg.get('max_dbfs', 0)
     min_dbfs = spec_cfg.get('min_dbfs', -120)

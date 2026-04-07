@@ -111,9 +111,54 @@
             </p>
           </div>
 
+          <!-- Enabled toggle (edit mode only) -->
+          <div
+            v-if="isEditing"
+            class="flex items-center justify-between"
+          >
+            <div>
+              <label class="text-sm text-gray-600">Active</label>
+              <p class="text-xs text-gray-400">
+                {{ enabled ? 'This source is being recorded' : 'This source will not be recorded' }}
+              </p>
+            </div>
+            <ToggleSwitch
+              v-model="enabled"
+              size="sm"
+            />
+          </div>
+
+          <!-- Testing progress -->
+          <div
+            v-if="testing"
+            class="flex items-center gap-2 text-blue-700 text-sm"
+          >
+            <svg
+              class="animate-spin h-4 w-4"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              />
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            <span>Testing stream connection...</span>
+          </div>
+
           <!-- Error display -->
           <div
-            v-if="error"
+            v-else-if="error"
             class="text-xs text-red-600 bg-red-50 p-2 rounded-lg"
           >
             <span>{{ error }}</span>
@@ -156,9 +201,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { sanitizeLabel } from '@/utils/inputHelpers'
 import api from '@/services/api'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
 export default {
   name: 'StreamSourceModal',
+  components: { ToggleSwitch },
   props: {
     source: {
       type: Object,
@@ -176,6 +223,7 @@ export default {
     const sourceType = ref(props.source?.type || 'rtsp')
     const url = ref(props.source?.url || '')
     const label = ref(props.source?.label || '')
+    const enabled = ref(props.source?.enabled ?? true)
     const testing = ref(false)
     const error = ref('')
     const canForceSubmit = ref(false)
@@ -196,11 +244,11 @@ export default {
       return true // mic always valid
     })
 
+    const urlChanged = computed(() =>
+      !isEditing.value || url.value.trim() !== (props.source?.url || '')
+    )
+
     const submitLabel = computed(() => {
-      if (testing.value) return 'Testing...'
-      if (sourceType.value === 'rtsp') {
-        return isEditing.value ? 'Test & Save' : 'Test & Add'
-      }
       return isEditing.value ? 'Save' : 'Add'
     })
 
@@ -293,6 +341,7 @@ export default {
       if (isEditing.value) {
         const updates = {}
         updates.label = label.value.trim()
+        updates.enabled = enabled.value
         if (sourceType.value === 'rtsp') {
           updates.url = validatedUrl
         }
@@ -313,6 +362,12 @@ export default {
 
       const validatedUrl = validateRtsp()
       if (!validatedUrl) return
+
+      // Skip test if editing and URL hasn't changed
+      if (!urlChanged.value) {
+        submitSource(validatedUrl)
+        return
+      }
 
       const success = await testStream(validatedUrl)
       if (success) {
@@ -357,6 +412,7 @@ export default {
       sourceType,
       url,
       label,
+      enabled,
       testing,
       error,
       canForceSubmit,

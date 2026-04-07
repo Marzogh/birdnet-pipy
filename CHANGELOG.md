@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Redesigned audio source selection UX — pills now open the edit modal on click instead of toggling state, preventing accidental source deactivation; enable/disable toggle moved inside the modal; opacity distinguishes active vs inactive sources
+- Auto-test RTSP streams on save/add with inline progress spinner, skipping test when URL unchanged (label-only edits save instantly); same pattern applied to SetupWizard
+- Restored keyboard accessibility for source and notification pills
+- Reduced backend memory usage by lazy-loading spectrogram dependencies (matplotlib, scipy, Pillow) and shrinking location filter caches
+- Added retry logic (3 attempts with backoff) to GHCR image pull before falling back to local build
+- Fixed SetupWizard requiring a second click after "Finish anyway" when adding an RTSP source
+
 ## [0.6.1] - 2026-04-05
 
 - Enabled multi-language bird name support for BirdNET V3.0 — filled English fallbacks for 5,235 new species in the unified species table and removed the disabled language selector restriction

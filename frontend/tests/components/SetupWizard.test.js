@@ -166,7 +166,6 @@ describe('SetupWizard', () => {
 
       expect(wrapper.find('#rtsp-url').exists()).toBe(true)
       expect(wrapper.find('#rtsp-label').exists()).toBe(true)
-      expect(wrapper.text()).toContain('Test Connection')
     })
 
     it('navigates back to step 1 on Back click', async () => {
@@ -265,10 +264,6 @@ describe('SetupWizard', () => {
 
       await wrapper.find('#rtsp-url').setValue('rtsp://192.168.1.100/stream')
 
-      const testButton = wrapper.findAll('button').find(b => b.text() === 'Test Connection')
-      await testButton.trigger('click')
-      await flushPromises()
-
       const finishButton = wrapper.findAll('button').find(b => b.text() === 'Finish')
       await finishButton.trigger('click')
       await flushPromises()
@@ -313,10 +308,6 @@ describe('SetupWizard', () => {
       const streamCard = wrapper.findAll('button').find(b => b.text().includes('Network Stream'))
       await streamCard.trigger('click')
       await wrapper.find('#rtsp-url').setValue('rtsp://192.168.1.100/stream')
-
-      const testButton = wrapper.findAll('button').find(b => b.text() === 'Test Connection')
-      await testButton.trigger('click')
-      await flushPromises()
 
       const finishButton = wrapper.findAll('button').find(b => b.text() === 'Finish')
       await finishButton.trigger('click')

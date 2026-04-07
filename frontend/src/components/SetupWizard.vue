@@ -315,59 +315,37 @@
                   </p>
                 </div>
 
-                <!-- Test button -->
-                <div class="flex items-center gap-3">
-                  <button
-                    type="button"
-                    :disabled="!rtspUrl.trim() || testingStream"
-                    class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
-                    @click="testRtspStream"
+                <!-- Testing progress -->
+                <div
+                  v-if="testingStream"
+                  class="flex items-center gap-2 text-blue-700 text-sm"
+                >
+                  <svg
+                    class="animate-spin h-4 w-4"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
                   >
-                    {{ testingStream ? 'Testing...' : 'Test Connection' }}
-                  </button>
-                  <span
-                    v-if="rtspValidated && !rtspForceAdded"
-                    class="text-sm text-green-600 flex items-center gap-1"
-                  >
-                    <svg
-                      class="w-4 h-4"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke-width="2"
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
                       stroke="currentColor"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M4.5 12.75l6 6 9-13.5"
-                      />
-                    </svg>
-                    Test successful
-                  </span>
-                  <span
-                    v-else-if="rtspForceAdded"
-                    class="text-sm text-amber-600 flex items-center gap-1"
-                  >
-                    <svg
-                      class="w-4 h-4"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke-width="2"
-                      stroke="currentColor"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
-                      />
-                    </svg>
-                    Added without test
-                  </span>
+                      stroke-width="4"
+                    />
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                  <span>Testing stream connection...</span>
                 </div>
 
                 <!-- RTSP error -->
                 <div
-                  v-if="rtspError"
+                  v-else-if="rtspError"
                   class="text-xs text-amber-700 bg-amber-50 p-2 rounded-lg"
                 >
                   <span>{{ rtspError }}</span>
@@ -377,7 +355,7 @@
                     class="block text-gray-500 hover:text-gray-700 underline mt-1"
                     @click="forceAddStream"
                   >
-                    Add anyway
+                    Finish anyway
                   </button>
                 </div>
               </div>
@@ -422,14 +400,14 @@
           <!-- Back / Finish buttons -->
           <div class="flex gap-3">
             <button
-              :disabled="saving || serviceRestart.isRestarting.value"
+              :disabled="saving || testingStream || serviceRestart.isRestarting.value"
               class="flex-1 bg-gray-200 hover:bg-gray-300 disabled:bg-gray-100 disabled:cursor-not-allowed text-gray-700 font-semibold py-2 px-4 rounded-lg shadow transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300"
               @click="errorMessage = ''; step = 1"
             >
               Back
             </button>
             <button
-              :disabled="!canFinish || saving || serviceRestart.isRestarting.value"
+              :disabled="!canFinish || saving || testingStream || serviceRestart.isRestarting.value"
               class="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg shadow transition-colors focus:outline-none focus:ring-2 focus:ring-green-300"
               @click="finish"
             >
@@ -477,7 +455,6 @@ export default {
     const rtspError = ref('')
     const canForceAdd = ref(false)
     const rtspValidated = ref(false)
-    const rtspForceAdded = ref(false)
     const saving = ref(false)
 
     const isValidLocation = computed(() => {
@@ -489,8 +466,7 @@ export default {
 
     const canFinish = computed(() => {
       if (audioType.value === 'pulseaudio') return true
-      // RTSP: need a validated URL (via test or force-add)
-      return rtspValidated.value && !!rtspUrl.value.trim()
+      return !!rtspUrl.value.trim()
     })
 
     const searchAddress = async () => {
@@ -540,7 +516,6 @@ export default {
       rtspError.value = ''
       canForceAdd.value = false
       rtspValidated.value = false
-      rtspForceAdded.value = false
     }
 
     const sanitizeRtspLabel = () => {
@@ -560,42 +535,44 @@ export default {
       return trimmed
     }
 
-    const testRtspStream = async () => {
-      clearRtspError()
-
-      const validatedUrl = validateRtspUrl()
-      if (!validatedUrl) return
-
-      testingStream.value = true
-      try {
-        const { data } = await api.post('/stream/test', {
-          url: validatedUrl,
-          type: 'rtsp',
-        })
-        if (!data.success) {
-          rtspError.value = data.message || 'Stream not accessible'
-          canForceAdd.value = true
-          return
-        }
-        rtspValidated.value = true
-      } catch {
-        rtspError.value = 'Test request failed'
-        canForceAdd.value = true
-      } finally {
-        testingStream.value = false
-      }
-    }
-
     const forceAddStream = () => {
       rtspError.value = ''
       canForceAdd.value = false
       rtspValidated.value = true
-      rtspForceAdded.value = true
+      finish()
     }
 
     const finish = async () => {
-      saving.value = true
       errorMessage.value = ''
+
+      // Auto-test RTSP stream if not already validated
+      if (audioType.value === 'rtsp' && !rtspValidated.value) {
+        clearRtspError()
+        const validatedUrl = validateRtspUrl()
+        if (!validatedUrl) return
+
+        testingStream.value = true
+        try {
+          const { data } = await api.post('/stream/test', {
+            url: validatedUrl,
+            type: 'rtsp',
+          })
+          if (!data.success) {
+            rtspError.value = data.message || 'Stream not accessible'
+            canForceAdd.value = true
+            return
+          }
+          rtspValidated.value = true
+        } catch {
+          rtspError.value = 'Test request failed'
+          canForceAdd.value = true
+          return
+        } finally {
+          testingStream.value = false
+        }
+      }
+
+      saving.value = true
 
       try {
         // Get current settings
@@ -706,12 +683,9 @@ export default {
       testingStream,
       rtspError,
       canForceAdd,
-      rtspValidated,
-      rtspForceAdded,
       canFinish,
       clearRtspError,
       sanitizeRtspLabel,
-      testRtspStream,
       forceAddStream,
       saving,
       finish,

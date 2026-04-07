@@ -554,13 +554,21 @@ pull_or_build() {
     if [[ "$api_response" == *'"conclusion"'*'"success"'* ]]; then
         print_status "Pre-built images available, pulling from registry..."
         cd "$PROJECT_ROOT"
-        if sudo -u "$ACTUAL_USER" docker compose pull; then
-            refresh_version_info
-            docker image prune -f >/dev/null 2>&1 || true
-            print_status "Images pulled successfully"
-            return 0
-        fi
-        print_warning "Pull failed, falling back to local build..."
+        local max_retries=3
+        local attempt
+        for attempt in $(seq 1 $max_retries); do
+            if sudo -u "$ACTUAL_USER" docker compose pull; then
+                refresh_version_info
+                docker image prune -f >/dev/null 2>&1 || true
+                print_status "Images pulled successfully"
+                return 0
+            fi
+            if [ "$attempt" -lt "$max_retries" ]; then
+                print_warning "Pull attempt $attempt/$max_retries failed, retrying in 10s..."
+                sleep 10
+            fi
+        done
+        print_warning "Pull failed after $max_retries attempts, falling back to local build..."
     else
         print_status "Pre-built images not ready, building locally..."
     fi

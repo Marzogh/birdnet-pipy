@@ -11,6 +11,7 @@ try:
 except ImportError:
     from tensorflow import lite as tflite
 
+from config import settings
 from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
 
 from .base_model import BirdDetectionModel, ChunkPrediction
@@ -59,7 +60,7 @@ class BirdNetModel(BirdDetectionModel):
 
         # Cache raw meta-model probabilities by (lat, lon, week).
         self._meta_probs_cache: OrderedDict[tuple, dict[str, float]] = OrderedDict()
-        self._meta_probs_cache_max_size = 128
+        self._meta_probs_cache_max_size = settings.LOCATION_FILTER_CACHE_SIZE
 
         # Lock for thread-safe inference
         self._inference_lock = threading.Lock()

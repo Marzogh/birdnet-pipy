@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 BASE_DIR = '/app'
 USER_SETTINGS_PATH = f'{BASE_DIR}/data/config/user_settings.json'
 
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    """Return a positive integer env var or the provided default."""
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
 # Default settings structure - single source of truth
 DEFAULT_SETTINGS = {
     "location": {"latitude": 42.47, "longitude": -76.45, "configured": False, "timezone": None},
@@ -249,6 +257,7 @@ LABELS_V3_PATH = f'{MODELS_DIR}/v3.0/BirdNET_V3.0_Global_11K_Labels.csv'
 # Geomodel (location-based species filter, used with V3.0+)
 GEOMODEL_PATH = f'{MODELS_DIR}/geomodel/geomodel_fp16.onnx'
 GEOMODEL_LABELS_PATH = f'{MODELS_DIR}/geomodel/labels.txt'
+LOCATION_FILTER_CACHE_SIZE = _get_positive_int_env('BIRDNET_LOCATION_CACHE_SIZE', 8)
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 

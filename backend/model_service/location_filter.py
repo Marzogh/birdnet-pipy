@@ -21,6 +21,7 @@ from typing import Literal
 import numpy as np
 
 from config.constants import DEFAULT_SPECIES_FILTER_THRESHOLD
+from config.settings import LOCATION_FILTER_CACHE_SIZE
 
 from .label_utils import get_scientific_name, parse_geomodel_labels
 
@@ -147,7 +148,7 @@ class ModelBackedFilter(LocationFilter):
             source="meta_model_v2.4",
             threshold=threshold,
             allowed_species=allowed_species,
-            probabilities=MappingProxyType(dict(probabilities)),
+            probabilities=MappingProxyType(probabilities),
         )
 
 
@@ -180,7 +181,7 @@ class GeoModelFilter(LocationFilter):
         self._unmapped_labels: list[str] = []
 
         self._probabilities_cache: OrderedDict[tuple, dict[str, float]] = OrderedDict()
-        self._cache_max_size = 128
+        self._cache_max_size = LOCATION_FILTER_CACHE_SIZE
         self._inference_lock = threading.Lock()
 
     def load(self) -> None:
@@ -288,5 +289,5 @@ class GeoModelFilter(LocationFilter):
             source="geomodel_v3",
             threshold=threshold,
             allowed_species=frozenset(allowed_species),
-            probabilities=MappingProxyType(dict(probabilities)),
+            probabilities=MappingProxyType(probabilities),
         )

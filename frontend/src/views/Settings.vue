@@ -189,40 +189,28 @@
         <hr class="my-3 border-gray-100">
 
         <!-- Audio sources -->
-        <label class="block text-sm text-gray-600 mb-1">Sources</label>
+        <label class="block text-sm text-gray-600 mb-1">Sources<span v-if="hasInactiveSource" class="text-xs text-gray-400 font-normal"> — highlighted sources are active</span></label>
         <div class="flex flex-wrap gap-2">
-          <!-- Source pills -->
-          <div
+          <!-- Source pills (click to edit) -->
+          <button
             v-for="source in (settings.audio.sources || [])"
             :key="source.id"
-            class="group inline-flex items-center rounded-full border cursor-pointer transition-colors"
+            type="button"
+            class="group inline-flex items-center rounded-full border cursor-pointer transition-all duration-200"
             :class="source.enabled
-              ? 'border-blue-200 bg-blue-50'
-              : 'border-gray-200 bg-gray-50 hover:bg-gray-100'"
-            @click="toggleSource(source.id)"
+              ? 'border-blue-300 bg-blue-50 hover:bg-blue-100 shadow-sm'
+              : 'border-gray-200 bg-gray-50 hover:bg-gray-100 opacity-50'"
+            title="Click to edit"
+            @click="openEditSource(source.id)"
           >
             <span
-              v-if="source.enabled && getSourceState(source.id)"
-              class="w-1.5 h-1.5 ml-3.5 rounded-full flex-shrink-0"
-              :class="{
-                'bg-red-400 animate-pulse': getSourceState(source.id) === RECORDER_STATES.RUNNING,
-                'bg-amber-500': getSourceState(source.id) === RECORDER_STATES.DEGRADED,
-                'bg-red-500': getSourceState(source.id) === RECORDER_STATES.STOPPED,
-              }"
-            />
-            <span
-              class="pr-3 py-1.5 text-sm font-medium truncate max-w-48 md:group-hover:pr-1 transition-[padding] duration-200"
-              :class="[
-                source.enabled ? 'text-gray-800' : 'text-gray-600',
-                source.enabled && getSourceState(source.id) ? 'pl-1.5' : 'pl-3.5'
-              ]"
+              class="px-3.5 py-1.5 text-sm font-medium truncate max-w-48 md:group-hover:pr-1 transition-[padding] duration-200"
+              :class="source.enabled ? 'text-gray-800' : 'text-gray-600'"
               :title="source.type === 'rtsp' ? source.url : 'Local Microphone'"
             >{{ source.label || (source.type === 'rtsp' ? 'RTSP Stream' : 'Local Mic') }}</span>
-            <button
-              type="button"
-              class="text-gray-400 hover:text-blue-600 flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out p-1 pr-2.5 md:max-w-0 md:p-0 md:pr-0 md:group-hover:max-w-8 md:group-hover:p-1 md:group-hover:pr-2.5"
-              title="Edit"
-              @click.stop="openEditSource(source.id)"
+            <!-- Edit icon: hover-reveal on desktop, always visible on mobile -->
+            <span
+              class="text-gray-400 group-hover:text-blue-600 flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out p-1 pr-2.5 md:max-w-0 md:p-0 md:pr-0 md:group-hover:max-w-8 md:group-hover:p-1 md:group-hover:pr-2.5"
             >
               <svg
                 class="w-3.5 h-3.5"
@@ -237,8 +225,8 @@
                   d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z"
                 />
               </svg>
-            </button>
-          </div>
+            </span>
+          </button>
 
           <!-- Add source pill -->
           <button
@@ -683,9 +671,13 @@
             <div
               v-for="(url, index) in (settings.notifications.apprise_urls || [])"
               :key="index"
+              role="button"
+              tabindex="0"
               class="group inline-flex items-center rounded-full border border-blue-200 bg-blue-50 cursor-pointer transition-colors"
               :title="maskAppriseUrl(url)"
               @click="openEditNotification(index)"
+              @keydown.enter="openEditNotification(index)"
+              @keydown.space.prevent="openEditNotification(index)"
             >
               <span
                 class="pl-3.5 pr-3 py-1.5 text-sm font-medium text-gray-800 truncate max-w-48 md:group-hover:pr-1 transition-[padding] duration-200"
@@ -1526,17 +1518,10 @@ export default {
       (settings.value.audio.sources || []).some(s => s.type === 'pulseaudio')
     )
 
-    const getSourceState = (sourceId) => {
-      return recorderStatus.value?.sources?.[sourceId]?.state
-    }
-
-    const toggleSource = (sourceId) => {
-      const sources = settings.value.audio.sources || []
-      const source = sources.find(s => s.id === sourceId)
-      if (source) {
-        source.enabled = !source.enabled
-      }
-    }
+    const hasInactiveSource = computed(() => {
+      const sources = settings.value.audio?.sources || []
+      return sources.length > 1 && sources.some(s => !s.enabled)
+    })
 
     const sourceErrors = computed(() => {
       const sources = recorderStatus.value?.sources
@@ -2602,14 +2587,13 @@ export default {
       recorderDotClass,
       recorderStateLabel,
       recorderStateLabelClass,
+      hasInactiveSource,
       sourceErrors,
       errorCopied,
       copyErrorToClipboard,
       RECORDER_STATES,
       // Audio source management
       hasMicSource,
-      getSourceState,
-      toggleSource,
       showStreamModal,
       editingSource,
       openAddSource,
