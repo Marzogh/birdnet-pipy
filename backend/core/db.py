@@ -854,7 +854,8 @@ class DatabaseManager:
             limit: Optional max number of records to return
 
         Returns:
-            List of dicts with: id, common_name, confidence, timestamp
+            List of dicts with: id, common_name, confidence, timestamp,
+                audio_source, extra (raw JSON string)
             Ordered by timestamp ASC (oldest first)
         """
         # Use window function to rank recordings within each species by confidence
@@ -868,13 +869,14 @@ class DatabaseManager:
                 confidence,
                 timestamp,
                 audio_source,
+                extra,
                 ROW_NUMBER() OVER (
                     PARTITION BY common_name
                     ORDER BY confidence DESC
                 ) as confidence_rank
             FROM detections
         )
-        SELECT id, common_name, confidence, timestamp, audio_source
+        SELECT id, common_name, confidence, timestamp, audio_source, extra
         FROM RankedDetections
         WHERE confidence_rank > ?
         ORDER BY timestamp ASC

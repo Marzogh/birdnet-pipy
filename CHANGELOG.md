@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Fixed storage cleanup silently skipping multi-source detection files — cleanup query was missing the `extra` column needed to reconstruct filenames with source suffixes, so those files were never deleted
+- Fixed storage cleanup reporting "candidates exhausted" instead of "target reached" when the final deletion crossed the threshold
+- Optimized storage cleanup to fetch cleanup candidates once instead of twice
 - Redesigned audio source selection UX — pills now open the edit modal on click instead of toggling state, preventing accidental source deactivation; enable/disable toggle moved inside the modal; opacity distinguishes active vs inactive sources
 - Auto-test RTSP streams on save/add with inline progress spinner, skipping test when URL unchanged (label-only edits save instantly); same pattern applied to SetupWizard
 - Restored keyboard accessibility for source and notification pills
