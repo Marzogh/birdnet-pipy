@@ -11,6 +11,16 @@
 - Reduced backend memory usage by lazy-loading spectrogram dependencies (matplotlib, scipy, Pillow) and shrinking location filter caches
 - Added retry logic (3 attempts with backoff) to GHCR image pull before falling back to local build
 - Fixed SetupWizard requiring a second click after "Finish anyway" when adding an RTSP source
+- Fixed orphaned background monitor surviving shutdown and restarting containers after stop
+- Fixed `set -e` dead branches swallowing container start/restart error messages
+- Fixed word-splitting regression in install script argument passing (`--branch`, `--no-reboot`)
+- Fixed GHCR pull silently succeeding with stale images when compose config returns empty — now falls back to local build
+- Fixed special characters in git metadata producing invalid version.json
+- Derived GHCR pull image list from compose config instead of hardcoded services
+- Changed GHCR image pulls to sequential to avoid network saturation on Raspberry Pi
+- Preserved Docker build cache for fallback local builds instead of pruning all layers
+- Added Docker space reclamation before update fetch to prevent disk-full failures
+- Fixed all shellcheck warnings across install scripts
 
 ## [0.6.1] - 2026-04-05
 

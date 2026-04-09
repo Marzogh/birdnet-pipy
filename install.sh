@@ -260,8 +260,8 @@ clone_repository() {
             if [ "$CURRENT_REPO" = "$REPO_URL" ]; then
                 print_status "Existing BirdNET-PiPy repository found, pulling latest changes..."
                 cd "$INSTALL_DIR"
-                git checkout $branch
-                git pull origin $branch || {
+                git checkout "$branch"
+                git pull origin "$branch" || {
                     print_error "Failed to update repository"
                     exit 1
                 }
@@ -280,7 +280,7 @@ clone_repository() {
         fi
     else
         # Clone fresh (shallow clone for speed - full history not needed)
-        git clone --depth 1 -b $branch "$REPO_URL" "$INSTALL_DIR" || {
+        git clone --depth 1 -b "$branch" "$REPO_URL" "$INSTALL_DIR" || {
             print_error "Failed to clone repository"
             exit 1
         }
@@ -336,7 +336,7 @@ install_docker() {
 
     # Add Docker's official GPG key
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/$OS_ID/gpg | \
+    curl -fsSL "https://download.docker.com/linux/$OS_ID/gpg" | \
         gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
 
@@ -360,8 +360,8 @@ install_docker() {
 
 # Add user to docker group
 setup_docker_user() {
-    if ! groups $ACTUAL_USER | grep -q docker; then
-        usermod -aG docker $ACTUAL_USER
+    if ! groups "$ACTUAL_USER" | grep -q docker; then
+        usermod -aG docker "$ACTUAL_USER"
         print_status "Added $ACTUAL_USER to docker group"
         print_warning "IMPORTANT: Log out and back in for docker group to take effect"
         print_warning "Or run: newgrp docker"
@@ -395,7 +395,7 @@ configure_pulseaudio() {
         if ! getent group pulse-access > /dev/null; then
             groupadd --system pulse-access
         fi
-        usermod -a -G pulse-access,audio $ACTUAL_USER
+        usermod -a -G pulse-access,audio "$ACTUAL_USER"
 
         print_status "PulseAudio setup complete (using existing user-mode audio)"
         return 0
@@ -439,7 +439,7 @@ configure_pulseaudio() {
     fi
 
     # Add actual user to pulse-access group
-    usermod -a -G pulse-access,audio $ACTUAL_USER
+    usermod -a -G pulse-access,audio "$ACTUAL_USER"
 
     print_status "PulseAudio setup complete (system-wide mode)"
     print_info "PulseAudio will be started by birdnet-service.sh"
@@ -505,15 +505,33 @@ set_env_var() {
     echo "${key}=${value}" >> "$env_file"
 }
 
+# Free disk space before an update fetch/build without removing runnable images.
+# This is update-only on purpose: installs can start clean, while updates need to
+# preserve existing images for failure recovery if the new pull/build does not finish.
+prune_docker_before_update() {
+    print_status "Cleaning up Docker artifacts before update..."
+
+    local image_reclaimed
+    image_reclaimed=$(docker image prune -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}') || true
+    print_status "Cleanup: reclaimed ${image_reclaimed:-0B} from dangling images"
+
+    # Prune only dangling build cache (no -a) so reusable layers survive.
+    # If the pull fails and we fall back to a local build, intact cache speeds it up.
+    local cache_reclaimed
+    cache_reclaimed=$(docker builder prune -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}') || true
+    print_status "Cleanup: reclaimed ${cache_reclaimed:-0B} from build cache"
+}
+
 # Try to pull pre-built images from GHCR, fall back to local build.
 # Skips pull for non-ARM64, non-release branches, and non-1000 UID systems.
 pull_or_build() {
     if [ "$SKIP_BUILD" = true ]; then
-        build_application "$@"
+        build_application
         return $?
     fi
 
-    local commit=$(git rev-parse HEAD)
+    local commit
+    commit=$(git rev-parse HEAD)
     local repo="Suncuss/BirdNET-PiPy"
     local target_branch="${TARGET_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
     local can_pull=true
@@ -542,7 +560,7 @@ pull_or_build() {
     fi
 
     if [ "$can_pull" = false ]; then
-        build_application "$@"
+        build_application
         return $?
     fi
 
@@ -554,30 +572,51 @@ pull_or_build() {
     if [[ "$api_response" == *'"conclusion"'*'"success"'* ]]; then
         print_status "Pre-built images available, pulling from registry..."
         cd "$PROJECT_ROOT"
+        # Pull each unique image sequentially to avoid saturating the Pi's network.
+        # Derive the image list from docker-compose.yml so it stays in sync automatically.
+        local -a pull_images
+        mapfile -t pull_images < <(sudo -u "$ACTUAL_USER" docker compose config --images | sort -u)
+        if [ ${#pull_images[@]} -eq 0 ]; then
+            print_warning "Could not resolve image list from docker-compose.yml, falling back to local build..."
+            build_application
+            return $?
+        fi
+        local pull_ok=true
         local max_retries=3
         local attempt
-        for attempt in $(seq 1 $max_retries); do
-            if sudo -u "$ACTUAL_USER" docker compose pull; then
-                refresh_version_info
-                docker image prune -f >/dev/null 2>&1 || true
-                print_status "Images pulled successfully"
-                return 0
-            fi
-            if [ "$attempt" -lt "$max_retries" ]; then
-                print_warning "Pull attempt $attempt/$max_retries failed, retrying in 10s..."
-                sleep 10
-            fi
+        for img in "${pull_images[@]}"; do
+            for attempt in $(seq 1 $max_retries); do
+                if sudo -u "$ACTUAL_USER" docker pull "$img"; then
+                    break
+                fi
+                if [ "$attempt" -lt "$max_retries" ]; then
+                    print_warning "Pull of $img failed (attempt $attempt/$max_retries), retrying in 10s..."
+                    sleep 10
+                else
+                    print_warning "Pull of $img failed after $max_retries attempts"
+                    pull_ok=false
+                fi
+            done
+            # Stop pulling remaining images if one failed
+            [ "$pull_ok" = true ] || break
         done
-        print_warning "Pull failed after $max_retries attempts, falling back to local build..."
+        if [ "$pull_ok" = true ]; then
+            refresh_version_info
+            docker image prune -f >/dev/null 2>&1 || true
+            print_status "Images pulled successfully"
+            return 0
+        fi
+        print_warning "Pull failed, falling back to local build..."
     else
         print_status "Pre-built images not ready, building locally..."
     fi
 
-    build_application "$@"
+    build_application
 }
 
 # Build Docker images
 # Optional arg: $1 = space-separated list of services to build
+# shellcheck disable=SC2120  # $1 is intentionally optional (services list)
 build_application() {
     if [ "$SKIP_BUILD" = true ]; then
         print_status "Skipping Docker image build (--skip-build flag)"
@@ -761,21 +800,21 @@ perform_update() {
     fi
     print_status "Target branch: $target_branch"
 
-    # Step 1: Stop containers and fetch in parallel for speed
-    print_status "Stopping containers and fetching latest code..."
-    docker compose down &
-    local stop_pid=$!
+    # Step 1: Stop containers so Docker artifacts are unused and can be pruned safely
+    print_status "Stopping containers..."
+    docker compose down || true
 
-    # Step 2: Fetch target branch with explicit refspec
+    # Step 2: Reclaim Docker disk space before any git/pull/build work
+    prune_docker_before_update
+
+    # Step 3: Fetch target branch with explicit refspec
     # This ensures origin/$target_branch is created even in shallow/single-branch clones
+    print_status "Fetching latest code..."
     if ! git fetch origin "+refs/heads/$target_branch:refs/remotes/origin/$target_branch" 2>&1; then
-        wait $stop_pid 2>/dev/null || true
         print_error "Git fetch failed - branch '$target_branch' may not exist on remote"
         restart_containers_on_failure
         exit 1
     fi
-
-    wait $stop_pid 2>/dev/null || true
 
     LOCAL=$(git rev-parse HEAD)
     REMOTE=$(git rev-parse "origin/$target_branch")
@@ -785,8 +824,10 @@ perform_update() {
 
         # Check if version.json is stale (e.g., previous build failed mid-way)
         # If so, rebuild to fix the version mismatch
-        local current_commit_short=$(git rev-parse --short HEAD)
-        local version_commit=$(grep -o '"commit": *"[^"]*"' "$PROJECT_ROOT/data/version.json" 2>/dev/null | grep -o '"[^"]*"$' | tr -d '"' || true)
+        local current_commit_short
+        current_commit_short=$(git rev-parse --short HEAD)
+        local version_commit
+        version_commit=$(grep -o '"commit": *"[^"]*"' "$PROJECT_ROOT/data/version.json" 2>/dev/null | grep -o '"[^"]*"$' | tr -d '"' || true)
         if [ "$current_commit_short" != "$version_commit" ]; then
             print_warning "version.json is stale (shows $version_commit, expected $current_commit_short)"
             print_status "Rebuilding to fix version mismatch..."
@@ -811,14 +852,14 @@ perform_update() {
     COMMITS_BEHIND=$(git rev-list --count HEAD.."origin/$target_branch")
     print_status "Update available: $COMMITS_BEHIND commits behind origin/$target_branch"
 
-    # Step 3: Check for local modifications and warn
+    # Step 4: Check for local modifications and warn
     if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet HEAD 2>/dev/null; then
         print_warning "Local modifications detected - these will be discarded:"
         git status --short 2>/dev/null | head -10
         print_warning "Note: The install directory is not intended for local customizations"
     fi
 
-    # Step 4: Sync to target branch (checkout + reset)
+    # Step 5: Sync to target branch (checkout + reset)
     print_status "Syncing to origin/$target_branch..."
 
     # Check if local branch exists
@@ -848,7 +889,7 @@ perform_update() {
     find "$PROJECT_ROOT" -maxdepth 1 -mindepth 1 -not -name data \
         -exec chown -R "$ACTUAL_USER:$ACTUAL_USER" {} +
 
-    # Step 5: Ensure swap on low-memory systems, then pull or build
+    # Step 6: Ensure swap on low-memory systems, then pull or build
     setup_swap || print_warning "Swap setup failed (continuing without swap)"
     if ! pull_or_build; then
         print_error "Failed to pull or build images!"
@@ -856,14 +897,14 @@ perform_update() {
         exit 1
     fi
 
-    # Step 6: Update system configurations (root operations)
+    # Step 7: Update system configurations (root operations)
     print_status "Updating system configurations..."
     configure_pulseaudio
     create_service_file
     install_service
     setup_sudoers
 
-    # Step 7: Success - exit for systemd restart
+    # Step 8: Success - exit for systemd restart
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     print_status "Update complete! Applied $COMMITS_BEHIND commits from origin/$target_branch"
     if [ "$update_warnings" = true ]; then
@@ -917,7 +958,8 @@ validate_installation() {
 
     # Check Docker images (skip if --skip-build was used)
     if [ "$SKIP_BUILD" != true ]; then
-        local image_count=$(docker images 2>/dev/null | grep -c "birdnet-pipy" || true)
+        local image_count
+        image_count=$(docker images 2>/dev/null | grep -c "birdnet-pipy" || true)
         if [ "$image_count" -eq 0 ]; then
             print_error "Docker images not built"
             checks_passed=false
@@ -935,22 +977,19 @@ validate_installation() {
 # Cleanup on error
 cleanup_on_error() {
     local exit_code=$?
-
-    if [ $exit_code -ne 0 ]; then
-        echo ""
-        print_error "Installation failed with exit code $exit_code"
-        print_info "Detailed log saved to: $LOG_FILE (persistent across reboots)"
-        echo ""
-        print_info "To view the log:"
-        echo "  tail -100 $LOG_FILE    # Last 100 lines"
-        echo "  less $LOG_FILE         # Full log"
-        echo ""
-        print_info "TIP: It's safe to re-run the installation command - it will"
-        print_info "     pick up where it left off and usually fixes the issue."
-        echo ""
-        print_info "For help, visit: https://github.com/Suncuss/BirdNET-PiPy/issues"
-        print_info "Include the log file when reporting issues"
-    fi
+    echo ""
+    print_error "Installation failed with exit code $exit_code"
+    print_info "Detailed log saved to: $LOG_FILE (persistent across reboots)"
+    echo ""
+    print_info "To view the log:"
+    echo "  tail -100 $LOG_FILE    # Last 100 lines"
+    echo "  less $LOG_FILE         # Full log"
+    echo ""
+    print_info "TIP: It's safe to re-run the installation command - it will"
+    print_info "     pick up where it left off and usually fixes the issue."
+    echo ""
+    print_info "For help, visit: https://github.com/Suncuss/BirdNET-PiPy/issues"
+    print_info "Include the log file when reporting issues"
 }
 
 trap cleanup_on_error ERR
@@ -966,8 +1005,10 @@ show_completion_message() {
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     print_info "Access the Dashboard after reboot:"
-    local hostname=$(hostname)
-    local ip_addr=$(hostname -I | awk '{print $1}')
+    local hostname
+    hostname=$(hostname)
+    local ip_addr
+    ip_addr=$(hostname -I | awk '{print $1}')
     echo "  http://${hostname}.local"
     [ -n "$ip_addr" ] && echo "  http://${ip_addr}"
     echo ""
@@ -1052,12 +1093,12 @@ main() {
     if [ "$IS_LOCAL_INSTALL" = false ]; then
         print_status "Running in remote mode (clone required)"
         clone_repository
-        # Save arguments to pass through
-        ARGS=""
-        [ -n "$TARGET_BRANCH" ] && ARGS="$ARGS --branch $TARGET_BRANCH"
-        [ "$NO_REBOOT" = true ] && ARGS="$ARGS --no-reboot"
-        [ "$SKIP_BUILD" = true ] && ARGS="$ARGS --skip-build"
-        reexec_from_clone $ARGS
+        # Save arguments to pass through (array preserves quoting)
+        ARGS=()
+        [ -n "$TARGET_BRANCH" ] && ARGS+=(--branch "$TARGET_BRANCH")
+        [ "$NO_REBOOT" = true ] && ARGS+=(--no-reboot)
+        [ "$SKIP_BUILD" = true ] && ARGS+=(--skip-build)
+        reexec_from_clone "${ARGS[@]}"
         # Script exits here (exec replaces process)
     fi
 

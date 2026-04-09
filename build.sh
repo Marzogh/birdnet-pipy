@@ -47,7 +47,8 @@ get_total_ram_kb() {
 
 # Check if system is low memory (< 1GB)
 is_low_memory() {
-    local ram_kb=$(get_total_ram_kb)
+    local ram_kb
+    ram_kb=$(get_total_ram_kb)
     [ "$ram_kb" -lt "$LOW_MEMORY_THRESHOLD_KB" ]
 }
 
@@ -58,7 +59,8 @@ get_swap_size_mb() {
 
 # Create or extend swap for low-memory builds
 setup_build_swap() {
-    local current_swap=$(get_swap_size_mb)
+    local current_swap
+    current_swap=$(get_swap_size_mb)
     local needed_swap=$SWAP_SIZE_MB
 
     if [ "$current_swap" -ge "$needed_swap" ]; then
@@ -153,10 +155,12 @@ build_sequential() {
         fi
 
         # Prune dangling images to free disk space
-        local img_reclaimed=$(docker image prune -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
+        local img_reclaimed
+        img_reclaimed=$(docker image prune -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
         print_status "Cleanup: reclaimed ${img_reclaimed:-0B} from dangling images"
         # Prune build cache older than 7 days to prevent unbounded growth
-        local cache_reclaimed=$(docker builder prune --filter "until=168h" -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
+        local cache_reclaimed
+        cache_reclaimed=$(docker builder prune --filter "until=168h" -f 2>/dev/null | grep "Total reclaimed space:" | awk '{print $NF}')
         print_status "Cleanup: reclaimed ${cache_reclaimed:-0B} from build cache"
     done
 
@@ -185,15 +189,17 @@ generate_version_info() {
         REMOTE_URL="${REMOTE_URL%.git}"
     fi
 
-    # Write version.json
+    # Write version.json — escape values so special chars in git metadata
+    # (e.g. double quotes in branch names) don't produce invalid JSON.
+    json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
     if ! cat > data/version.json << EOF
 {
-    "version": "$VERSION",
-    "commit": "$COMMIT_HASH",
-    "commit_date": "$COMMIT_DATE",
-    "branch": "$BRANCH",
-    "remote_url": "$REMOTE_URL",
-    "build_time": "$BUILD_TIME"
+    "version": "$(json_escape "$VERSION")",
+    "commit": "$(json_escape "$COMMIT_HASH")",
+    "commit_date": "$(json_escape "$COMMIT_DATE")",
+    "branch": "$(json_escape "$BRANCH")",
+    "remote_url": "$(json_escape "$REMOTE_URL")",
+    "build_time": "$(json_escape "$BUILD_TIME")"
 }
 EOF
     then
