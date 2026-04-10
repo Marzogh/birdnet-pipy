@@ -1754,10 +1754,27 @@ export default {
       }
     }
 
+    const loadRecorderStatus = async () => {
+      try {
+        const { data } = await api.get('/recorder/status')
+        if (data && typeof data === 'object' && 'state' in data) {
+          recorderStatus.value = data
+        }
+      } catch (error) {
+        console.warn('Recorder status fetch failed:', error)
+      }
+    }
+
     // Initialize WebSocket for live recorder status updates.
-    // Initial status is sent by backend on socket connect, so no REST call needed.
+    // The REST fetch above provides an initial/fallback value if the socket
+    // handshake is delayed or unavailable behind a proxy.
     const initSettingsSocket = () => {
       settingsSocket = io()
+
+      settingsSocket.on('connect_error', (error) => {
+        console.warn('Recorder status WebSocket connection failed:', error)
+        loadRecorderStatus()
+      })
 
       settingsSocket.on('recorder_status', (status) => {
         recorderStatus.value = status
@@ -2512,6 +2529,7 @@ export default {
     onMounted(() => {
       loadSettings()
       loadStorageInfo()
+      loadRecorderStatus()
       loadSpeciesList()
       systemUpdate.loadVersionInfo()
       auth.checkAuthStatus()

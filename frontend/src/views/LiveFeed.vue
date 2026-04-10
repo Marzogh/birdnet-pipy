@@ -37,7 +37,7 @@
           :disabled="isLoading"
           @click="selectSourceById(s.source_id)"
         >
-          {{ s.label }}
+          {{ s.label || s.source_id }}
         </button>
       </div>
       <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-4">
@@ -114,7 +114,11 @@ export default {
     const currentSource = computed(() =>
       streams.value.find(s => s.source_id === selectedSourceId.value)
     )
-    const streamUrl = computed(() => currentSource.value?.url || '')
+    // Strip leading '/' so the URL resolves relative to <base href>, which HA
+    // ingress mode injects to prefix routes with /api/hassio_ingress/TOKEN/.
+    // In direct IP:port mode there's no <base href>, so 'stream/...' resolves
+    // against the current page origin and still works.
+    const streamUrl = computed(() => (currentSource.value?.url || '').replace(/^\//, ''))
     const streamDescription = computed(() => currentSource.value?.label || '')
 
     let audioContext, analyser, source, dataArray, animationId

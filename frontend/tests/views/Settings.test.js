@@ -3,6 +3,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import Settings from '@/views/Settings.vue'
 import { RECORDER_STATES } from '@/utils/recorderStates'
 
+const socketHandlers = vi.hoisted(() => ({}))
+const socketOnMock = vi.hoisted(() => vi.fn((event, handler) => {
+  socketHandlers[event] = handler
+}))
+const socketDisconnectMock = vi.hoisted(() => vi.fn())
+
 // Mock the api service
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -12,6 +18,13 @@ const mockApi = vi.hoisted(() => ({
 
 vi.mock('@/services/api', () => ({
   default: mockApi
+}))
+
+vi.mock('socket.io-client', () => ({
+  io: () => ({
+    on: socketOnMock,
+    disconnect: socketDisconnectMock
+  })
 }))
 
 // Mock the useServiceRestart composable (expose waitForRestart for assertions)
@@ -146,6 +159,9 @@ const mountSettings = () => mount(Settings, {
 describe('Settings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    Object.keys(socketHandlers).forEach((key) => delete socketHandlers[key])
+    socketOnMock.mockClear()
+    socketDisconnectMock.mockClear()
     mockApi.get.mockReset()
     mockApi.put.mockReset()
     mockApi.post.mockReset()
@@ -160,6 +176,9 @@ describe('Settings', () => {
         return Promise.resolve({ data: { species: [], total: 0, filtered: 0 } })
       }
       if (url === '/system/storage') {
+        return Promise.resolve({ data: {} })
+      }
+      if (url === '/recorder/status') {
         return Promise.resolve({ data: {} })
       }
       return Promise.resolve({ data: {} })
@@ -211,6 +230,57 @@ describe('Settings', () => {
   })
 
   describe('Recording Settings Section', () => {
+    it('loads recorder status on mount', async () => {
+      mockApi.get.mockImplementation((url) => {
+        if (url === '/settings' || url === '/settings/defaults') {
+          return Promise.resolve({ data: createMockSettings() })
+        }
+        if (url === '/species/available') {
+          return Promise.resolve({ data: { species: [], total: 0, filtered: 0 } })
+        }
+        if (url === '/system/storage') {
+          return Promise.resolve({ data: {} })
+        }
+        if (url === '/recorder/status') {
+          return Promise.resolve({
+            data: {
+              state: RECORDER_STATES.RUNNING,
+              sources: {
+                source_0: {
+                  label: 'Microphone',
+                  type: 'pulseaudio',
+                  state: RECORDER_STATES.RUNNING
+                }
+              }
+            }
+          })
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      expect(mockApi.get).toHaveBeenCalledWith('/recorder/status')
+      expect(wrapper.vm.recorderStatus.state).toBe(RECORDER_STATES.RUNNING)
+    })
+
+    it('falls back to recorder status REST call when the socket connection fails', async () => {
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      expect(socketHandlers.connect_error).toBeTypeOf('function')
+
+      socketHandlers.connect_error(new Error('origin mismatch'))
+      await flushPromises()
+
+      const recorderStatusCalls = mockApi.get.mock.calls
+        .filter(([url]) => url === '/recorder/status')
+      expect(recorderStatusCalls).toHaveLength(2)
+
+      wrapper.unmount()
+    })
+
     it('displays recording settings within Detection section', async () => {
       const wrapper = mountSettings()
       await flushPromises()

@@ -114,7 +114,7 @@
       to="/settings"
       class="fixed bottom-4 right-4 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-full shadow-lg hidden md:flex items-center gap-2 z-50 transition-colors"
       title="Audio recording issues detected"
-      @click="recorderHealth.dismissWarning()"
+      @click="handleRecorderWarningClick"
     >
       <svg
         class="w-5 h-5"
@@ -268,6 +268,12 @@ export default {
       }
     }
 
+    const handleRecorderWarningClick = () => {
+      window.setTimeout(() => {
+        recorderHealth.dismissWarning()
+      }, 0)
+    }
+
     // Check auth status on mount
     onMounted(async () => {
       logger.info('Application mounted')
@@ -312,6 +318,7 @@ export default {
       onLoginSuccess,
       onLoginCancel,
       handleLogout,
+      handleRecorderWarningClick,
       auth,
       stationName,
       systemUpdate,
