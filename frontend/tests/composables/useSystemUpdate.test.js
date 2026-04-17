@@ -26,14 +26,25 @@ vi.mock('@/composables/useAuth', () => ({
 }))
 
 // Mock useServiceRestart since useSystemUpdate now delegates to it
-vi.mock('@/composables/useServiceRestart', () => ({
-  useServiceRestart: () => ({
-    isRestarting: { value: false },
-    restartMessage: { value: '' },
-    restartError: { value: '' },
+const mockServiceRestart = vi.hoisted(() => {
+  const isRestarting = { value: false }
+  const restartMessage = { value: '' }
+  const restartError = { value: '' }
+  return {
+    isRestarting,
+    restartMessage,
+    restartError,
     waitForRestart: vi.fn().mockResolvedValue(true),
-    reset: vi.fn()
-  })
+    reset: vi.fn(() => {
+      isRestarting.value = false
+      restartMessage.value = ''
+      restartError.value = ''
+    })
+  }
+})
+
+vi.mock('@/composables/useServiceRestart', () => ({
+  useServiceRestart: () => mockServiceRestart
 }))
 
 describe('useSystemUpdate', () => {
@@ -375,5 +386,138 @@ describe('useSystemUpdate', () => {
     await checkForUpdates()
 
     expect(showUpdateIndicator.value).toBe(true)
+  })
+
+  it('checkForUpdates handles HA response shape', async () => {
+    mockApi.get.mockResolvedValueOnce({
+      data: {
+        update_available: true,
+        runtime_mode: 'ha',
+        current_version: '0.6.3',
+        latest_version: '0.6.4',
+        update_note: null
+      }
+    })
+
+    const { checkForUpdates, updateAvailable, updateInfo } = useSystemUpdate()
+    await checkForUpdates()
+
+    expect(updateAvailable.value).toBe(true)
+    expect(updateInfo.value.runtime_mode).toBe('ha')
+    expect(updateInfo.value.current_version).toBe('0.6.3')
+    expect(updateInfo.value.latest_version).toBe('0.6.4')
+  })
+
+  it('triggerUpdate (HA mode) sets banner and dispatches POST', async () => {
+    const { triggerUpdate, versionInfo, isRestarting, restartMessage } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
+    mockLongApi.post.mockResolvedValueOnce({ data: { status: 'update_triggered' } })
+
+    await triggerUpdate(true)
+
+    expect(mockLongApi.post).toHaveBeenCalledWith('/system/update')
+    expect(isRestarting.value).toBe(true)
+    expect(restartMessage.value).toContain('Home Assistant')
+  })
+
+  it('triggerUpdate (HA mode) suppresses dispatch errors and keeps polling', async () => {
+    const { triggerUpdate, versionInfo, isRestarting, statusType } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
+    mockLongApi.post.mockRejectedValueOnce(new Error('connection lost'))
+    mockApi.get.mockResolvedValue({ data: { version: '0.6.4-dev21' } })
+
+    await triggerUpdate(true)
+    // Flush the rejected POST's .catch microtask
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(isRestarting.value).toBe(true)
+    expect(statusType.value).toBeNull()
+  })
+
+  it('triggerUpdate (HA mode) surfaces backend error response and stops polling', async () => {
+    const { triggerUpdate, versionInfo, isRestarting, statusType, statusMessage, updating } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
+    const backendErr = new Error('Request failed with status code 502')
+    backendErr.response = { status: 502, data: { error: 'Could not find update entity for addon' } }
+    mockLongApi.post.mockRejectedValueOnce(backendErr)
+
+    await triggerUpdate(true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(statusType.value).toBe('error')
+    expect(statusMessage.value).toContain('Could not find update entity')
+    expect(isRestarting.value).toBe(false)
+    expect(updating.value).toBe(false)
+
+    // Confirm polling was stopped — no GET on /system/version even after interval elapses
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mockApi.get).not.toHaveBeenCalled()
+  })
+
+  it('triggerUpdate (HA mode) reloads when version changes', async () => {
+    const { triggerUpdate, versionInfo } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
+    mockLongApi.post.mockResolvedValueOnce({ data: {} })
+    mockApi.get
+      .mockResolvedValueOnce({ data: { version: '0.6.4-dev21' } })
+      .mockResolvedValueOnce({ data: { version: '0.6.4-dev22' } })
+
+    await triggerUpdate(true)
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mockApi.get).toHaveBeenCalledWith('/system/version')
+    expect(window.location.reload).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(window.location.reload).toHaveBeenCalled()
+  })
+
+  it('triggerUpdate (HA mode) keeps polling through GET errors', async () => {
+    const { triggerUpdate, versionInfo } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
+    mockLongApi.post.mockResolvedValueOnce({ data: {} })
+    mockApi.get
+      .mockRejectedValueOnce(new Error('proxy down'))
+      .mockResolvedValueOnce({ data: { version: '0.6.4-dev22' } })
+
+    await triggerUpdate(true)
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mockApi.get).toHaveBeenCalledTimes(1)
+    expect(window.location.reload).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(window.location.reload).toHaveBeenCalled()
+  })
+
+  it('triggerUpdate (HA mode) shows fallback after timeout, no reload', async () => {
+    const { triggerUpdate, versionInfo, isRestarting, statusType, statusMessage, updating } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
+    mockLongApi.post.mockResolvedValueOnce({ data: {} })
+    mockApi.get.mockResolvedValue({ data: { version: '0.6.4-dev21' } })
+
+    await triggerUpdate(true)
+
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1000)
+
+    expect(window.location.reload).not.toHaveBeenCalled()
+    expect(isRestarting.value).toBe(false)
+    expect(updating.value).toBe(false)
+    expect(statusType.value).toBe('info')
+    expect(statusMessage.value).toContain('longer than expected')
+  })
+
+  it('triggerUpdate throws on connection loss in native mode', async () => {
+    const { triggerUpdate, versionInfo, statusType } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'native' }
+
+    const networkError = new Error('Network Error')
+    networkError.code = 'ERR_NETWORK'
+    mockLongApi.post.mockRejectedValueOnce(networkError)
+
+    await expect(triggerUpdate(true)).rejects.toThrow()
+    expect(statusType.value).toBe('error')
   })
 })

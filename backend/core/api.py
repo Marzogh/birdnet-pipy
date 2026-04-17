@@ -200,6 +200,57 @@ _update_check_cache = {
 UPDATE_CHECK_CACHE_TTL = 3600  # 1 hour in seconds
 
 
+_HA_CORE_API_BASE = "http://supervisor/core/api"
+
+
+def _call_supervisor(method, path, timeout=10):
+    """Call Home Assistant Supervisor API. Returns (data, error_message)."""
+    token = os.environ.get('SUPERVISOR_TOKEN', '')
+    try:
+        resp = requests.request(
+            method,
+            f"http://supervisor{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json() if resp.content else {}
+        return body.get('data', {}), None
+    except requests.RequestException as e:
+        return None, str(e)
+
+
+def _find_addon_update_entity(addon_slug, token):
+    """Find this addon's update.* entity_id via HA Core states.
+
+    HA Core registers an UpdateEntity per addon with entity_picture set to
+    /api/hassio/addons/<full_slug>/icon — a unique key per addon. Returns
+    (entity_id, error_message).
+    """
+    try:
+        resp = requests.get(
+            f"{_HA_CORE_API_BASE}/states",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        states = resp.json()
+    except requests.RequestException as e:
+        return None, f'Failed to fetch HA Core states: {e}'
+    except ValueError as e:
+        return None, f'Invalid response from HA Core states: {e}'
+
+    icon_url = f"/api/hassio/addons/{addon_slug}/icon"
+    for state in states:
+        entity_id = state.get('entity_id', '')
+        if not entity_id.startswith('update.'):
+            continue
+        if state.get('attributes', {}).get('entity_picture') == icon_url:
+            return entity_id, None
+
+    return None, f'Could not find update entity for addon {addon_slug}'
+
+
 def _build_update_check_result(update_available, current_commit, remote_commit,
                                 commits_behind, current_branch, target_branch,
                                 channel, preview_commits, fresh_sync, update_note):
@@ -1232,6 +1283,11 @@ GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
 HA_SOURCE_COMMIT_ENV = "BIRDNET_PIPY_SOURCE_COMMIT"
 HA_SOURCE_COMMIT_FILE = os.path.join(BASE_DIR, "birdnet_pipy_source_commit.txt")
 
+# How long to wait for HA Core's update entity to refresh after triggering
+# homeassistant.update_entity (fire-and-forget) before giving up.
+_HA_ENTITY_POLL_TIMEOUT_SECONDS = 15
+_HA_ENTITY_POLL_INTERVAL_SECONDS = 0.5
+
 def load_version_info():
     """Load version information from version.json"""
     version_file = os.path.join(BASE_DIR, 'data', 'version.json')
@@ -1925,9 +1981,20 @@ def check_for_updates():
     """
     try:
         if is_home_assistant_mode():
+            force = request.args.get('force', 'false').lower() == 'true'
+            if force:
+                _call_supervisor('POST', '/store/reload', timeout=30)
+
+            info, error = _call_supervisor('GET', '/addons/self/info')
+            if error:
+                return jsonify({'error': f'Failed to check for updates: {error}'}), 502
+
             return jsonify({
-                'update_available': False,
-                'message': 'Updates are managed by Home Assistant'
+                'update_available': bool(info.get('update_available')),
+                'runtime_mode': 'ha',
+                'current_version': info.get('version', 'unknown'),
+                'latest_version': info.get('version_latest'),
+                'update_note': None,
             }), 200
 
         force = request.args.get('force', 'false').lower() == 'true'
@@ -2084,6 +2151,119 @@ def trigger_system_update():
     before this endpoint is called. No need to re-check here.
     """
     try:
+        if is_home_assistant_mode():
+            # Supervisor forbids an addon from updating itself directly
+            # (supervisor/api/store.py: "App {slug} can't update itself!").
+            # Workaround: call HA Core's update.install service, which routes
+            # the request through Core so Supervisor sees Core as the caller.
+            addon_info, info_error = _call_supervisor('GET', '/addons/self/info')
+            if info_error:
+                return jsonify({
+                    'error': f'Failed to determine Home Assistant addon slug: {info_error}'
+                }), 502
+
+            addon_slug = addon_info.get('slug')
+            if not addon_slug:
+                return jsonify({'error': 'Failed to determine Home Assistant addon slug'}), 502
+
+            token = os.environ.get('SUPERVISOR_TOKEN', '')
+            entity_id, lookup_error = _find_addon_update_entity(addon_slug, token)
+            if lookup_error:
+                return jsonify({'error': lookup_error}), 502
+
+            # Refresh HA Core's update entity so its latest_version is current.
+            # Without this, update.install fails with "No update available" when
+            # installed_version == latest_version (cached state right after a
+            # version bump). The update_entity service is fire-and-forget — it
+            # triggers a debounced coordinator refresh and returns immediately,
+            # so we then poll the entity state until the new latest_version
+            # propagates. (We avoid /store/reload because it kicks off
+            # addon-group jobs that race with update.install.)
+            try:
+                requests.post(
+                    f"{_HA_CORE_API_BASE}/services/homeassistant/update_entity",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"entity_id": entity_id},
+                    timeout=15,
+                )
+            except requests.RequestException as e:
+                logger.warning("Failed to refresh HA update entity (continuing)", extra={
+                    'entity_id': entity_id,
+                    'error': str(e),
+                })
+
+            deadline = time.monotonic() + _HA_ENTITY_POLL_TIMEOUT_SECONDS
+            entity_ready = False
+            while True:
+                try:
+                    state_resp = requests.get(
+                        f"{_HA_CORE_API_BASE}/states/{entity_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=5,
+                    )
+                    if state_resp.ok:
+                        attrs = state_resp.json().get('attributes', {})
+                        installed = attrs.get('installed_version')
+                        latest = attrs.get('latest_version')
+                        if installed and latest and installed != latest:
+                            entity_ready = True
+                            break
+                except requests.RequestException:
+                    pass
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_HA_ENTITY_POLL_INTERVAL_SECONDS)
+
+            if not entity_ready:
+                return jsonify({
+                    'error': 'Home Assistant has not yet refreshed the addon update state. Try again in a moment.'
+                }), 502
+
+            # HA Core's REST service call blocks until update.install
+            # finishes, but installing OUR addon kills this process mid-flight
+            # — so a ReadTimeout or ConnectionError after dispatch is the
+            # expected outcome, not a failure. Only treat HTTP error responses
+            # (which arrive before Supervisor swaps us out) as real failures.
+            try:
+                resp = requests.post(
+                    f"{_HA_CORE_API_BASE}/services/update/install",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"entity_id": entity_id},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+            except (requests.ConnectionError, requests.Timeout) as e:
+                logger.info(
+                    "HA addon update dispatched; connection closed as expected during self-update",
+                    extra={'entity_id': entity_id, 'error': str(e)},
+                )
+            except requests.RequestException as e:
+                response = getattr(e, 'response', None)
+                core_message = None
+                if response is not None:
+                    try:
+                        core_message = response.json().get('message')
+                    except (ValueError, AttributeError):
+                        core_message = None
+                logger.error("Failed to trigger HA addon update", extra={
+                    'error': str(e),
+                    'status_code': getattr(response, 'status_code', None),
+                    'response_text': (getattr(response, 'text', None) or '')[:500],
+                })
+                error_message = 'Failed to trigger Home Assistant addon update'
+                if core_message:
+                    error_message = f'{error_message}: {core_message}'
+                return jsonify({'error': error_message}), 502
+
+            logger.info("HA addon update triggered via Core service", extra={
+                'entity_id': entity_id,
+            })
+            return jsonify({
+                'status': 'update_triggered',
+                'message': 'Home Assistant addon update initiated.',
+                'estimated_downtime': '2-5 minutes',
+            }), 200
+
         # Load current version info for logging
         version_info = load_version_info()
 
@@ -2123,16 +2303,9 @@ def trigger_system_update():
 def trigger_service_restart():
     """Trigger service restart for native mode or HA add-on mode."""
     if is_home_assistant_mode():
-        token = os.environ.get('SUPERVISOR_TOKEN', '')
-        try:
-            resp = requests.post(
-                "http://supervisor/addons/self/restart",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.error("Failed to restart HA add-on", extra={'error': str(e)})
+        _data, error = _call_supervisor('POST', '/addons/self/restart')
+        if error:
+            logger.error("Failed to restart HA add-on", extra={'error': error})
             return jsonify({'error': 'Failed to restart Home Assistant add-on'}), 502
         logger.info("Home Assistant add-on restart triggered via API")
         return jsonify({

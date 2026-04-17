@@ -17,6 +17,17 @@ const statusType = ref(null) // 'success', 'error', 'info'
 const DISMISS_STORAGE_KEY = 'birdnet_update_dismissed_until'
 const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
+const HA_POLL_INTERVAL_MS = 10_000
+const HA_POLL_TIMEOUT_MS = 10 * 60 * 1000
+let haPollTimer = null
+
+function stopHaPoll() {
+  if (haPollTimer) {
+    clearTimeout(haPollTimer)
+    haPollTimer = null
+  }
+}
+
 function loadDismissedUntil() {
   try {
     const stored = localStorage.getItem(DISMISS_STORAGE_KEY)
@@ -133,9 +144,13 @@ export function useSystemUpdate() {
     updating.value = true
     statusMessage.value = null
 
+    if (versionInfo.value?.runtime_mode === 'ha') {
+      triggerHaUpdate()
+      return
+    }
+
     try {
       logger.info('Triggering system update...')
-      // Use long timeout for update operation (5 minutes)
       const longApi = createLongRequest()
       const { data } = await longApi.post('/system/update')
 
@@ -148,9 +163,8 @@ export function useSystemUpdate() {
       setStatus('info', 'Update started. Services restarting...')
       logger.info('Update triggered successfully', data)
 
-      // Use shared service restart monitoring
       await serviceRestart.waitForRestart({
-        maxWaitSeconds: 600, // 10 minutes for updates
+        maxWaitSeconds: 600,
         autoReload: true,
         message: 'System updating'
       })
@@ -162,10 +176,68 @@ export function useSystemUpdate() {
         setStatus('info', 'Update taking longer than expected. Try refreshing later.')
       } else {
         logger.error('Failed to trigger update', error)
-        setStatus('error', `Update failed: ${error.message}`)
+        const backendError = error.response?.data?.error
+        setStatus('error', `Update failed: ${backendError || error.message}`)
         throw error
       }
     }
+  }
+
+  // Supervisor kills our process mid-install, so we can't await the dispatch
+  // response. Fire and poll /system/version until the addon container reports
+  // the new version, then reload.
+  function triggerHaUpdate() {
+    const baselineVersion = versionInfo.value?.version
+    const longApi = createLongRequest()
+
+    serviceRestart.isRestarting.value = true
+    serviceRestart.restartMessage.value =
+      'Updating via Home Assistant — page will reload when ready.'
+
+    logger.info('Triggering HA addon update...', { baselineVersion })
+    longApi.post('/system/update').catch(err => {
+      // Backend returns 502 with {error: "..."} for known dispatch failures
+      // (slug lookup, entity not ready, HTTP error from HA Core). Surface
+      // those; for raw connection drops (Supervisor killed us), keep polling.
+      const backendError = err.response?.data?.error
+      if (backendError) {
+        logger.error('HA update dispatch failed', err)
+        stopHaPoll()
+        serviceRestart.reset()
+        updating.value = false
+        setStatus('error', `Update failed: ${backendError}`)
+      } else {
+        logger.warn('HA update dispatch connection lost (poll detects completion)', err)
+      }
+    })
+
+    stopHaPoll()
+    const deadline = Date.now() + HA_POLL_TIMEOUT_MS
+
+    const poll = async () => {
+      haPollTimer = null
+      if (Date.now() >= deadline) {
+        logger.warn('HA update poll timed out')
+        serviceRestart.reset()
+        updating.value = false
+        setStatus('info', 'Update is taking longer than expected. Refresh the page manually if needed.')
+        return
+      }
+      try {
+        const { data } = await api.get('/system/version')
+        if (data?.version && baselineVersion && data.version !== baselineVersion) {
+          logger.info('HA update complete — new version detected', data)
+          serviceRestart.restartMessage.value = 'New version detected. Reloading...'
+          setTimeout(() => window.location.reload(), 1000)
+          return
+        }
+      } catch (err) {
+        logger.debug('HA version poll error (expected during swap)', err)
+      }
+      haPollTimer = setTimeout(poll, HA_POLL_INTERVAL_MS)
+    }
+
+    haPollTimer = setTimeout(poll, HA_POLL_INTERVAL_MS)
   }
 
   /**
