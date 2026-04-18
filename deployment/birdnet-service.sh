@@ -105,6 +105,22 @@ ensure_pulse_dir_permissions() {
     log_debug "Ensured permissions on $pulse_dir (755, pulse:pulse-access)"
 }
 
+is_pulseaudio_responding() {
+    local socket_path="$1"
+    PULSE_SERVER="unix:$socket_path" pactl info >/dev/null 2>&1
+}
+
+reset_stale_system_pulseaudio() {
+    local system_pulse_dir="$1"
+    local system_socket="$2"
+    local system_pid_file="$system_pulse_dir/pid"
+
+    log_warning "System PulseAudio socket exists but server is not responding; resetting stale runtime files..."
+
+    sudo pulseaudio --kill 2>/dev/null || true
+    sudo rm -f "$system_socket" "$system_pid_file"
+}
+
 # Function to ensure PulseAudio socket is available at /run/pulse/native
 # This works for both:
 #   - Pi OS Desktop: PipeWire provides user socket, we bind-mount it to /run/pulse
@@ -183,7 +199,12 @@ setup_audio_socket() {
         # This handles cases where PulseAudio was started manually or by another process
         # with restrictive permissions (see GitHub issue #6)
         ensure_pulse_dir_permissions "$system_pulse_dir"
-        return 0
+        if is_pulseaudio_responding "$system_socket"; then
+            log_info "System PulseAudio is responding"
+            return 0
+        fi
+
+        reset_stale_system_pulseaudio "$system_pulse_dir" "$system_socket"
     fi
 
     # Case 3: No socket found - start system-wide PulseAudio (Pi OS Lite)
@@ -213,7 +234,7 @@ setup_audio_socket() {
     done
 
     # Verify PulseAudio is actually responding (not just socket exists)
-    if PULSE_SERVER=unix:$system_socket pactl info >/dev/null 2>&1; then
+    if is_pulseaudio_responding "$system_socket"; then
         log_info "System PulseAudio started (socket: $system_socket)"
     else
         log_warning "PulseAudio socket exists but server not responding"
