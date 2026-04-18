@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-04-18
+
+- Fixed Pi OS Lite boot failing when a stale PulseAudio socket was left behind after the daemon died — the service now probes the existing socket with `pactl info` and resets stale runtime files before starting system-wide PulseAudio, rather than booting containers that later crash in ffmpeg with "No such process" (#42)
+
 ## [0.6.4] - 2026-04-17
 
 - Added in-app update support for the Home Assistant addon — the Settings update card now checks the addon repo for new versions and triggers Supervisor to install them, replacing the "go to the Add-on Store" instruction
