@@ -117,8 +117,15 @@ reset_stale_system_pulseaudio() {
 
     log_warning "System PulseAudio socket exists but server is not responding; resetting stale runtime files..."
 
-    sudo pulseaudio --kill 2>/dev/null || true
-    sudo rm -f "$system_socket" "$system_pid_file"
+    sudo -n pulseaudio --kill 2>/dev/null || true
+
+    if ! sudo -n rm -f "$system_socket"; then
+        log_warning "Failed to remove stale PulseAudio socket $system_socket"
+    fi
+
+    if ! sudo -n rm -f "$system_pid_file"; then
+        log_warning "Failed to remove stale PulseAudio pid file $system_pid_file"
+    fi
 }
 
 # Function to ensure PulseAudio socket is available at /run/pulse/native
