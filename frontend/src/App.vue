@@ -164,6 +164,11 @@
       @success="onLoginSuccess"
       @cancel="onLoginCancel"
     />
+
+    <WelcomeOverlay
+      v-if="showWelcome"
+      @done="showWelcome = false"
+    />
   </div>
 </template>
 
@@ -179,13 +184,16 @@ import { useRecorderHealth } from '@/composables/useRecorderHealth'
 import { DISPLAY_NAME } from './version'
 import SetupWizard from '@/components/SetupWizard.vue'
 import LoginModal from '@/components/LoginModal.vue'
+import WelcomeOverlay from '@/components/WelcomeOverlay.vue'
+import { WELCOME_PENDING_KEY } from '@/utils/storageKeys'
 import api from '@/services/api'
 
 export default {
   name: 'App',
   components: {
     SetupWizard,
-    LoginModal
+    LoginModal,
+    WelcomeOverlay
   },
   setup() {
     const logger = useLogger('App')
@@ -199,6 +207,10 @@ export default {
 
     const showSetupWizard = ref(false)
     const showLoginModal = ref(false)
+    const showWelcome = ref(sessionStorage.getItem(WELCOME_PENDING_KEY) === '1')
+    if (showWelcome.value) {
+      sessionStorage.removeItem(WELCOME_PENDING_KEY)
+    }
 
     // Update browser tab title when station name changes
     watchEffect(() => {
@@ -211,9 +223,9 @@ export default {
         // Sync unit preference from settings
         unitSettings.setUseMetricUnits(settings.display?.use_metric_units ?? true)
         setStationName(settings.display?.station_name)
-        // Show setup modal if location or timezone has not been configured
-        if (!settings.location?.configured || !settings.location?.timezone) {
-          logger.info('Location or timezone not configured, showing setup wizard')
+        // Show setup modal if location has not been configured
+        if (!settings.location?.configured) {
+          logger.info('Location not configured, showing setup wizard')
           setLocationConfigured(false)
           showSetupWizard.value = true
         } else {
@@ -314,6 +326,7 @@ export default {
       DISPLAY_NAME,
       showSetupWizard,
       showLoginModal,
+      showWelcome,
       onLoginSuccess,
       onLoginCancel,
       handleLogout,

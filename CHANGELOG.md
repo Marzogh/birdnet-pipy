@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-04-19
+
+- Added a model picker step to the setup wizard and a one-time welcome animation after setup completes
+- Fixed setup wizard silently reopening on existing installs and overwriting the chosen model and species filter threshold
+- Added a Home Assistant add-on pointer in the README (alexbelgium's hassio-addons repo)
+
 ## [0.6.5] - 2026-04-18
 
 - Fixed Pi OS Lite boot failing when a stale PulseAudio socket was left behind after the daemon died — the service now probes the existing socket with `pactl info` and resets stale runtime files before starting system-wide PulseAudio, rather than booting containers that later crash in ffmpeg with "No such process" (#42)

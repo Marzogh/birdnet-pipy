@@ -41,26 +41,7 @@
       class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg"
     >
       <div class="flex items-center gap-2 text-blue-700 text-sm">
-        <svg
-          class="animate-spin h-4 w-4"
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          />
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          />
-        </svg>
+        <Spinner class="h-4 w-4" />
         <span>{{ serviceRestart.restartMessage.value || systemUpdate.restartMessage.value }}</span>
       </div>
     </div>
@@ -1394,6 +1375,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useUnitSettings } from '@/composables/useUnitSettings'
 import { useAppStatus } from '@/composables/useAppStatus'
 import { limitDecimals } from '@/utils/inputHelpers'
+import { FILTER_DEFAULTS, modelTypeOptions } from '@/utils/modelDefaults'
 import { RECORDER_STATES } from '@/utils/recorderStates'
 import api, { createLongRequest } from '@/services/api'
 import { SOCKET_PATH } from '@/services/baseUrl'
@@ -1408,6 +1390,7 @@ import StreamSourceModal from '@/components/StreamSourceModal.vue'
 import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import LogsModal from '@/components/LogsModal.vue'
+import Spinner from '@/components/Spinner.vue'
 import { SCHEME_TO_SERVICE_NAME } from '@/utils/notificationServices'
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Suncuss/BirdNET-PiPy'
@@ -1425,7 +1408,8 @@ export default {
     StreamSourceModal,
     CollapsibleSection,
     ToggleSwitch,
-    LogsModal
+    LogsModal,
+    Spinner
   },
   setup() {
     // Composables
@@ -1448,11 +1432,6 @@ export default {
       { value: 2.0, label: '2.0s' },
       { value: 2.5, label: '2.5s' }
     ]
-    const modelTypeOptions = [
-      { value: 'birdnet', label: 'BirdNET v2.4 (6K species)' },
-      { value: 'birdnet_v3', label: 'BirdNET v3.0 (11K species, preview)' }
-    ]
-    const FILTER_DEFAULTS = { birdnet: 0.03, birdnet_v3: 0.15 }
     const onModelTypeChange = () => {
       settings.value.detection.species_filter_threshold =
         FILTER_DEFAULTS[settings.value.model.type] ?? 0.03

@@ -54,27 +54,10 @@
                 clip-rule="evenodd"
               />
             </svg>
-            <svg
+            <Spinner
               v-else
-              class="animate-spin w-5 h-5"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                class="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                stroke-width="4"
-              />
-              <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
-            </svg>
+              class="w-5 h-5"
+            />
           </button>
           <input
             ref="imageFileInput"
@@ -336,6 +319,7 @@ import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import Chart from 'chart.js/auto'
 import SpectrogramModal from '@/components/SpectrogramModal.vue'
+import Spinner from '@/components/Spinner.vue'
 import { useAuth } from '@/composables/useAuth'
 import { useDateNavigation } from '@/composables/useDateNavigation'
 import { useChartHelpers } from '@/composables/useChartHelpers'
@@ -353,7 +337,8 @@ import {
 export default {
   name: 'BirdDetails',
   components: {
-    SpectrogramModal
+    SpectrogramModal,
+    Spinner
   },
   setup() {
     const route = useRoute()

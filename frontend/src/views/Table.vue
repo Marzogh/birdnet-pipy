@@ -111,7 +111,7 @@
         v-if="isLoading"
         class="flex items-center justify-center py-16"
       >
-        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600" />
+        <Spinner class="h-8 w-8 text-green-600" />
         <span class="ml-3 text-gray-600">Loading...</span>
       </div>
 
@@ -604,6 +604,7 @@
 	import SpectrogramModal from '@/components/SpectrogramModal.vue'
 import DetectionInfoModal from '@/components/DetectionInfoModal.vue'
 import AppDatePicker from '@/components/AppDatePicker.vue'
+import Spinner from '@/components/Spinner.vue'
 
 // --- Icons Setup ---
 library.add(faPlay, faPause, faCircleInfo, faTrashAlt, faDatabase)
