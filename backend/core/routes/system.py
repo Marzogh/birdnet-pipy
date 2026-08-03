@@ -11,12 +11,12 @@ import time
 import requests
 from flask import jsonify, request
 
-from config.settings import BASE_DIR
 from core.api_infra import api
 from core.api_utils import handle_api_errors
 from core.auth import get_request_tier, require_auth, require_scope
 from core.ha_mode import get_runtime_mode, is_home_assistant_mode
 from core.logging_config import get_logger, log_api_request
+from core.media_storage import get_effective_storage_path, get_media_storage_status
 from core.settings_store import load_user_settings
 from core.update_service import (
     _HA_CORE_API_BASE,
@@ -45,6 +45,15 @@ _update_check_cache = {
     'cache_key': None  # format: "channel:current_commit"
 }
 UPDATE_CHECK_CACHE_TTL = 3600  # 1 hour in seconds
+
+
+@api.route('/api/system/media-targets', methods=['GET'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def get_system_media_targets():
+    """List media targets and report the currently effective storage path."""
+    return jsonify(get_media_storage_status()), 200
 
 
 def _build_update_check_result(update_available, current_commit, remote_commit,
@@ -85,8 +94,8 @@ _HA_ENTITY_POLL_INTERVAL_SECONDS = 0.5
 @log_api_request
 @handle_api_errors
 def get_system_storage():
-    """Get disk storage information for the data directory (matches df output)"""
-    data_path = os.path.join(BASE_DIR, 'data')
+    """Get disk storage information for the effective media target."""
+    data_path = get_effective_storage_path()
 
     try:
         # Use statvfs to match df's calculation (excludes reserved blocks)

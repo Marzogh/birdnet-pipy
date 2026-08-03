@@ -151,7 +151,8 @@ const mockSettings = {
     trigger_percent: 85,
     target_percent: 80,
     keep_per_species: 60,
-    check_interval_minutes: 30
+    check_interval_minutes: 30,
+    media_target: 'internal'
   },
   access: {
     charts_public: false,
@@ -171,6 +172,19 @@ const defaultGetResponse = (url) => {
   }
   if (url === '/system/storage') {
     return Promise.resolve({ data: {} })
+  }
+  if (url === '/system/media-targets') {
+    return Promise.resolve({
+      data: {
+        targets: [{ id: 'internal', label: 'Internal storage (SD card)', available: true }],
+        preferred_target_id: 'internal',
+        effective_target_id: 'internal',
+        preferred_target: { id: 'internal', label: 'Internal storage (SD card)' },
+        effective_target: { id: 'internal', label: 'Internal storage (SD card)' },
+        fallback_active: false,
+        fallback_reason: null
+      }
+    })
   }
   if (url === '/recorder/status') {
     return Promise.resolve({ data: {} })
@@ -233,6 +247,31 @@ describe('Settings', () => {
       expect(mockApi.get).toHaveBeenCalledWith('/settings')
       expect(wrapper.vm.settings.audio.recording_length).toBe(9)
       expect(wrapper.vm.settings.audio.overlap).toBe(0.0)
+    })
+
+    it('loads and displays available media storage targets', async () => {
+      mockApi.get.mockImplementation((url) => {
+        if (url !== '/system/media-targets') return defaultGetResponse(url)
+        return Promise.resolve({
+          data: {
+            targets: [
+              { id: 'internal', label: 'Internal storage (SD card)', available: true },
+              { id: '/external-media', label: 'Configured external storage', available: true }
+            ],
+            fallback_active: false
+          }
+        })
+      })
+
+      const wrapper = mountSettings()
+      await flushPromises()
+
+      expect(mockApi.get).toHaveBeenCalledWith('/system/media-targets')
+      const options = wrapper.find('#mediaTarget').findAll('option')
+      expect(options.map(option => option.text())).toEqual([
+        'Internal storage (SD card)',
+        'Configured external storage'
+      ])
     })
 
     it('loads model and location-filter status on mount', async () => {

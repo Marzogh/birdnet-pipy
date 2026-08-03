@@ -325,6 +325,52 @@
         <p class="text-xs text-gray-400 mt-3">
           Auto-cleanup removes oldest recordings when usage exceeds {{ settings.storage.trigger_percent }}%.
         </p>
+        <div class="mt-5 border-t border-gray-100 pt-4 space-y-3">
+          <div>
+            <label
+              for="mediaTarget"
+              class="text-sm text-gray-600"
+            >Preferred media storage</label>
+            <p class="text-xs text-gray-400 mt-1">
+              New recordings, clips, and spectrograms can use the configured external directory. BirdNET-PiPy falls back to internal storage if it becomes unavailable.
+            </p>
+          </div>
+          <select
+            id="mediaTarget"
+            v-model="settings.storage.media_target"
+            class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
+          >
+            <option
+              v-for="target in mediaTargetOptions"
+              :key="target.id"
+              :value="target.id"
+            >
+              {{ formatMediaTargetOption(target) }}
+            </option>
+          </select>
+
+          <div
+            v-if="mediaStorageStatus"
+            class="rounded-md border px-3 py-2 text-sm"
+            :class="mediaStorageStatus.fallback_active ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-green-200 bg-green-50 text-green-900'"
+          >
+            <p class="font-medium">
+              {{ mediaStorageStatus.fallback_active ? 'Using internal fallback storage' : 'Preferred media storage is active' }}
+            </p>
+            <p class="mt-1 text-xs">
+              Preferred: {{ mediaStorageStatus.preferred_target?.label || 'Internal storage (SD card)' }}
+            </p>
+            <p class="text-xs">
+              Active: {{ mediaStorageStatus.effective_target?.label || 'Internal storage (SD card)' }}
+            </p>
+            <p
+              v-if="mediaStorageStatus.fallback_active"
+              class="mt-1 text-xs"
+            >
+              {{ mediaStorageStatus.fallback_reason === 'unwritable' ? 'The selected directory is mounted but not writable.' : 'The selected directory is currently unavailable.' }}
+            </p>
+          </div>
+        </div>
       </div>
 
       <!-- Security (Collapsible) -->
@@ -1633,6 +1679,7 @@ export default {
 
     // Storage state
     const storage = ref(null)
+    const mediaStorageStatus = ref(null)
 
     // Recorder health status (populated via WebSocket + REST)
     const recorderStatus = ref(null)
@@ -1847,7 +1894,7 @@ export default {
       audio: {},
       spectrogram: {},
       playback: { normalize: false },
-      storage: { auto_cleanup_enabled: true, trigger_percent: 85, target_percent: 80 },
+      storage: { auto_cleanup_enabled: true, trigger_percent: 85, target_percent: 80, media_target: 'internal' },
       updates: {},
       model: { type: 'birdnet' },
       display: {},
@@ -1882,7 +1929,8 @@ export default {
         station_name: s.display?.station_name || '',
         site_url: s.display?.site_url || ''
       },
-      birdweather: { id: s.birdweather?.id }
+      birdweather: { id: s.birdweather?.id },
+      storage: { media_target: s.storage?.media_target || 'internal' }
     })
 
     // Take snapshot of current settings for change detection
@@ -1954,6 +2002,27 @@ export default {
       } catch (error) {
         console.error('Error loading storage info:', error)
       }
+    }
+
+    const loadMediaTargets = async () => {
+      try {
+        const { data } = await api.get('/system/media-targets')
+        mediaStorageStatus.value = data
+      } catch (error) {
+        console.error('Error loading media targets:', error)
+      }
+    }
+
+    const mediaTargetOptions = computed(() => {
+      const targets = mediaStorageStatus.value?.targets
+      if (Array.isArray(targets) && targets.length > 0) return targets
+      return [{ id: 'internal', label: 'Internal storage (SD card)', available: true }]
+    })
+
+    const formatMediaTargetOption = (target) => {
+      if (!target) return 'Unknown target'
+      if (target.id === 'internal') return target.label || 'Internal storage (SD card)'
+      return target.available === false ? `${target.label} (missing)` : target.label
     }
 
     const loadRecorderStatus = async () => {
@@ -2041,6 +2110,8 @@ export default {
       if (!data.access) data.access = { public_access: true, charts_public: false, table_public: false, live_feed_public: false }
       if (data.access.public_access === undefined) data.access.public_access = true
       if (!data.playback) data.playback = { normalize: false }
+      if (!data.storage) data.storage = {}
+      if (!data.storage.media_target) data.storage.media_target = 'internal'
       if (data.updates.channel === 'stable') data.updates.channel = 'release'
       if (!data.audio) data.audio = {}
 
@@ -2176,6 +2247,7 @@ export default {
           // Keep the shared store in sync with the just-saved state.
           settingsStore.setSettings(data.settings)
         }
+        await loadMediaTargets()
         // Update snapshot after successful save
         takeSnapshot()
         confirmedNotifications.value = cloneNotif()
@@ -2819,6 +2891,7 @@ export default {
     onMounted(() => {
       loadSettings()
       loadStorageInfo()
+      loadMediaTargets()
       loadRecorderStatus()
       loadModelStatus()
       loadSpeciesList()
@@ -2852,6 +2925,9 @@ export default {
       showLogsModal,
       manualRestart,
       storage,
+      mediaStorageStatus,
+      mediaTargetOptions,
+      formatMediaTargetOption,
       exporting,
       exportCSV,
       saveSettings,

@@ -15,6 +15,11 @@ import threading
 from config.settings import BASE_DIR, EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR
 from core.bird_name_utils import get_spectrogram_common_name_from_english
 from core.logging_config import get_logger
+from core.media_storage import (
+    ensure_effective_media_dirs,
+    get_effective_extracted_audio_dir,
+    get_effective_spectrogram_dir,
+)
 from core.spectrogram import generate_spectrogram
 from core.storage_manager import get_disk_usage
 from core.utils import build_detection_filenames
@@ -411,7 +416,7 @@ def check_disk_space(required_bytes):
 def import_audio_files(db_manager, matched_files, import_id, yield_control=None):
     """Import audio files, renaming to BirdNET-PiPy format.
 
-    Moves files from migration source to EXTRACTED_AUDIO_DIR with proper naming.
+    Moves files to the effective extracted-audio directory with proper naming.
 
     Args:
         db_manager: DatabaseManager instance
@@ -420,8 +425,13 @@ def import_audio_files(db_manager, matched_files, import_id, yield_control=None)
         yield_control: Optional no-arg callable invoked once per file so a
             cooperative (e.g. gevent) caller can release the worker.
     """
-    # Ensure destination directory exists
-    os.makedirs(EXTRACTED_AUDIO_DIR, exist_ok=True)
+    ensure_effective_media_dirs(
+        extracted_audio_dir=EXTRACTED_AUDIO_DIR,
+        spectrogram_dir=SPECTROGRAM_DIR,
+    )
+    extracted_audio_dir = get_effective_extracted_audio_dir(
+        internal_dir=EXTRACTED_AUDIO_DIR
+    )
 
     result = {
         'imported': 0,
@@ -463,7 +473,7 @@ def import_audio_files(db_manager, matched_files, import_id, yield_control=None)
                     audio_extension='mp3'
                 )
 
-                dest_path = os.path.join(EXTRACTED_AUDIO_DIR, filenames['audio_filename'])
+                dest_path = os.path.join(extracted_audio_dir, filenames['audio_filename'])
 
                 # Skip if file already exists at destination
                 if os.path.exists(dest_path):
@@ -515,7 +525,7 @@ def import_audio_files(db_manager, matched_files, import_id, yield_control=None)
 # =============================================================================
 
 def scan_files_needing_spectrograms():
-    """List audio files in EXTRACTED_AUDIO_DIR without matching spectrogram.
+    """List effective-target audio files without a matching spectrogram.
 
     Returns:
         dict: {
@@ -527,7 +537,12 @@ def scan_files_needing_spectrograms():
     """
     files_needing = []
 
-    if not os.path.exists(EXTRACTED_AUDIO_DIR):
+    extracted_audio_dir = get_effective_extracted_audio_dir(
+        internal_dir=EXTRACTED_AUDIO_DIR
+    )
+    spectrogram_dir = get_effective_spectrogram_dir(internal_dir=SPECTROGRAM_DIR)
+
+    if not os.path.exists(extracted_audio_dir):
         return {
             'files_needing': [],
             'count': 0,
@@ -536,7 +551,7 @@ def scan_files_needing_spectrograms():
         }
 
     # Get all audio files
-    for filename in os.listdir(EXTRACTED_AUDIO_DIR):
+    for filename in os.listdir(extracted_audio_dir):
         if not filename.lower().endswith(AUDIO_EXTENSIONS):
             continue
 
@@ -544,7 +559,7 @@ def scan_files_needing_spectrograms():
         # Convert audio filename to spectrogram filename
         base_name = os.path.splitext(filename)[0]
         spectrogram_name = f"{base_name}.webp"
-        spectrogram_path = os.path.join(SPECTROGRAM_DIR, spectrogram_name)
+        spectrogram_path = os.path.join(spectrogram_dir, spectrogram_name)
 
         if not os.path.exists(spectrogram_path):
             files_needing.append(filename)
@@ -631,13 +646,19 @@ def generate_spectrograms_batch(audio_files, generation_id, yield_control=None):
     """Generate spectrograms for a batch of audio files.
 
     Args:
-        audio_files: List of audio filenames (in EXTRACTED_AUDIO_DIR)
+        audio_files: List of audio filenames in the effective media target
         generation_id: Unique identifier for progress tracking
         yield_control: Optional no-arg callable invoked once per file so a
             cooperative (e.g. gevent) caller can release the worker.
     """
-    # Ensure destination directory exists
-    os.makedirs(SPECTROGRAM_DIR, exist_ok=True)
+    ensure_effective_media_dirs(
+        extracted_audio_dir=EXTRACTED_AUDIO_DIR,
+        spectrogram_dir=SPECTROGRAM_DIR,
+    )
+    extracted_audio_dir = get_effective_extracted_audio_dir(
+        internal_dir=EXTRACTED_AUDIO_DIR
+    )
+    spectrogram_dir = get_effective_spectrogram_dir(internal_dir=SPECTROGRAM_DIR)
 
     result = {
         'generated': 0,
@@ -660,7 +681,7 @@ def generate_spectrograms_batch(audio_files, generation_id, yield_control=None):
         for audio_filename in audio_files:
             if yield_control:
                 yield_control()
-            audio_path = os.path.join(EXTRACTED_AUDIO_DIR, audio_filename)
+            audio_path = os.path.join(extracted_audio_dir, audio_filename)
             temp_wav = None
 
             try:
@@ -673,7 +694,7 @@ def generate_spectrograms_batch(audio_files, generation_id, yield_control=None):
                 # Generate spectrogram filename
                 base_name = os.path.splitext(audio_filename)[0]
                 spectrogram_filename = f"{base_name}.webp"
-                spectrogram_path = os.path.join(SPECTROGRAM_DIR, spectrogram_filename)
+                spectrogram_path = os.path.join(spectrogram_dir, spectrogram_filename)
 
                 # Skip if already exists
                 if os.path.exists(spectrogram_path):

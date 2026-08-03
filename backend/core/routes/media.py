@@ -39,6 +39,7 @@ from core.detection_presenter import (
 )
 from core.logging_config import get_logger, log_api_request
 from core.media_access import verify_media_signature
+from core.media_storage import get_audio_search_dirs, get_spectrogram_search_dirs
 from core.og_card import (
     OG_CARD_IMAGE_PATH,
     format_og_description,
@@ -94,13 +95,23 @@ def _media_request_authorized(filename):
 def serve_audio(filename):
     if not _media_request_authorized(filename):
         return jsonify({'error': 'Authentication required'}), 401
-    return serve_file_with_fallback(EXTRACTED_AUDIO_DIR, filename, DEFAULT_AUDIO_PATH, "audio")
+    return serve_file_with_fallback(
+        get_audio_search_dirs(internal_dir=EXTRACTED_AUDIO_DIR),
+        filename,
+        DEFAULT_AUDIO_PATH,
+        "audio",
+    )
 
 @api.route('/api/spectrogram/<filename>')
 def serve_spectrogram(filename):
     if not _media_request_authorized(filename):
         return jsonify({'error': 'Authentication required'}), 401
-    return serve_file_with_fallback(SPECTROGRAM_DIR, filename, DEFAULT_IMAGE_PATH, "spectrogram")
+    return serve_file_with_fallback(
+        get_spectrogram_search_dirs(internal_dir=SPECTROGRAM_DIR),
+        filename,
+        DEFAULT_IMAGE_PATH,
+        "spectrogram",
+    )
 
 # Extra recordings fetched beyond the requested page so that filtering out rows
 # whose audio/spectrogram files are missing from disk still fills the page.
@@ -173,7 +184,11 @@ def get_bird_recordings(species_name):
     )
     present = [
         r for r in fetched
-        if recording_has_media(r, EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR)
+        if recording_has_media(
+            r,
+            get_audio_search_dirs(internal_dir=EXTRACTED_AUDIO_DIR),
+            get_spectrogram_search_dirs(internal_dir=SPECTROGRAM_DIR),
+        )
     ]
     # Trim to the requested page (present[:None] is a no-op for the unlimited
     # case), then localize only the records we actually return.
@@ -251,7 +266,9 @@ def get_bird_recording(species_name, recording_id):
     settings = load_user_settings()
     recording = _localize_detection(detection, settings=settings)
     recording['has_media'] = recording_has_media(
-        recording, EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR,
+        recording,
+        get_audio_search_dirs(internal_dir=EXTRACTED_AUDIO_DIR),
+        get_spectrogram_search_dirs(internal_dir=SPECTROGRAM_DIR),
     )
     # Same-species sibling detections from the same source recording, so the
     # player's analysis-window bar can label every 3s window that fired — not

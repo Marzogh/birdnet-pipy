@@ -98,6 +98,43 @@ cd ~/BirdNET-PiPy && sudo ./install.sh --update --branch staging
 
 ---
 
+## External Media Storage
+
+BirdNET-PiPy can store recordings, extracted clips, and spectrograms in one
+explicitly configured host directory. The database and application settings
+remain in `./data`.
+
+1. Mount the drive on the host and create a directory that the BirdNET-PiPy
+   service user can write to:
+
+   ```bash
+   sudo mkdir -p /mnt/birdnet-media
+   sudo chown "$(id -u):$(id -g)" /mnt/birdnet-media
+   ```
+
+2. Add the exact host directory to `~/BirdNET-PiPy/.env`:
+
+   ```bash
+   BIRDNET_MEDIA_PATH=/mnt/birdnet-media
+   ```
+
+3. Restart the service, then choose **Configured external storage** under
+   **Settings → Storage**:
+
+   ```bash
+   sudo systemctl restart birdnet-pipy
+   ```
+
+Media is written below a `BirdNET-PiPy/` subdirectory on that target. If the
+directory is absent or not writable, new media falls back to internal storage;
+existing internal files remain readable. Use a stable mount configured in
+`/etc/fstab` so a removable drive does not acquire a different path after boot.
+
+For host safety, only `BIRDNET_MEDIA_PATH` is exposed to the containers; the
+application does not mount or scan the host's full `/media` or `/mnt` trees.
+
+---
+
 ## Troubleshooting
 
 ### No Audio Being Recorded

@@ -18,13 +18,14 @@ import os
 import shutil
 import time
 
-from config.settings import (
-    BASE_DIR,
-    EXTRACTED_AUDIO_DIR,
-    SPECTROGRAM_DIR,
-)
+from config.settings import EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR
 from core.db_maintenance import maybe_run_health_cycle
 from core.logging_config import get_logger
+from core.media_storage import (
+    get_audio_search_dirs,
+    get_effective_storage_path,
+    get_spectrogram_search_dirs,
+)
 from core.runtime_config import get_runtime_settings
 from core.utils import build_detection_filenames, get_legacy_filename
 
@@ -54,13 +55,13 @@ def get_disk_usage(path=None):
     """Get disk usage statistics for the data directory.
 
     Args:
-        path: Path to check (defaults to /app/data)
+        path: Path to check (defaults to the effective media target)
 
     Returns:
         dict with total_bytes, used_bytes, free_bytes, percent_used
     """
     if path is None:
-        path = os.path.join(BASE_DIR, 'data')
+        path = get_effective_storage_path()
 
     usage = shutil.disk_usage(path)
 
@@ -131,9 +132,24 @@ def get_detection_files(detection):
     """
     filenames = _detection_filenames(detection)
 
+    def first_match(filename, directories):
+        fallback = None
+        for directory in directories:
+            candidate = _resolve_path_with_legacy_fallback(filename, directory)
+            fallback = fallback or candidate
+            if os.path.exists(candidate):
+                return candidate
+        return fallback
+
     return {
-        'audio_path': _resolve_path_with_legacy_fallback(filenames['audio_filename'], EXTRACTED_AUDIO_DIR),
-        'spectrogram_path': _resolve_path_with_legacy_fallback(filenames['spectrogram_filename'], SPECTROGRAM_DIR)
+        'audio_path': first_match(
+            filenames['audio_filename'],
+            get_audio_search_dirs(internal_dir=EXTRACTED_AUDIO_DIR),
+        ),
+        'spectrogram_path': first_match(
+            filenames['spectrogram_filename'],
+            get_spectrogram_search_dirs(internal_dir=SPECTROGRAM_DIR),
+        ),
     }
 
 
@@ -157,7 +173,16 @@ def _disk_filename_sets():
         except OSError:
             return set()
 
-    return scan(EXTRACTED_AUDIO_DIR), scan(SPECTROGRAM_DIR)
+    def scan_all(directories):
+        names = set()
+        for directory in directories:
+            names.update(scan(directory))
+        return names
+
+    return (
+        scan_all(get_audio_search_dirs(internal_dir=EXTRACTED_AUDIO_DIR)),
+        scan_all(get_spectrogram_search_dirs(internal_dir=SPECTROGRAM_DIR)),
+    )
 
 
 def _has_files_on_disk(detection, audio_names, spectrogram_names):

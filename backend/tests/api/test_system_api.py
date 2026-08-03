@@ -14,6 +14,19 @@ class TestSystemAPI:
         'build_time': '2025-11-28T10:00:00Z'
     }
 
+    def test_get_media_targets(self, api_client):
+        status = {
+            'preferred_target_id': 'internal',
+            'effective_target_id': 'internal',
+            'fallback_active': False,
+            'targets': [{'id': 'internal'}],
+        }
+        with patch('core.routes.system.get_media_storage_status', return_value=status):
+            response = api_client.get('/api/system/media-targets')
+
+        assert response.status_code == 200
+        assert response.get_json() == status
+
     def test_get_version_info_success(self, api_client):
         """Test GET /api/system/version returns version info"""
         with patch('core.routes.system.load_version_info') as mock_load:

@@ -23,9 +23,11 @@ services:
       - ./backend:/app
       - ./data:/app/data
       - ./data/flags:/app/data/flags
+      - ${BIRDNET_MEDIA_PATH:-./data/external-media}:/external-media:ro
     environment:
       - PYTHONPATH=/app
       - BIRDNET_SERVICE_PORT=5001
+      - BIRDNET_EXTERNAL_MEDIA_CONFIGURED=${BIRDNET_MEDIA_PATH:+true}
       - LOG_FORMAT=human
       - LOG_LEVEL=INFO
       - CONSOLE_LOG_LEVEL=${CONSOLE_LOG_LEVEL:-WARNING}
@@ -59,9 +61,11 @@ services:
       - ./backend:/app
       - ./data:/app/data
       - ./data/flags:/app/data/flags
+      - ${BIRDNET_MEDIA_PATH:-./data/external-media}:/external-media
     environment:
       - PYTHONPATH=/app
       - API_PORT=5002
+      - BIRDNET_EXTERNAL_MEDIA_CONFIGURED=${BIRDNET_MEDIA_PATH:+true}
       - LOG_FORMAT=human
       - LOG_LEVEL=INFO
       - CONSOLE_LOG_LEVEL=${CONSOLE_LOG_LEVEL:-WARNING}
@@ -84,12 +88,14 @@ services:
       - ./backend:/app
       - ./data:/app/data
       - ./data/flags:/app/data/flags
+      - ${BIRDNET_MEDIA_PATH:-./data/external-media}:/external-media
       # PulseAudio socket for audio access
       # birdnet-service.sh ensures /run/pulse/native exists (system-wide or symlink to user socket)
       - /run/pulse:/run/pulse:ro
     environment:
       - PYTHONPATH=/app
       - PULSE_SERVER=unix:/run/pulse/native
+      - BIRDNET_EXTERNAL_MEDIA_CONFIGURED=${BIRDNET_MEDIA_PATH:+true}
       - LOG_FORMAT=human
       - LOG_LEVEL=INFO
       - CONSOLE_LOG_LEVEL=${CONSOLE_LOG_LEVEL:-WARNING}

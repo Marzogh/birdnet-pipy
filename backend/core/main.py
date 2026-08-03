@@ -34,6 +34,14 @@ from core.db import DatabaseManager
 from core.fd_diagnostics import log_fd_exhaustion_if_needed
 from core.internal_auth import INTERNAL_SECRET_HEADER, get_or_create_internal_secret
 from core.logging_config import get_logger, setup_logging
+from core.media_storage import (
+    ensure_effective_media_dirs,
+    get_effective_extracted_audio_dir,
+    get_effective_recording_dir,
+    get_effective_spectrogram_dir,
+    get_media_storage_status,
+    get_recording_scan_dirs,
+)
 from core.notification_service import get_notification_service
 from core.runtime_config import get_runtime_settings, resolve_source_label
 from core.spectrogram import generate_spectrogram
@@ -79,6 +87,11 @@ stop_flag = threading.Event()
 # Ensure directories exist
 for dir in [RECORDING_DIR, EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR]:
     os.makedirs(dir, exist_ok=True)
+ensure_effective_media_dirs(
+    recording_dir=RECORDING_DIR,
+    extracted_audio_dir=EXTRACTED_AUDIO_DIR,
+    spectrogram_dir=SPECTROGRAM_DIR,
+)
 
 def _get_audio_settings() -> dict[str, Any]:
     return get_runtime_settings().get('audio', {})
@@ -110,7 +123,11 @@ def _get_recorder_signature(audio_settings: dict[str, Any]) -> tuple:
         (s.get('id'), s.get('type'), s.get('url', ''), s.get('device', ''))
         for s in enabled
     )
-    return (source_tuples, _get_recording_length(audio_settings))
+    return (
+        source_tuples,
+        _get_recording_length(audio_settings),
+        get_effective_recording_dir(internal_dir=RECORDING_DIR),
+    )
 
 
 def _is_valid_timezone(tz: str | None) -> bool:
@@ -143,7 +160,14 @@ def setup_recorder(source: dict, recording_length: float, thread_logger) -> Base
     """
     source_type = source.get('type', 'pulseaudio')
     source_id = source.get('id', 'unknown')
-    output_dir = os.path.join(RECORDING_DIR, source_id)
+    ensure_effective_media_dirs(
+        recording_dir=RECORDING_DIR,
+        extracted_audio_dir=EXTRACTED_AUDIO_DIR,
+        spectrogram_dir=SPECTROGRAM_DIR,
+    )
+    output_dir = os.path.join(
+        get_effective_recording_dir(internal_dir=RECORDING_DIR), source_id
+    )
     os.makedirs(output_dir, exist_ok=True)
 
     if source_type == RecordingMode.PULSEAUDIO:
@@ -518,8 +542,15 @@ def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> 
     start_time = audio_segments_indices[0] * step_seconds
     end_time = audio_segments_indices[1] * step_seconds + analysis_chunk_length
 
+    ensure_effective_media_dirs(
+        recording_dir=RECORDING_DIR,
+        extracted_audio_dir=EXTRACTED_AUDIO_DIR,
+        spectrogram_dir=SPECTROGRAM_DIR,
+    )
     mp3_path = os.path.join(
-        EXTRACTED_AUDIO_DIR, detection['bird_song_file_name']).replace('.wav', '.mp3')
+        get_effective_extracted_audio_dir(internal_dir=EXTRACTED_AUDIO_DIR),
+        detection['bird_song_file_name'],
+    ).replace('.wav', '.mp3')
 
     normalize = get_runtime_settings().get('playback', {}).get('normalize', False)
     extract_audio_segment(input_file_path, mp3_path, start_time, end_time,
@@ -539,7 +570,15 @@ def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str
     """
     analysis_chunk_length = _get_analysis_chunk_length()
     step_seconds = detection.get('step_seconds', analysis_chunk_length)
-    spectrogram_path = os.path.join(SPECTROGRAM_DIR, detection['spectrogram_file_name'])
+    ensure_effective_media_dirs(
+        recording_dir=RECORDING_DIR,
+        extracted_audio_dir=EXTRACTED_AUDIO_DIR,
+        spectrogram_dir=SPECTROGRAM_DIR,
+    )
+    spectrogram_path = os.path.join(
+        get_effective_spectrogram_dir(internal_dir=SPECTROGRAM_DIR),
+        detection['spectrogram_file_name'],
+    )
 
     display_name = get_spectrogram_common_name(
         detection.get('scientific_name'),
@@ -751,17 +790,18 @@ def _collect_wav_files() -> list[tuple[str, str | None]]:
     """
     candidates: list[tuple[str, str | None]] = []
 
-    # Legacy: root-level files (no source, from before multi-source)
-    for f in glob.glob(os.path.join(RECORDING_DIR, "*.wav")):
-        candidates.append((f, None))
+    for recording_dir in get_recording_scan_dirs(internal_dir=RECORDING_DIR):
+        # Legacy: root-level files (no source, from before multi-source)
+        for f in glob.glob(os.path.join(recording_dir, "*.wav")):
+            candidates.append((f, None))
 
-    # Source subdirs: RECORDING_DIR/source_*/
-    for subdir in glob.glob(os.path.join(RECORDING_DIR, "source_*")):
-        if not os.path.isdir(subdir):
-            continue
-        source_id = os.path.basename(subdir)
-        for f in glob.glob(os.path.join(subdir, "*.wav")):
-            candidates.append((f, source_id))
+        # Source subdirs: recording_dir/source_*/
+        for subdir in glob.glob(os.path.join(recording_dir, "source_*")):
+            if not os.path.isdir(subdir):
+                continue
+            source_id = os.path.basename(subdir)
+            for f in glob.glob(os.path.join(subdir, "*.wav")):
+                candidates.append((f, source_id))
 
     # Sort by filename for chronological order across sources
     candidates.sort(key=lambda x: os.path.basename(x[0]))
@@ -1030,10 +1070,11 @@ if __name__ == "__main__":
     startup_audio = startup_settings.get('audio', {})
 
     logger.info(f"🎵 {DISPLAY_NAME} v{__version__} starting", extra={
-        'recording_dir': RECORDING_DIR,
+        'recording_dir': get_effective_recording_dir(internal_dir=RECORDING_DIR),
         'recording_length': startup_audio.get('recording_length', 9),
         'analysis_chunk_length': startup_audio.get('recording_chunk_length', 3),
-        'timezone': get_timezone_str()
+        'timezone': get_timezone_str(),
+        'media_target': get_media_storage_status().get('effective_target_id'),
     })
 
     # Wait for location and timezone to be configured before starting detection.
