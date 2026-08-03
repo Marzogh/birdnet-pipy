@@ -50,6 +50,31 @@ class TestMediaStorageTargets:
 
         assert targets == [INTERNAL_TARGET]
 
+    def test_configured_parent_exposes_only_direct_child_mounts(self):
+        root = '/external-media'
+        filesystems = {
+            root: 'ext4',
+            f'{root}/USB_ONE': 'exfat',
+            f'{root}/USB_TWO': 'ext4',
+            f'{root}/USB_ONE/nested': 'tmpfs',
+            '/unrelated': 'ext4',
+        }
+
+        with patch.object(media_storage.os.path, 'isdir', return_value=True), \
+            patch.object(media_storage.os.path, 'realpath', side_effect=lambda path: path):
+            candidates = media_storage._iter_candidate_dirs(root, filesystems)
+
+        assert candidates == [f'{root}/USB_ONE', f'{root}/USB_TWO']
+
+    def test_single_configured_drive_uses_the_root_target(self):
+        root = '/external-media'
+
+        with patch.object(media_storage.os.path, 'isdir', return_value=True), \
+            patch.object(media_storage.os.path, 'realpath', side_effect=lambda path: path):
+            candidates = media_storage._iter_candidate_dirs(root, {root: 'ext4'})
+
+        assert candidates == [root]
+
     def test_falls_back_to_internal_when_selected_target_is_missing(self):
         preferred = '/external-media'
         settings = {'storage': {'media_target': preferred}}
@@ -137,5 +162,6 @@ class TestMediaStorageTargets:
         with patch.object(media_storage.os.path, 'realpath', side_effect=lambda path: path):
             assert media_storage.is_valid_media_target_id('internal') is True
             assert media_storage.is_valid_media_target_id('/external-media') is True
-            assert media_storage.is_valid_media_target_id('/external-media/subdir') is False
+            assert media_storage.is_valid_media_target_id('/external-media/USB_ONE') is True
+            assert media_storage.is_valid_media_target_id('/external-media/USB_ONE/subdir') is False
             assert media_storage.is_valid_media_target_id('/tmp/not-allowed') is False

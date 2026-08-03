@@ -326,28 +326,74 @@
           Auto-cleanup removes oldest recordings when usage exceeds {{ settings.storage.trigger_percent }}%.
         </p>
         <div class="mt-5 border-t border-gray-100 pt-4 space-y-3">
-          <div>
-            <label
-              for="mediaTarget"
-              class="text-sm text-gray-600"
-            >Preferred media storage</label>
+          <fieldset class="space-y-3">
+            <legend class="text-sm text-gray-600">
+              Preferred media storage
+            </legend>
             <p class="text-xs text-gray-400 mt-1">
-              New recordings, clips, and spectrograms can use the configured external directory. BirdNET-PiPy falls back to internal storage if it becomes unavailable.
+              Choose where new recordings, clips, and spectrograms are written.
+            </p>
+            <label class="flex items-start gap-3 rounded-md border border-gray-200 p-3 cursor-pointer">
+              <input
+                id="mediaStorageInternal"
+                v-model="mediaStorageMode"
+                type="radio"
+                value="internal"
+                class="mt-0.5 text-green-600 focus:ring-green-600"
+              >
+              <span>
+                <span class="block text-sm font-medium text-gray-800">SD card / internal storage</span>
+                <span class="block text-xs text-gray-500">Store media with the BirdNET-PiPy application data.</span>
+              </span>
+            </label>
+            <label
+              class="flex items-start gap-3 rounded-md border border-gray-200 p-3"
+              :class="externalMediaTargets.length ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'"
+            >
+              <input
+                id="mediaStorageExternal"
+                v-model="mediaStorageMode"
+                type="radio"
+                value="external"
+                :disabled="externalMediaTargets.length === 0"
+                class="mt-0.5 text-green-600 focus:ring-green-600"
+              >
+              <span>
+                <span class="block text-sm font-medium text-gray-800">External media</span>
+                <span class="block text-xs text-gray-500">Use a configured USB drive or external disk.</span>
+              </span>
+            </label>
+          </fieldset>
+
+          <div v-if="mediaStorageMode === 'external'">
+            <label
+              for="externalMediaTarget"
+              class="text-sm text-gray-600"
+            >External drive</label>
+            <select
+              id="externalMediaTarget"
+              v-model="settings.storage.media_target"
+              class="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
+            >
+              <option
+                v-for="target in externalMediaTargets"
+                :key="target.id"
+                :value="target.id"
+              >
+                {{ formatMediaTargetOption(target) }}
+              </option>
+            </select>
+            <p class="mt-1 text-xs text-gray-400">
+              BirdNET-PiPy falls back to the SD card if this drive is missing or unwritable.
             </p>
           </div>
-          <select
-            id="mediaTarget"
-            v-model="settings.storage.media_target"
-            class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
+
+          <p
+            v-if="externalMediaTargets.length === 0"
+            class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600"
           >
-            <option
-              v-for="target in mediaTargetOptions"
-              :key="target.id"
-              :value="target.id"
-            >
-              {{ formatMediaTargetOption(target) }}
-            </option>
-          </select>
+            No external drive is configured. Set BIRDNET_MEDIA_PATH and restart BirdNET-PiPy to make one available.
+          </p>
 
           <div
             v-if="mediaStorageStatus"
@@ -2013,10 +2059,30 @@ export default {
       }
     }
 
-    const mediaTargetOptions = computed(() => {
+    const externalMediaTargets = computed(() => {
       const targets = mediaStorageStatus.value?.targets
-      if (Array.isArray(targets) && targets.length > 0) return targets
-      return [{ id: 'internal', label: 'Internal storage (SD card)', available: true }]
+      if (!Array.isArray(targets)) return []
+      return targets.filter(target => target.id !== 'internal')
+    })
+
+    const mediaStorageMode = computed({
+      get: () => (settings.value.storage?.media_target || 'internal') === 'internal'
+        ? 'internal'
+        : 'external',
+      set: (mode) => {
+        if (!settings.value.storage) settings.value.storage = {}
+        if (mode === 'internal') {
+          settings.value.storage.media_target = 'internal'
+          return
+        }
+
+        const selectedTargetExists = externalMediaTargets.value.some(
+          target => target.id === settings.value.storage.media_target
+        )
+        if (!selectedTargetExists && externalMediaTargets.value.length > 0) {
+          settings.value.storage.media_target = externalMediaTargets.value[0].id
+        }
+      }
     })
 
     const formatMediaTargetOption = (target) => {
@@ -2926,7 +2992,8 @@ export default {
       manualRestart,
       storage,
       mediaStorageStatus,
-      mediaTargetOptions,
+      mediaStorageMode,
+      externalMediaTargets,
       formatMediaTargetOption,
       exporting,
       exportCSV,

@@ -256,7 +256,8 @@ describe('Settings', () => {
           data: {
             targets: [
               { id: 'internal', label: 'Internal storage (SD card)', available: true },
-              { id: '/external-media', label: 'Configured external storage', available: true }
+              { id: '/external-media/USB_ONE', label: 'USB_ONE', available: true },
+              { id: '/external-media/USB_TWO', label: 'USB_TWO', available: true }
             ],
             fallback_active: false
           }
@@ -267,11 +268,20 @@ describe('Settings', () => {
       await flushPromises()
 
       expect(mockApi.get).toHaveBeenCalledWith('/system/media-targets')
-      const options = wrapper.find('#mediaTarget').findAll('option')
-      expect(options.map(option => option.text())).toEqual([
-        'Internal storage (SD card)',
-        'Configured external storage'
-      ])
+      expect(wrapper.find('#mediaStorageInternal').exists()).toBe(true)
+      expect(wrapper.find('#mediaStorageExternal').attributes('disabled')).toBeUndefined()
+
+      await wrapper.find('#mediaStorageExternal').setValue(true)
+      const driveSelect = wrapper.find('#externalMediaTarget')
+      const options = driveSelect.findAll('option')
+      expect(options.map(option => option.text())).toEqual(['USB_ONE', 'USB_TWO'])
+      expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_ONE')
+
+      await driveSelect.setValue('/external-media/USB_TWO')
+      expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_TWO')
+
+      await wrapper.find('#mediaStorageInternal').setValue(true)
+      expect(wrapper.vm.settings.storage.media_target).toBe('internal')
     })
 
     it('loads model and location-filter status on mount', async () => {

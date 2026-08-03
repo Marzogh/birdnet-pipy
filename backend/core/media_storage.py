@@ -62,9 +62,26 @@ def _internal_target_info() -> dict[str, Any]:
     }
 
 
-def _iter_candidate_dirs(root: str) -> list[str]:
-    """Return the explicitly configured external-media mount only."""
-    return [root] if os.path.isdir(root) else []
+def _iter_candidate_dirs(root: str, filesystems: dict[str, str]) -> list[str]:
+    """Return the configured root and direct child mount points.
+
+    The host still controls the visibility boundary through BIRDNET_MEDIA_PATH.
+    If that path is a single drive, only the root is returned. If it is a
+    parent containing several mounted drives, direct child mounts become
+    individually selectable without treating ordinary folders as drives.
+    """
+    if not os.path.isdir(root):
+        return []
+
+    real_root = os.path.realpath(root)
+    child_mounts = []
+    for mount_path in filesystems:
+        real_mount = os.path.realpath(mount_path)
+        if os.path.dirname(real_mount) != real_root:
+            continue
+        if os.path.isdir(real_mount):
+            child_mounts.append(real_mount)
+    return child_mounts or [real_root]
 
 
 def _mount_filesystems() -> dict[str, str]:
@@ -96,9 +113,14 @@ def _external_target_info(path: str, filesystems: dict[str, str]) -> dict[str, A
     except OSError:
         return None
 
+    is_root = real_path in EXTERNAL_MEDIA_ROOTS
     return {
         "id": real_path,
-        "label": "Configured external storage",
+        "label": (
+            "Configured external storage"
+            if is_root
+            else os.path.basename(real_path.rstrip(os.sep))
+        ),
         "mount_path": real_path,
         "writable": os.access(real_path, os.W_OK),
         "available": True,
@@ -121,7 +143,7 @@ def get_available_media_targets() -> list[dict[str, Any]]:
     for root in EXTERNAL_MEDIA_ROOTS:
         if not os.path.isdir(root):
             continue
-        for candidate in _iter_candidate_dirs(root):
+        for candidate in _iter_candidate_dirs(root, filesystems):
             info = _external_target_info(candidate, filesystems)
             if not info:
                 continue
@@ -146,7 +168,10 @@ def is_valid_media_target_id(target_id: Any) -> bool:
         return False
 
     real_path = os.path.realpath(target_id)
-    return real_path in EXTERNAL_MEDIA_ROOTS
+    return any(
+        real_path == root or os.path.dirname(real_path) == root
+        for root in EXTERNAL_MEDIA_ROOTS
+    )
 
 
 def _target_by_id(target_id: str, targets: list[dict[str, Any]]) -> dict[str, Any] | None:

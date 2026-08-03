@@ -112,14 +112,21 @@ remain in `./data`.
    sudo chown "$(id -u):$(id -g)" /mnt/birdnet-media
    ```
 
-2. Add the exact host directory to `~/BirdNET-PiPy/.env`:
+2. Add the host directory to `~/BirdNET-PiPy/.env`:
 
    ```bash
    BIRDNET_MEDIA_PATH=/mnt/birdnet-media
    ```
 
-3. Restart the service, then choose **Configured external storage** under
-   **Settings → Storage**:
+   To choose between several drives in the Settings UI, set this to their
+   common parent instead. Only direct child mount points are offered as drives:
+
+   ```bash
+   BIRDNET_MEDIA_PATH=/media/birdnet
+   ```
+
+3. Restart the service, choose **External media** under **Settings → Storage**,
+   then select the drive. Choose **SD card / internal storage** to switch back:
 
    ```bash
    sudo systemctl restart birdnet-pipy
