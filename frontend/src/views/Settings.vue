@@ -408,6 +408,44 @@
             </p>
           </div>
 
+          <fieldset
+            v-if="mediaStorageChanged"
+            class="space-y-2"
+          >
+            <legend class="text-sm text-gray-600 mb-2">
+              Existing media
+            </legend>
+            <label class="flex items-start gap-2 text-sm text-gray-800">
+              <input
+                id="mediaStorageNewOnly"
+                v-model="mediaTransferMode"
+                type="radio"
+                value="new_only"
+                class="mt-1 text-green-600 focus:ring-green-600"
+              >
+              <span>
+                Use for new media only
+                <span class="block text-xs text-gray-500">Keep existing files where they are.</span>
+              </span>
+            </label>
+            <label class="flex items-start gap-2 text-sm text-gray-800">
+              <input
+                id="mediaStorageMoveExisting"
+                v-model="mediaTransferMode"
+                type="radio"
+                value="move_existing"
+                class="mt-1 text-green-600 focus:ring-green-600"
+              >
+              <span>
+                Move existing media too
+                <span class="block text-xs text-gray-500">Move recordings, clips and spectrograms to the selected storage.</span>
+              </span>
+            </label>
+            <p class="text-xs text-gray-500">
+              Database and settings stay where they are.
+            </p>
+          </fieldset>
+
           <p
             v-if="externalMediaTargets.length === 0"
             class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600"
@@ -416,21 +454,25 @@
           </p>
 
           <div
-            v-if="mediaStorageStatus"
+            v-if="mediaStorageStatus || mediaStorageChanged"
             class="rounded-md border px-3 py-2 text-sm"
-            :class="mediaStorageStatus.fallback_active ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-green-200 bg-green-50 text-green-900'"
+            :class="mediaStorageChanged ? 'border-red-200 bg-red-50 text-red-700' : mediaStorageStatus.fallback_active ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-green-200 bg-green-50 text-green-900'"
+            role="status"
           >
             <p class="font-medium">
-              {{ mediaStorageStatus.fallback_active ? 'Using internal fallback storage' : 'Preferred media storage is active' }}
-            </p>
-            <p class="mt-1 text-xs">
-              Preferred: {{ mediaStorageStatus.preferred_target?.label || 'Internal storage (SD card)' }}
-            </p>
-            <p class="text-xs">
-              Active: {{ mediaStorageStatus.effective_target?.label || 'Internal storage (SD card)' }}
+              {{ mediaStorageChanged ? 'Changed media storage not saved' : mediaStorageStatus.fallback_active ? 'Using internal fallback storage' : 'Current media storage' }}
             </p>
             <p
-              v-if="mediaStorageStatus.fallback_active"
+              v-if="mediaStorageStatus?.fallback_active"
+              class="mt-1 text-xs"
+            >
+              Preferred: {{ mediaStorageStatus.preferred_target?.label || 'Internal storage (SD card)' }}
+            </p>
+            <p class="mt-1 text-xs">
+              Current: {{ mediaStorageStatus?.effective_target?.label || 'Internal storage (SD card)' }}
+            </p>
+            <p
+              v-if="mediaStorageStatus?.fallback_active"
               class="mt-1 text-xs"
             >
               {{ mediaStorageStatus.fallback_reason === 'unwritable' ? 'The selected directory is mounted but not writable.' : 'The selected directory is currently unavailable.' }}
@@ -1830,6 +1872,7 @@ export default {
     // Storage state
     const storage = ref(null)
     const mediaStorageStatus = ref(null)
+    const mediaTransferMode = ref('new_only')
 
     // One settings-status snapshot confirms recording, live streaming, pause
     // and per-source errors, all from the same acknowledged revision.
@@ -2191,6 +2234,14 @@ export default {
       }
     }
 
+    const mediaStorageChanged = computed(() => Boolean(originalSettings.value)
+      && (settings.value.storage?.media_target || 'internal') !== originalSettings.value.storage.media_target)
+
+    // A different destination starts with the non-moving option.
+    watch(() => settings.value.storage?.media_target, () => {
+      mediaTransferMode.value = 'new_only'
+    })
+
     const externalMediaTargets = computed(() => {
       const targets = mediaStorageStatus.value?.targets
       if (!Array.isArray(targets)) return []
@@ -2419,6 +2470,12 @@ export default {
       try {
         loading.value = true
         settingsSaveError.value = ''
+        // The transfer operation is a separate implementation step. Never
+        // silently save a move request as a new-media-only change.
+        if (mediaStorageChanged.value && mediaTransferMode.value === 'move_existing') {
+          settingsSaveError.value = 'Existing media cannot be moved yet. Choose “Use for new media only” to save this change.'
+          return null
+        }
         const patch = changedSettings(originalSettings.value, getComparableSettings(settings.value))
         // A model change makes an omitted threshold use the server's default,
         // so include the user's selection even if it matches the old value.
@@ -3119,6 +3176,8 @@ export default {
       manualRestart,
       storage,
       mediaStorageStatus,
+      mediaStorageChanged,
+      mediaTransferMode,
       mediaStorageMode,
       externalMediaTargets,
       formatMediaTargetOption,

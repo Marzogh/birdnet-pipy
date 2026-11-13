@@ -456,6 +456,7 @@ describe('Settings', () => {
       expect(mockApi.get).toHaveBeenCalledWith('/system/media-targets')
       expect(wrapper.find('#mediaStorageInternal').exists()).toBe(true)
       expect(wrapper.find('#mediaStorageExternal').attributes('disabled')).toBeUndefined()
+      expect(wrapper.find('#mediaStorageNewOnly').exists()).toBe(false)
 
       await wrapper.find('#mediaStorageExternal').setValue(true)
       const driveSelect = wrapper.find('#externalMediaTarget')
@@ -463,13 +464,26 @@ describe('Settings', () => {
       expect(options.map(option => option.text())).toEqual(['USB_ONE', 'USB_TWO'])
       expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_ONE')
       expect(wrapper.vm.hasUnsavedChanges).toBe(true)
+      expect(wrapper.find('#mediaStorageNewOnly').element.checked).toBe(true)
+      expect(wrapper.find('#mediaStorageMoveExisting').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Changed media storage not saved')
+      expect(wrapper.text()).toContain('Database and settings stay where they are.')
+
+      await wrapper.find('#mediaStorageMoveExisting').setValue(true)
+      await wrapper.vm.saveSettings()
+      await flushPromises()
+      expect(mockApi.put).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('Existing media cannot be moved yet.')
 
       await driveSelect.setValue('/external-media/USB_TWO')
       expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_TWO')
+      expect(wrapper.find('#mediaStorageNewOnly').element.checked).toBe(true)
 
       await wrapper.find('#mediaStorageInternal').setValue(true)
       expect(wrapper.vm.settings.storage.media_target).toBe('internal')
       expect(wrapper.vm.hasUnsavedChanges).toBe(false)
+      expect(wrapper.find('#mediaStorageNewOnly').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('Changed media storage not saved')
     })
 
     it('shows a skeleton until the first payload lands, not empty-state text', async () => {
