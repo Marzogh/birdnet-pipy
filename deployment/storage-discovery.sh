@@ -62,7 +62,7 @@ temporary=$(mktemp "${snapshot}.XXXXXX")
 trap 'rm -f "$temporary"' EXIT
 {
     printf '{"inventory":'
-    timeout 10 lsblk --json --bytes --output NAME,PATH,TYPE,SIZE,MODEL,TRAN,ROTA,RO,FSTYPE,LABEL,MOUNTPOINTS,MAJ:MIN
+    timeout 10 lsblk --json --bytes --output NAME,PATH,TYPE,SIZE,MODEL,TRAN,ROTA,RO,FSTYPE,LABEL,MOUNTPOINTS,MAJ:MIN,SERIAL,WWN
     printf ',"protected":{"application":['
     separator=''
     while IFS=$'\t' read -r destination source; do

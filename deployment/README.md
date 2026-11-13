@@ -115,8 +115,13 @@ The label describes the current inventory and does not authorize formatting.
 Any future formatting action must recheck eligibility against current devices.
 Eligible drives have a **Format…** confirmation preview showing the selected
 drive, the erase warning and ext4 as the new format. The drive name must match
-exactly in the confirmation field. The final **Format drive** action remains
-disabled; the dialog cannot make changes to a drive.
+exactly in the confirmation field. **Check plan** sends a dry-run request that
+rechecks the drive identity, eligibility and typed name against the latest
+non-stale host snapshot. The returned plan identifies the drive and specifies
+that all its data would be erased and replaced with ext4. No disk command,
+formatting job or mount operation is executed. The final **Format drive**
+action remains disabled. This plan is not authorization to format later; an
+actual formatting operation will need fresh host checks at execution time.
 
 The existing `birdnet-pipy` host service refreshes this inventory every
 15 seconds using `lsblk`. The app receives a metadata snapshot through its

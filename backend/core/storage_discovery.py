@@ -1,4 +1,5 @@
 """Read the host service's device inventory, without accessing block devices."""
+import hashlib
 import json
 import os
 import time
@@ -66,6 +67,10 @@ def describe_devices(blockdevices, protected_filesystems=None):
         path = disk.get('path') or '/dev/' + disk['name']
         eligible, eligibility_reason = preparation_eligibility(nodes, protected_filesystems)
         drives.append({
+            'device_id': hashlib.sha256(json.dumps([
+                path, disk.get('maj:min'), disk.get('size'), disk.get('model'),
+                disk.get('serial'), disk.get('wwn'),
+            ]).encode()).hexdigest(),
             'path': path,
             'name': (disk.get('model') or disk.get('label') or disk['name']).strip(),
             'size_bytes': int(disk.get('size') or 0),

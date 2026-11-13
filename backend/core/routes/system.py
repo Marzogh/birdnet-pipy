@@ -75,6 +75,39 @@ def get_connected_storage():
     return jsonify(get_storage_devices())
 
 
+@api.route('/api/system/storage/format-dry-run', methods=['POST'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def preview_drive_format():
+    """Return a plan from current metadata. No disk commands or jobs run."""
+    from core.storage_discovery import get_storage_devices
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not all(
+        isinstance(payload.get(field), str) and payload[field]
+        for field in ('path', 'device_id', 'confirmation')
+    ):
+        return jsonify({'error': 'Select a drive and type its name.'}), 400
+    inventory = get_storage_devices()
+    if inventory['state'] != 'available':
+        return jsonify({'error': inventory['message']}), 503
+    drive = next((drive for drive in inventory['devices']
+                  if drive['path'] == payload['path'] and drive['device_id'] == payload['device_id']), None)
+    if drive is None:
+        return jsonify({'error': 'Drive information changed. Refresh the drive list and try again.'}), 409
+    if drive['preparation_eligible'] is not True:
+        return jsonify({'error': drive['eligibility_reason']}), 409
+    if payload['confirmation'] != drive['name']:
+        return jsonify({'error': 'The typed drive name does not match.'}), 400
+    return jsonify({
+        'dry_run': True,
+        'drive': {key: drive[key] for key in ('device_id', 'path', 'name', 'size_bytes')},
+        'filesystem': 'ext4',
+        'erases_all_data': True,
+        'formatting_enabled': False,
+    })
+
+
 @api.route('/api/system/media-targets', methods=['GET'])
 @require_auth
 @log_api_request
