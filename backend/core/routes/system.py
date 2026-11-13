@@ -66,6 +66,15 @@ def get_media_transfer():
     return jsonify(progress)
 
 
+@api.route('/api/system/storage-devices', methods=['GET'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def get_connected_storage():
+    from core.storage_discovery import get_storage_devices
+    return jsonify(get_storage_devices())
+
+
 @api.route('/api/system/media-targets', methods=['GET'])
 @require_auth
 @log_api_request

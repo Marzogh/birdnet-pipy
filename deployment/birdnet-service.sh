@@ -531,6 +531,8 @@ enable_swap_if_available() {
 
 # Function to monitor both restart and update flags
 monitor_flags() {
+    local discovery_count=0
+    local discovery_state=unknown
     while true; do
         # Check update flag first (higher priority)
         if [ -f "$UPDATE_FLAG_FILE" ]; then
@@ -539,6 +541,21 @@ monitor_flags() {
         elif [ -f "$RESTART_FLAG_FILE" ]; then
             restart_containers
         fi
+        # Refresh read-only drive metadata every 15 seconds.
+        if [ "$discovery_count" -eq 0 ]; then
+            if bash "$PROJECT_ROOT/deployment/storage-discovery.sh" "$PROJECT_ROOT/data/flags/storage-devices.json"; then
+                if [ "$discovery_state" != available ]; then
+                    log_info "Read-only USB/SSD discovery available"
+                fi
+                discovery_state=available
+            else
+                if [ "$discovery_state" != unavailable ]; then
+                    log_warning "USB/SSD discovery unavailable; recording continues normally"
+                fi
+                discovery_state=unavailable
+            fi
+        fi
+        discovery_count=$(( (discovery_count + 1) % 3 ))
         sleep "$CHECK_INTERVAL"
     done
 }

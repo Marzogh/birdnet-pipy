@@ -387,6 +387,46 @@
             </p>
           </div>
 
+          <details @toggle="toggleDriveDiscovery">
+            <summary class="cursor-pointer text-sm text-gray-600">
+              Connected drives
+            </summary>
+            <p
+              v-if="!driveDiscovery"
+              class="mt-2 text-xs text-gray-500"
+            >
+              Checking connected drives...
+            </p>
+            <p
+              v-else-if="driveDiscovery.state !== 'available'"
+              class="mt-2 text-xs text-gray-500"
+            >
+              {{ driveDiscovery.message }}
+            </p>
+            <p
+              v-else-if="!driveDiscovery.devices.length"
+              class="mt-2 text-xs text-gray-500"
+            >
+              No USB drives or SSDs detected.
+            </p>
+            <dl
+              v-else
+              class="mt-2 space-y-3"
+            >
+              <div
+                v-for="drive in driveDiscovery.devices"
+                :key="drive.path"
+              >
+                <dt class="text-sm text-gray-800">
+                  {{ drive.name }} · {{ formatDriveSize(drive.size_bytes) }}
+                </dt>
+                <dd class="text-xs text-gray-500">
+                  {{ drive.path }} · {{ drive.connection }} · {{ drive.filesystems.join(', ') || 'Unknown format' }} · {{ drive.mounted ? 'Mounted' : 'Not mounted' }}<span v-if="drive.system_drive"> · System drive</span><span v-if="drive.read_only"> · Read-only</span>
+                </dd>
+              </div>
+            </dl>
+          </details>
+
           <div v-if="mediaStorageChanged">
             <label class="flex items-start gap-2 text-sm text-gray-800">
               <input
@@ -1835,6 +1875,27 @@ export default {
     // Storage state
     const storage = ref(null)
     const mediaStorageStatus = ref(null)
+    const driveDiscovery = ref(null)
+    let driveDiscoveryTimer = null
+    const loadConnectedDrives = async () => {
+      try {
+        const { data } = await api.get('/system/storage-devices')
+        if (!viewStopped) driveDiscovery.value = data
+      } catch {
+        if (!viewStopped) driveDiscovery.value = {
+          state: 'unavailable', message: 'Drive discovery is unavailable.'
+        }
+      }
+    }
+    const toggleDriveDiscovery = (event) => {
+      clearInterval(driveDiscoveryTimer)
+      if (event.target.open) {
+        loadConnectedDrives()
+        driveDiscoveryTimer = setInterval(loadConnectedDrives, 15000)
+      }
+    }
+    const formatDriveSize = bytes => `${(bytes / 1e9).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`
+
     const moveExistingMedia = ref(false)
     const mediaTransferProgress = ref(null)
     const mediaTransferActive = computed(() => mediaTransferProgress.value
@@ -3151,6 +3212,7 @@ export default {
       window.removeEventListener('beforeunload', handleBeforeUnload)
       window.removeEventListener('focus', refreshOnFocus)
       clearTimeout(settingsRetryTimer)
+      clearInterval(driveDiscoveryTimer)
       unwatchSettingsStatus()
     })
 
@@ -3181,6 +3243,9 @@ export default {
       manualRestart,
       storage,
       mediaStorageStatus,
+      driveDiscovery,
+      toggleDriveDiscovery,
+      formatDriveSize,
       mediaStorageChanged,
       moveExistingMedia,
       mediaTransferActive,

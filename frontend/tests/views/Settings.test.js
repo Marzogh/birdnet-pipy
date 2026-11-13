@@ -436,6 +436,30 @@ describe('Settings', () => {
       expect(wrapper.vm.settings.audio.overlap).toBe(0.0)
     })
 
+    it('shows connected drive information only when expanded', async () => {
+      mockApi.get.mockImplementation((url) => url === '/system/storage-devices'
+        ? Promise.resolve({ data: { state: 'available', devices: [{
+            path: '/dev/sda', name: 'USB SSD', size_bytes: 500000000000,
+            connection: 'USB', filesystems: ['exfat'], mounted: false,
+            system_drive: false, read_only: false
+          }] } })
+        : defaultGetResponse(url))
+      const wrapper = mountSettings()
+      await flushPromises()
+      expect(mockApi.get).not.toHaveBeenCalledWith('/system/storage-devices')
+      const details = wrapper.find('details')
+      details.element.open = true
+      await details.trigger('toggle')
+      await flushPromises()
+      expect(details.text()).toContain('USB SSD · 500 GB')
+      expect(details.text()).toContain('/dev/sda · USB · exfat · Not mounted')
+      expect(details.findAll('button')).toHaveLength(0)
+      expect(mockApi.put).not.toHaveBeenCalled()
+      expect(mockApi.post).not.toHaveBeenCalled()
+      details.element.open = false
+      await details.trigger('toggle')
+    })
+
     it('loads and displays available media storage targets', async () => {
       let moveQueued = false
       const movedSettings = createMockSettings()

@@ -100,6 +100,21 @@ cd ~/BirdNET-PiPy && sudo ./install.sh --update --branch staging
 
 ## External Media Storage
 
+**Settings → Storage → Connected drives** lists USB drives and SSDs detected
+by the Linux host, including model, capacity, filesystem and mount status.
+The list is read-only: discovering a drive does not mount it, format it or
+make it a media storage location. System drives are labelled in the list.
+
+The existing `birdnet-pipy` host service refreshes this inventory every
+15 seconds using `lsblk`. The app receives a metadata snapshot through its
+existing flags directory; it gets no block-device access or additional
+privileges. The list refreshes while expanded. If the host service is not
+running, information becomes unavailable rather than showing an old list as
+current. This discovery is for Linux service-managed installations; starting
+Docker Compose alone or using the Home Assistant add-on does not run the
+host collector.
+
+
 BirdNET-PiPy can store recordings, extracted clips, and spectrograms in one
 explicitly configured host directory. The database and application settings
 remain in `./data`.
