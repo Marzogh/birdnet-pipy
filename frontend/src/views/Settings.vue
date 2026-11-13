@@ -17,7 +17,7 @@
         class="shrink-0 ml-4"
         :loading="loading"
         loading-text="Saving..."
-        :disabled="!loaded || restartInProgress || mediaTransferActive || quietHoursSaving || sourceSaving"
+        :disabled="!loaded || restartInProgress || formatActive || mediaTransferActive || quietHoursSaving || sourceSaving"
         @click="saveSettings"
       >
         {{ modelChanged ? 'Save and restart' : 'Save' }}
@@ -83,12 +83,12 @@
 
     <!-- Restart/Update Progress (replaces update available banner when active) -->
     <div
-      v-if="mediaTransferActive || ((serviceRestart.isRestarting.value || systemUpdate.isRestarting.value) && (serviceRestart.restartMessage.value || systemUpdate.restartMessage.value))"
+      v-if="formatActive || mediaTransferActive || ((serviceRestart.isRestarting.value || systemUpdate.isRestarting.value) && (serviceRestart.restartMessage.value || systemUpdate.restartMessage.value))"
       class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg"
     >
       <div class="flex items-center gap-2 text-blue-700 text-sm">
         <Spinner class="h-4 w-4" />
-        <span role="status">{{ mediaTransferActive ? mediaTransferMessage : serviceRestart.restartMessage.value || systemUpdate.restartMessage.value }}</span>
+        <span role="status">{{ formatActive ? formatProgress.message : mediaTransferActive ? mediaTransferMessage : serviceRestart.restartMessage.value || systemUpdate.restartMessage.value }}</span>
       </div>
       <div
         v-if="mediaTransferActive && mediaTransferProgress.bytes_total > 0"
@@ -1749,6 +1749,7 @@
       :drive="selectedFormatDrive"
       :size-label="formatDriveSize(selectedFormatDrive.size_bytes)"
       @close="selectedFormatDrive = null"
+      @started="formatStarted"
     />
 
     <!-- Confirm Remove Notification URL -->
@@ -1901,8 +1902,36 @@ export default {
     const mediaStorageStatus = ref(null)
     const driveDiscovery = ref(null)
     const selectedFormatDrive = ref(null)
+    const formatProgress = ref(null)
+    const formatActive = computed(() => ['queued', 'checking', 'unmounting', 'partitioning', 'formatting', 'mounting'].includes(formatProgress.value?.state))
+    let formatTimer = null
+    const pollFormat = async () => {
+      try {
+        const { data } = await api.get('/system/storage/format-status')
+        if (viewStopped) return
+        const wasActive = formatActive.value
+        formatProgress.value = data
+        if (['complete', 'failed'].includes(data.state)) {
+          clearInterval(formatTimer)
+          formatTimer = null
+          if (wasActive) showStatus(data.state === 'complete' ? 'success' : 'error', data.message)
+          loadConnectedDrives()
+          if (data.state === 'complete') loadMediaTargets()
+        } else if (formatActive.value && !formatTimer) {
+          formatTimer = setInterval(pollFormat, 2000)
+        }
+      } catch {
+        if (formatActive.value) formatProgress.value.message = 'Could not read formatting progress. The host may still be formatting. Keep the drive connected.'
+      }
+    }
+    const formatStarted = (job) => {
+      selectedFormatDrive.value = null
+      formatProgress.value = job
+      clearInterval(formatTimer)
+      formatTimer = setInterval(pollFormat, 2000)
+    }
     const openFormatConfirmation = (drive) => {
-      if (drive.preparation_eligible === true && !mediaTransferActive.value) {
+      if (drive.preparation_eligible === true && !mediaTransferActive.value && !formatActive.value) {
         selectedFormatDrive.value = { ...drive }
       }
     }
@@ -3228,6 +3257,7 @@ export default {
       loadStorageInfo()
       loadMediaTargets()
       recoverMediaTransfer()
+      pollFormat()
       loadSpeciesList()
       // Its failure message never auto-clears, so it must not blame a restart
       // already under way; the watcher above loads it once services are back.
@@ -3244,6 +3274,7 @@ export default {
       window.removeEventListener('focus', refreshOnFocus)
       clearTimeout(settingsRetryTimer)
       clearInterval(driveDiscoveryTimer)
+      clearInterval(formatTimer)
       unwatchSettingsStatus()
     })
 
@@ -3276,6 +3307,9 @@ export default {
       mediaStorageStatus,
       driveDiscovery,
       selectedFormatDrive,
+      formatStarted,
+      formatActive,
+      formatProgress,
       openFormatConfirmation,
       toggleDriveDiscovery,
       formatDriveSize,

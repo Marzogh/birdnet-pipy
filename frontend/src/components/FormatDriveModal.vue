@@ -2,7 +2,7 @@
   <dialog
     ref="dialog"
     aria-labelledby="format-drive-title"
-    aria-describedby="format-drive-warning format-drive-disabled"
+    aria-describedby="format-drive-warning"
     class="m-auto w-full max-w-sm rounded-xl p-0 shadow-xl backdrop:bg-black/50"
     @cancel.prevent="$emit('close')"
   >
@@ -66,18 +66,8 @@
       >
         {{ error }}
       </p>
-      <p
-        v-if="plan"
-        class="mt-3 text-sm text-gray-700"
-        role="status"
-      >
-        Would erase all data on {{ plan.drive.path }} and format it as {{ plan.filesystem }}. No changes made.
-      </p>
-      <p
-        id="format-drive-disabled"
-        class="mt-3 text-xs text-gray-600"
-      >
-        Formatting is disabled.
+      <p class="mt-3 text-xs text-gray-600">
+        Recording continues. No restart needed. The drive will be mounted for media storage.
       </p>
       <div class="flex gap-3 mt-4">
         <button
@@ -88,23 +78,13 @@
           Cancel
         </button>
         <button
-          v-if="!plan"
           type="button"
           :disabled="!nameMatches || !drive.device_id || checking"
           :aria-busy="checking"
           class="flex-1 rounded-lg bg-blue-600 py-2 text-sm text-white hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-600 disabled:cursor-not-allowed"
-          @click="checkPlan"
+          @click="startFormat"
         >
-          {{ checking ? 'Checking…' : 'Check plan' }}
-        </button>
-        <button
-          v-else
-          type="button"
-          disabled
-          aria-describedby="format-drive-disabled"
-          class="flex-1 rounded-lg bg-gray-200 py-2 text-sm text-gray-600 cursor-not-allowed"
-        >
-          Format drive
+          {{ checking ? 'Starting…' : 'Erase and format' }}
         </button>
       </div>
     </div>
@@ -120,27 +100,26 @@ const props = defineProps({
   drive: { type: Object, required: true },
   sizeLabel: { type: String, required: true }
 })
-defineEmits(['close'])
+const emit = defineEmits(['close', 'started'])
 
 const dialog = ref(null)
 const confirmation = ref('')
 const checking = ref(false)
-const plan = ref(null)
 const error = ref('')
-watch(confirmation, () => { plan.value = null; error.value = '' })
-const checkPlan = async () => {
+watch(confirmation, () => { error.value = '' })
+const startFormat = async () => {
   if (!nameMatches.value || !props.drive.device_id || checking.value) return
   checking.value = true
   error.value = ''
   try {
-    const { data } = await api.post('/system/storage/format-dry-run', {
+    const { data } = await api.post('/system/storage/format', {
       path: props.drive.path,
       device_id: props.drive.device_id,
       confirmation: confirmation.value
     })
-    plan.value = data
+    emit('started', data)
   } catch (failure) {
-    error.value = failure.response?.data?.error || 'Could not check the format plan. Try again.'
+    error.value = failure.response?.data?.error || 'Could not start formatting. Try again.'
   } finally {
     checking.value = false
   }

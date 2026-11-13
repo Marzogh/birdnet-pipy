@@ -142,6 +142,33 @@ http://localhost
 
 ---
 
+## External media drives
+
+Media storage needs a writable Linux filesystem with hard-link support. Use
+ext4. The database and settings remain in the installation's existing data
+folder.
+
+In Settings, expand **Connected drives**, choose **Format…**, type the exact drive
+name and select **Erase and format**. This erases the entire selected drive and
+creates and mounts one ext4 partition labelled `BIRDSTORE`. Back up anything you need first.
+Password protection must be enabled and you must be signed in. System drives and
+drives used by BirdNET or Docker cannot be formatted. Recording continues and no
+application restart is needed.
+
+Formatting requires the host helper installed by `install.sh`, including when
+updating. A container-only update does not install it. Formatting progress appears
+in the existing Settings progress banner. Keep the drive connected until the
+operation finishes. An interrupted job is reported as failed and is never replayed
+automatically.
+
+After formatting, the mounted drive appears as **BIRDSTORE** followed by a short
+identifier in the media storage dropdown. Select it and save to use it. The
+existing **Move existing media to new location** checkbox remains optional.
+Connected drives prepared this way remount automatically after reboot. If a drive
+is disconnected, the app uses its existing internal-storage fallback.
+
+---
+
 ## Uninstallation
 
 To remove BirdNET-PiPy:

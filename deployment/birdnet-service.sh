@@ -534,6 +534,14 @@ monitor_flags() {
     local discovery_count=0
     local discovery_state=unknown
     while true; do
+        # The fixed root-owned helper rechecks live storage and consumes one
+        # confirmed request. It runs synchronously, so no restart/update can
+        # interrupt it through this monitor. An idle call refreshes readiness.
+        if [ -x /usr/local/libexec/birdnet-pipy/storage-format.py ]; then
+            if ! sudo -n /usr/local/libexec/birdnet-pipy/storage-format.py; then
+                log_warning "Storage formatter unavailable; see service log for details"
+            fi
+        fi
         # Check update flag first (higher priority)
         if [ -f "$UPDATE_FLAG_FILE" ]; then
             perform_system_update
@@ -570,6 +578,15 @@ main() {
 
     # Setup audio socket (symlink to user PulseAudio or start system-wide)
     setup_audio_socket
+
+    # Mount saved media before container startup. The early boot unit normally
+    # does this before Docker itself starts; this also covers service restarts.
+    if [ -x /usr/local/libexec/birdnet-pipy/storage_mounts.py ]; then
+        log_info "Preparing managed media mounts..."
+        if ! sudo -n /usr/local/libexec/birdnet-pipy/storage_mounts.py; then
+            log_warning "Managed media mounts unavailable; check the service log"
+        fi
+    fi
 
     # Start Docker containers
     start_containers

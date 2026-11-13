@@ -248,6 +248,12 @@ install_prerequisites() {
 
     local packages_to_install=()
 
+    # Host drive discovery/formatting, independent of container packages.
+    command -v python3 >/dev/null || packages_to_install+=("python3")
+    command -v sfdisk >/dev/null || packages_to_install+=("fdisk")
+    command -v mkfs.ext4 >/dev/null || packages_to_install+=("e2fsprogs")
+    command -v udevadm >/dev/null || packages_to_install+=("udev")
+
     # Git (needed for clone/pull)
     if ! command -v git &> /dev/null; then
         packages_to_install+=("git")
@@ -924,7 +930,37 @@ install_service() {
 
 # Setup sudoers for passwordless audio operations
 # The service runs as non-root but needs sudo for PulseAudio/mount operations
+install_storage_formatter() {
+    install_prerequisites
+    print_status "Installing host drive formatter and media mount helper..."
+    # Never grant root execution of a helper in the user-writable checkout.
+    install -d -o root -g root -m 755 /usr/local/libexec/birdnet-pipy /etc/birdnet-pipy
+    install -d -o root -g root -m 700 /var/lib/birdnet-pipy
+    install -o root -g root -m 755 "$PROJECT_ROOT/deployment/storage-format.py" /usr/local/libexec/birdnet-pipy/storage-format.py
+    install -o root -g root -m 644 "$PROJECT_ROOT/backend/core/storage_devices.py" /usr/local/libexec/birdnet-pipy/storage_devices.py
+    install -o root -g root -m 755 "$PROJECT_ROOT/deployment/storage_mounts.py" /usr/local/libexec/birdnet-pipy/storage_mounts.py
+    python3 - "$PROJECT_ROOT" "$ACTUAL_UID" "$ACTUAL_GID" <<'PYCONFIG'
+import json, os, sys
+project = os.path.realpath(sys.argv[1])
+with open('/etc/birdnet-pipy/storage-format.json', 'w') as stream:
+    json.dump({'project': project, 'flags': project + '/data/flags', 'uid': int(sys.argv[2]), 'gid': int(sys.argv[3])}, stream)
+PYCONFIG
+    chown root:root /etc/birdnet-pipy/storage-format.json
+    chmod 644 /etc/birdnet-pipy/storage-format.json
+    install -o root -g root -m 644 "$PROJECT_ROOT/deployment/birdnet-media-mounts.service" /etc/systemd/system/birdnet-media-mounts.service
+    systemctl daemon-reload
+    systemctl enable birdnet-media-mounts.service
+    # Prepare propagation before creating containers. Missing saved drives do
+    # not prevent startup; only previously formatted UUIDs are remounted.
+    /usr/local/libexec/birdnet-pipy/storage_mounts.py
+    set_env_var "BIRDNET_MANAGED_MEDIA_PATH" "/var/lib/birdnet-pipy/media"
+    set_env_var "BIRDNET_MANAGED_MEDIA_PROPAGATION" "rslave"
+    chown "$ACTUAL_UID:$ACTUAL_GID" "$PROJECT_ROOT/.env"
+    print_status "Host drive formatter and media mount helper installed"
+}
+
 setup_sudoers() {
+    install_storage_formatter
     print_status "Setting up sudoers for audio operations..."
 
     local SUDOERS_FILE="/etc/sudoers.d/birdnet-pipy"
@@ -934,6 +970,11 @@ setup_sudoers() {
 # BirdNET-PiPy sudoers configuration
 # Allows the service user to manage PulseAudio without password prompts
 # Created by install.sh - remove with: sudo rm $SUDOERS_FILE
+
+# Root-owned formatter, without command-line arguments. It accepts only a
+# fixed request file and independently verifies the selected drive.
+$ACTUAL_USER ALL=(root) NOPASSWD: /usr/local/libexec/birdnet-pipy/storage-format.py ""
+$ACTUAL_USER ALL=(root) NOPASSWD: /usr/local/libexec/birdnet-pipy/storage_mounts.py ""
 
 # PulseAudio management
 $ACTUAL_USER ALL=(ALL) NOPASSWD: $(_bin pulseaudio) --system *
@@ -1105,6 +1146,8 @@ perform_update() {
     if [ "$LOCAL" = "$REMOTE" ]; then
         print_status "Already up to date, no code changes needed"
 
+        setup_sudoers
+
         # Check if version.json is stale (e.g., previous build failed mid-way)
         # If so, rebuild to fix the version mismatch
         local current_commit_short
@@ -1126,7 +1169,6 @@ perform_update() {
         configure_pulseaudio
         create_service_file
         install_service
-        setup_sudoers
         # Same-commit outcome: the frontend's update poll can't see a commit
         # change here, so the explicit success status is its completion signal
         write_update_status "success"
@@ -1179,6 +1221,9 @@ perform_update() {
     find "$PROJECT_ROOT" -maxdepth 1 -mindepth 1 -not -name data \
         -exec chown -R "$ACTUAL_USER:$ACTUAL_USER" {} +
 
+    # Prepare managed mounts before a build can create containers.
+    setup_sudoers
+
     # Step 6: Ensure swap on low-memory systems, then pull or build
     setup_swap || print_warning "Swap setup failed (continuing without swap)"
     setup_gpu_mem || print_warning "GPU memory setup failed (continuing with default split)"
@@ -1201,7 +1246,6 @@ perform_update() {
     configure_pulseaudio
     create_service_file
     install_service
-    setup_sudoers
     fix_config_permissions
 
     # Step 8: Success - exit for systemd restart
@@ -1467,6 +1511,7 @@ main() {
 
     # Application setup
     fix_data_permissions
+    setup_sudoers
     setup_swap || print_warning "Swap setup failed (continuing without swap)"
     setup_gpu_mem || print_warning "GPU memory setup failed (continuing with default split)"
     pull_or_build
@@ -1475,7 +1520,6 @@ main() {
     # Service setup
     create_service_file
     install_service
-    setup_sudoers
 
     # Validate installation
     validate_installation

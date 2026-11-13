@@ -50,6 +50,32 @@ class TestMediaStorageTargets:
 
         assert targets == [INTERNAL_TARGET]
 
+    def test_managed_mounted_drive_appears_without_manual_external_configuration(self):
+        drive = '/managed-media/12345678-1234-1234-1234-123456789abc'
+        with patch.object(media_storage, '_internal_target_info', return_value=INTERNAL_TARGET), \
+            patch.object(media_storage, '_external_media_configured', return_value=False), \
+            patch.object(media_storage.os.path, 'isdir', return_value=True), \
+            patch.object(media_storage.os.path, 'realpath', side_effect=lambda path: path), \
+            patch.object(media_storage.os, 'access', return_value=True), \
+            patch.object(media_storage.shutil, 'disk_usage') as usage, \
+            patch.object(media_storage, '_mount_filesystems', return_value={drive: 'ext4'}):
+            usage.return_value.free = 500
+            usage.return_value.total = 1000
+            targets = media_storage.get_available_media_targets()
+            assert [target['id'] for target in targets] == ['internal', drive]
+            assert targets[1]['label'] == 'BIRDSTORE 12345678'
+            status = media_storage.get_media_storage_status({'storage': {'media_target': drive}})
+            assert status['effective_target_id'] == drive
+            assert status['fallback_active'] is False
+
+    def test_empty_managed_mount_folder_is_not_offered_as_a_drive(self):
+        with patch.object(media_storage, '_internal_target_info', return_value=INTERNAL_TARGET), \
+            patch.object(media_storage, '_external_media_configured', return_value=False), \
+            patch.object(media_storage.os.path, 'isdir', return_value=True), \
+            patch.object(media_storage.os.path, 'realpath', side_effect=lambda path: path), \
+            patch.object(media_storage, '_mount_filesystems', return_value={'/managed-media': 'ext4'}):
+            assert media_storage.get_available_media_targets() == [INTERNAL_TARGET]
+
     def test_configured_parent_exposes_only_direct_child_mounts(self):
         root = '/external-media'
         filesystems = {
@@ -165,3 +191,5 @@ class TestMediaStorageTargets:
             assert media_storage.is_valid_media_target_id('/external-media/USB_ONE') is True
             assert media_storage.is_valid_media_target_id('/external-media/USB_ONE/subdir') is False
             assert media_storage.is_valid_media_target_id('/tmp/not-allowed') is False
+            assert media_storage.is_valid_media_target_id('/managed-media/drive') is True
+            assert media_storage.is_valid_media_target_id('/managed-media') is False

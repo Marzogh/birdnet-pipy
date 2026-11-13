@@ -9,8 +9,6 @@ import os
 import time
 
 import requests
-from flask import jsonify, request
-
 from core import api_infra as infra
 from core.api_infra import _run_db, api
 from core.api_utils import handle_api_errors
@@ -37,6 +35,7 @@ from core.update_service import (
     should_show_update_note,
     write_flag,
 )
+from flask import jsonify, request
 
 logger = get_logger(__name__)
 
@@ -73,6 +72,37 @@ def get_media_transfer():
 def get_connected_storage():
     from core.storage_discovery import get_storage_devices
     return jsonify(get_storage_devices())
+
+
+@api.route('/api/system/storage/format-status', methods=['GET'])
+@require_auth
+@handle_api_errors
+def get_drive_format_status():
+    from core.storage_format import format_status
+    return jsonify(format_status())
+
+
+@api.route('/api/system/storage/format', methods=['POST'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def start_drive_format():
+    from core.auth import is_auth_enabled, is_authenticated
+    from core.storage_format import format_status, queue_format
+    # require_auth also permits auth-disabled installations. Destructive work
+    # requires a signed-in owner, even when other settings are publicly editable.
+    if not is_auth_enabled() or not is_authenticated():
+        return jsonify({'error': 'Enable password protection and sign in before formatting a drive.'}), 403
+    if not format_status()['ready']:
+        return jsonify({'error': 'Drive formatting is unavailable. Update the host installation first.'}), 503
+    # Reuse the same current-inventory and typed-name checks as the dry run.
+    result = preview_drive_format()
+    if isinstance(result, tuple):
+        return result
+    try:
+        return jsonify(queue_format(request.get_json())), 202
+    except FileExistsError:
+        return jsonify({'error': 'A drive is already being formatted.'}), 409
 
 
 @api.route('/api/system/storage/format-dry-run', methods=['POST'])

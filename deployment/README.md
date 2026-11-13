@@ -112,16 +112,42 @@ Protected storage is identified from the running API container's mount mappings
 and the host filesystem identities, including separate database/settings mounts.
 Only mount metadata is inspected; container environment variables are not read.
 The label describes the current inventory and does not authorize formatting.
-Any future formatting action must recheck eligibility against current devices.
-Eligible drives have a **Format…** confirmation preview showing the selected
-drive, the erase warning and ext4 as the new format. The drive name must match
-exactly in the confirmation field. **Check plan** sends a dry-run request that
-rechecks the drive identity, eligibility and typed name against the latest
-non-stale host snapshot. The returned plan identifies the drive and specifies
-that all its data would be erased and replaced with ext4. No disk command,
-formatting job or mount operation is executed. The final **Format drive**
-action remains disabled. This plan is not authorization to format later; an
-actual formatting operation will need fresh host checks at execution time.
+Eligible drives have a **Format…** confirmation showing the drive, erase warning
+and ext4 as the new format. Type the exact drive name, then choose **Erase and
+format**. This requires password protection and a signed-in owner.
+
+The installed root-owned helper rechecks live identity, eligibility, all BirdNET
+bind/volume filesystems, the configured media location and Docker storage before
+writing. It refuses protected drives, unmounts the selected unused drive, creates
+one GPT partition and formats it as ext4 labelled `BIRDSTORE`. It verifies the
+filesystem, mounts it and grants the service user write access before reporting
+completion. Busy drives fail without forced unmounts. Recording continues and no
+application restart is needed. The dropdown refreshes after mounting; selecting
+the new location and moving existing media remain separate choices.
+
+`install.sh` installs the helper and its pure eligibility rules into
+`/usr/local/libexec/birdnet-pipy`, owned by root, with fixed installation metadata
+in `/etc/birdnet-pipy/storage-format.json`. Sudo permits only the installed helper
+with no command-line arguments. The host service consumes confirmed requests from
+`data/flags/storage-format-request.json`; progress is published to
+`data/flags/storage-format-status.json` and shown in the existing Settings banner.
+A root-owned journal in `/var/lib/birdnet-pipy` prevents replay after interruption.
+API writes, including restarts and media transfers, are blocked while a request
+is pending. A container-only update does not install these helpers or their mounts.
+
+The root-owned `storage_mounts.py` helper mounts prepared filesystems by UUID below
+`/var/lib/birdnet-pipy/media`. A UUID registry in
+`/var/lib/birdnet-pipy/media-mounts.json` records only drives prepared through this
+flow. `birdnet-media-mounts.service` restores connected drives before Docker starts;
+a missing drive is logged and startup continues. This dedicated parent is a shared
+bind mount, exposed to containers at `/managed-media` with host-to-container
+propagation (`rslave`). New mounts become visible without restarting recording.
+An empty parent folder is never offered as media storage. The installer prepares
+this parent and records `BIRDNET_MANAGED_MEDIA_PATH` and
+`BIRDNET_MANAGED_MEDIA_PROPAGATION=rslave` in `.env` before creating containers.
+Existing installations must use the updated Compose bindings before formatting
+is enabled. Without the host installation, Compose uses an empty local folder
+with private propagation, leaving managed mounting unavailable.
 
 The existing `birdnet-pipy` host service refreshes this inventory every
 15 seconds using `lsblk`. The app receives a metadata snapshot through its
@@ -141,7 +167,8 @@ Use **ext4** for an external drive on the Raspberry Pi. The current media
 writer requires hard links to publish completed clips safely; **FAT32 and
 exFAT do not support this and are not suitable**. Other filesystems have not
 been validated for this feature. The drive must be mounted read/write and
-writable by the BirdNET-PiPy service user. BirdNET-PiPy does not format drives.
+writable by the BirdNET-PiPy service user. Formatting through Settings mounts
+the drive but does not select it for media storage.
 
 See the [filesystem feature comparison](https://learn.microsoft.com/en-us/windows/win32/fileio/filesystem-functionality-comparison)
 for FAT32/exFAT hard-link limitations.
@@ -194,11 +221,12 @@ that need one continue through the normal restart flow.
 
 Media is written below a `BirdNET-PiPy/` subdirectory on that target. If the
 directory is absent or not writable, new media falls back to internal storage;
-existing internal files remain readable. Use a stable mount configured in
-`/etc/fstab` so a removable drive does not acquire a different path after boot.
+existing internal files remain readable. Manually configured drives should use a
+stable mount in `/etc/fstab`. Drives prepared through Settings use the UUID registry
+and boot mount service instead.
 
-For host safety, only `BIRDNET_MEDIA_PATH` is exposed to the containers; the
-application does not mount or scan the host's full `/media` or `/mnt` trees.
+Only `BIRDNET_MEDIA_PATH` and the dedicated managed-media folder are exposed to
+the containers. The application does not scan the host's full `/media` or `/mnt` trees.
 
 ---
 

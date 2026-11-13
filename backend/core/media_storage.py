@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 MEDIA_TARGET_INTERNAL = "internal"
 EXTERNAL_MEDIA_APP_DIR = "BirdNET-PiPy"
-EXTERNAL_MEDIA_ROOTS = ("/external-media",)
+EXTERNAL_MEDIA_ROOTS = ("/external-media", "/managed-media")
 
 _INTERNAL_MEDIA_ROOT = os.path.join(BASE_DIR, "data")
 
@@ -117,7 +117,9 @@ def _external_target_info(path: str, filesystems: dict[str, str]) -> dict[str, A
     return {
         "id": real_path,
         "label": (
-            "Configured external storage"
+            "BIRDSTORE " + os.path.basename(real_path)[:8]
+            if os.path.dirname(real_path) == "/managed-media"
+            else "Configured external storage"
             if is_root
             else os.path.basename(real_path.rstrip(os.sep))
         ),
@@ -137,13 +139,14 @@ def get_available_media_targets() -> list[dict[str, Any]]:
     seen: set[str] = set()
     targets = [_internal_target_info()]
 
-    if not _external_media_configured():
-        return targets
-
     for root in EXTERNAL_MEDIA_ROOTS:
+        if root == "/external-media" and not _external_media_configured():
+            continue
         if not os.path.isdir(root):
             continue
         for candidate in _iter_candidate_dirs(root, filesystems):
+            if root == "/managed-media" and candidate == root:
+                continue
             info = _external_target_info(candidate, filesystems)
             if not info:
                 continue
@@ -169,7 +172,7 @@ def is_valid_media_target_id(target_id: Any) -> bool:
 
     real_path = os.path.realpath(target_id)
     return any(
-        real_path == root or os.path.dirname(real_path) == root
+        (real_path == root and root != "/managed-media") or os.path.dirname(real_path) == root
         for root in EXTERNAL_MEDIA_ROOTS
     )
 

@@ -462,7 +462,7 @@ describe('Settings', () => {
       await details.trigger('toggle')
     })
 
-    it('opens a dry-run format confirmation for an eligible synthetic drive', async () => {
+    it('opens a format confirmation for an eligible synthetic drive', async () => {
       mockApi.get.mockImplementation((url) => url === '/system/storage-devices'
         ? Promise.resolve({ data: { state: 'available', devices: [{
             path: '/dev/sda', device_id: 'synthetic-device', name: 'BIRDSTORE', size_bytes: 500000000000,
@@ -481,11 +481,42 @@ describe('Settings', () => {
       expect(wrapper.get('dialog').text()).toContain('BIRDSTORE · 500 GB')
       expect(wrapper.get('dialog').text()).toContain('/dev/sda')
       const buttons = wrapper.get('dialog').findAll('button')
-      expect(wrapper.get('dialog').text()).toContain('Formatting is disabled.')
+      expect(wrapper.get('dialog').text()).toContain('Erase and format')
       await buttons.find(button => button.text() === 'Cancel').trigger('click')
       expect(wrapper.find('dialog').exists()).toBe(false)
       expect(mockApi.put).not.toHaveBeenCalled()
       expect(mockApi.post).not.toHaveBeenCalled()
+    })
+
+    it('reuses the existing progress banner for a synthetic formatting job', async () => {
+      vi.useFakeTimers()
+      let status = { state: 'idle', ready: true }
+      const drive = { id: '/managed-media/synthetic-uuid', label: 'BIRDSTORE 12345678', available: true }
+      mockApi.get.mockImplementation(url => {
+        if (url === '/system/storage/format-status') return Promise.resolve({ data: status })
+        if (url === '/system/media-targets') return Promise.resolve({
+          data: { targets: status.state === 'complete' ? [drive] : [] }
+        })
+        return defaultGetResponse(url)
+      })
+      const wrapper = mountSettings()
+      await flushPromises()
+      wrapper.vm.formatStarted({ id: 'synthetic-job', state: 'queued', message: 'Waiting for host…' })
+      await flushPromises()
+      expect(wrapper.text()).toContain('Waiting for host…')
+      status = { id: 'synthetic-job', state: 'formatting', message: 'Creating ext4 filesystem…' }
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(wrapper.text()).toContain('Creating ext4 filesystem…')
+      status = { id: 'synthetic-job', state: 'mounting', message: 'Mounting formatted drive…' }
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(wrapper.text()).toContain('Mounting formatted drive…')
+      expect(wrapper.vm.formatActive).toBe(true)
+      status = { id: 'synthetic-job', state: 'complete', message: 'Drive formatted and mounted.' }
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(wrapper.vm.formatActive).toBe(false)
+      expect(wrapper.text()).toContain('Drive formatted and mounted.')
+      expect(wrapper.get('#mediaStorageTarget').text()).toContain('BIRDSTORE 12345678')
+      vi.useRealTimers()
     })
 
     it('loads and displays available media storage targets', async () => {
