@@ -11,7 +11,6 @@ import time
 import requests
 from flask import jsonify, request
 
-from config.settings import BASE_DIR
 from core import api_infra as infra
 from core.api_infra import _run_db, api
 from core.api_utils import handle_api_errors
@@ -48,6 +47,23 @@ _update_check_cache = {
     'cache_key': None  # format: "channel:current_commit"
 }
 UPDATE_CHECK_CACHE_TTL = 3600  # 1 hour in seconds
+
+
+@api.route('/api/system/media-transfer', methods=['GET'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def get_media_transfer():
+    from core.media_transfer import transfer_status
+    from core.runtime_config import read_saved_settings
+    from core.settings_store import settings_etag
+    progress = transfer_status()
+    if progress['state'] in ('complete', 'failed'):
+        settings = read_saved_settings(force_reload=True)
+        response = jsonify({**progress, 'settings': settings})
+        response.headers['ETag'] = settings_etag(settings)
+        return response
+    return jsonify(progress)
 
 
 @api.route('/api/system/media-targets', methods=['GET'])

@@ -35,14 +35,6 @@ from core.db import DatabaseManager
 from core.fd_diagnostics import log_fd_exhaustion_if_needed
 from core.internal_auth import INTERNAL_SECRET_HEADER, get_or_create_internal_secret
 from core.logging_config import get_logger, setup_logging
-from core.media_storage import (
-    ensure_effective_media_dirs,
-    get_effective_extracted_audio_dir,
-    get_effective_recording_dir,
-    get_effective_spectrogram_dir,
-    get_media_storage_status,
-    get_recording_scan_dirs,
-)
 from core.media_ownership import (
     KIND_AUDIO,
     KIND_SPECTROGRAM,
@@ -50,6 +42,14 @@ from core.media_ownership import (
     DetectionMissingError,
     publish_media_file,
     with_media_suffix,
+)
+from core.media_storage import (
+    ensure_effective_media_dirs,
+    get_effective_extracted_audio_dir,
+    get_effective_recording_dir,
+    get_effective_spectrogram_dir,
+    get_media_storage_status,
+    get_recording_scan_dirs,
 )
 from core.notification_service import get_notification_service
 from core.recording_schedule import (
@@ -110,6 +110,7 @@ db_manager = DatabaseManager()
 
 # Global flag to signal all threads to stop
 stop_flag = threading.Event()
+shutdown_requested = threading.Event()
 
 # Ensure directories exist
 for dir in [RECORDING_DIR, EXTRACTED_AUDIO_DIR, SPECTROGRAM_DIR]:
@@ -1223,7 +1224,42 @@ def signal_handler(signum, _):
     """Handle shutdown signals gracefully"""
     signal_name = signal.Signals(signum).name
     logger.info(f"Received {signal_name} signal, initiating graceful shutdown")
+    shutdown_requested.set()
     shutdown()
+
+def start_media_workers():
+    """Start stopped workers, including after a media move."""
+    global recording_thread, processing_thread, storage_thread
+    if shutdown_requested.is_set():
+        return
+    stop_flag.clear()
+    specs = (
+        ('recording_thread', continuous_audio_recording,
+         (get_logger(f"{__name__}.recording"),), 'RecordingThread'),
+        ('processing_thread', process_audio_files, (), 'ProcessingThread'),
+        ('storage_thread', storage_monitor_loop, (stop_flag, db_manager), 'StorageThread'),
+    )
+    for name, target, args, title in specs:
+        old = globals().get(name)
+        if old is not None and old.is_alive():
+            continue
+        worker = threading.Thread(target=target, args=args, name=title)
+        globals()[name] = worker
+        worker.start()
+    logger.info('Recording, analysis and cleanup workers running')
+
+
+def pause_media_workers():
+    stop_flag.set()
+    workers = [globals().get(name) for name in
+               ('recording_thread', 'processing_thread', 'storage_thread')]
+    for worker in workers:
+        if worker is not None:
+            worker.join(timeout=120)
+    if any(worker is not None and worker.is_alive() for worker in workers):
+        raise RuntimeError('Recording or processing did not stop. No files were moved.')
+    logger.info('Recording, analysis and cleanup paused for media move')
+
 
 if __name__ == "__main__":
     # Register signal handlers for graceful shutdown
@@ -1245,6 +1281,9 @@ if __name__ == "__main__":
     # This loop now polls runtime settings, so detection can start without restarting the container.
     waiting_message_logged = False
     while not stop_flag.is_set():
+        from core.media_transfer import handle_pending_transfer
+        handle_pending_transfer(lambda: None, lambda: None, db_manager,
+                                shutdown_requested.is_set)
         current_settings = get_runtime_settings()
         if _is_location_ready(current_settings):
             break
@@ -1279,32 +1318,13 @@ if __name__ == "__main__":
     from core.media_frontier import ensure_live_media_index
     ensure_live_media_index(db_manager)
 
-    # Start the recording thread
-    recording_logger = get_logger(f"{__name__}.recording")
-    recording_thread = threading.Thread(
-        target=continuous_audio_recording,
-        args=(recording_logger,),
-        name="RecordingThread"
-    )
-    recording_thread.start()
-    logger.info("Recording thread started")
-
-    # Start the processing thread
-    processing_thread = threading.Thread(target=process_audio_files, name="ProcessingThread")
-    processing_thread.start()
-    logger.info("Processing thread started")
-
-    # Start the storage monitor thread
-    storage_thread = threading.Thread(
-        target=storage_monitor_loop,
-        args=(stop_flag, db_manager),
-        name="StorageThread"
-    )
-    storage_thread.start()
-    logger.info("Storage monitor thread started")
+    start_media_workers()
 
     try:
         while not stop_flag.is_set():
+            from core.media_transfer import handle_pending_transfer
+            handle_pending_transfer(pause_media_workers, start_media_workers, db_manager,
+                                    shutdown_requested.is_set)
             time.sleep(1)
     except KeyboardInterrupt:
         # Signal handler will handle this

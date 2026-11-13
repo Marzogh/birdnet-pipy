@@ -164,6 +164,7 @@ const mockSettings = {
     quiet_hours: { enabled: false, start: '22:00', end: '06:00' }
   },
   storage: {
+    media_target: 'internal',
     auto_cleanup_enabled: true,
     trigger_percent: 85,
     target_percent: 80,
@@ -436,7 +437,16 @@ describe('Settings', () => {
     })
 
     it('loads and displays available media storage targets', async () => {
+      let moveQueued = false
+      const movedSettings = createMockSettings()
+      movedSettings.storage.media_target = '/external-media/USB_ONE'
       mockApi.get.mockImplementation((url) => {
+        if (url === '/system/media-transfer') return Promise.resolve({
+          data: moveQueued
+            ? { state: 'complete', message: 'Media moved · Recording resumed', settings: movedSettings,
+                changes: { full_restart_required: false, changed_paths: ['storage.media_target'] } }
+            : { state: 'idle' }
+        })
         if (url !== '/system/media-targets') return defaultGetResponse(url)
         return Promise.resolve({
           data: {
@@ -471,17 +481,26 @@ describe('Settings', () => {
       expect(wrapper.text()).toContain('Database and settings stay where they are.')
 
       await moveCheckbox.setValue(true)
+      expect(wrapper.text()).toContain('Recording pauses during the move and resumes automatically.')
+      mockApi.put.mockImplementation(() => {
+        moveQueued = true
+        return Promise.resolve({ data: { transfer: { state: 'waiting', message: 'Waiting to pause recording' } } })
+      })
       await wrapper.vm.saveSettings()
       await flushPromises()
-      expect(mockApi.put).not.toHaveBeenCalled()
-      expect(wrapper.text()).toContain('Existing media cannot be moved yet.')
+      expect(mockApi.put).toHaveBeenCalledWith('/settings',
+        { storage: { media_target: '/external-media/USB_ONE' } },
+        { headers: { 'X-Move-Existing-Media': 'true' } })
+      expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_ONE')
+      expect(wrapper.text()).toContain('Media moved · Recording resumed')
+      expect(mockWaitForRestart).not.toHaveBeenCalled()
 
       await driveSelect.setValue('/external-media/USB_TWO')
       expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_TWO')
       expect(wrapper.find('#mediaStorageMoveExisting').element.checked).toBe(false)
 
-      await driveSelect.setValue('internal')
-      expect(wrapper.vm.settings.storage.media_target).toBe('internal')
+      await driveSelect.setValue('/external-media/USB_ONE')
+      expect(wrapper.vm.settings.storage.media_target).toBe('/external-media/USB_ONE')
       expect(wrapper.vm.hasUnsavedChanges).toBe(false)
       expect(wrapper.find('#mediaStorageMoveExisting').exists()).toBe(false)
       expect(wrapper.text()).not.toContain('Changed media storage not saved')

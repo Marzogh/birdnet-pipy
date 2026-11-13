@@ -43,6 +43,22 @@ KIND_DIRS = {
 }
 
 
+def media_directories(kind):
+    from core.media_storage import get_audio_search_dirs, get_spectrogram_search_dirs
+    resolver = get_audio_search_dirs if kind == KIND_AUDIO else get_spectrogram_search_dirs
+    return resolver(internal_dir=KIND_DIRS[kind])
+
+
+def media_path(kind, filename):
+    """Find an owned file after a storage change, retaining its filename."""
+    directories = media_directories(kind)
+    for directory in directories:
+        path = os.path.join(directory, filename)
+        if os.path.exists(path):
+            return path
+    return os.path.join(directories[0], filename)
+
+
 class MediaOwnershipError(Exception):
     """Base for ownership-boundary failures."""
 
@@ -238,15 +254,19 @@ def unlink_owned_files(owned):
     """
     removed = []
     for f in owned:
-        path = os.path.join(KIND_DIRS[f['kind']], f['filename'])
-        try:
-            os.remove(path)
+        failed = False
+        for directory in media_directories(f['kind']):
+            path = os.path.join(directory, f['filename'])
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                failed = True
+                logger.warning("Failed to unlink owned media file", extra={
+                    'path': path, 'error': str(e)})
+        if not failed:
             removed.append(f['filename'])
-        except FileNotFoundError:
-            removed.append(f['filename'])
-        except OSError as e:
-            logger.warning("Failed to unlink owned media file", extra={
-                'path': path, 'error': str(e)})
     return removed
 
 

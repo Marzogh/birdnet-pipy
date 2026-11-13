@@ -125,12 +125,24 @@ remain in `./data`.
    BIRDNET_MEDIA_PATH=/media/birdnet
    ```
 
-3. Restart the service, choose **External media** under **Settings → Storage**,
-   then select the drive. Choose **SD card / internal storage** to switch back:
+3. Restart the service, then select the drive under **Settings → Storage →
+   Media storage**. Choose **SD card / internal storage** to switch back:
 
    ```bash
    sudo systemctl restart birdnet-pipy
    ```
+
+Changing the location leaves existing media in place by default. Select
+**Move existing media to new location** before saving to move recordings,
+clips and spectrograms from the available storage locations. Recording,
+analysis and cleanup pause during the move, then resume automatically. The
+existing Settings progress banner shows the stage, files and bytes copied;
+it also restores the progress display if the page is refreshed.
+
+The move checks free space and verifies copies before saving the new location
+and removing originals. The database and settings file stay in `./data`.
+A media move alone does not require a container restart. Other saved changes
+that need one continue through the normal restart flow.
 
 Media is written below a `BirdNET-PiPy/` subdirectory on that target. If the
 directory is absent or not writable, new media falls back to internal storage;

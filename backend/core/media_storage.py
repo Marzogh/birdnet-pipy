@@ -297,13 +297,24 @@ def _unique_existing_paths(paths: list[str]) -> list[str]:
     return result
 
 
+def _media_search_dirs(effective, internal_dir, subdir):
+    paths = [effective, internal_dir]
+    for target in get_available_media_targets():
+        if target['id'] != MEDIA_TARGET_INTERNAL:
+            candidate = os.path.join(target['mount_path'], EXTERNAL_MEDIA_APP_DIR, subdir)
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+    return _unique_existing_paths(paths)
+
+
 def get_recording_scan_dirs(
     settings: dict[str, Any] | None = None,
     internal_dir: str | None = None,
 ) -> list[str]:
     internal_dir = internal_dir or RECORDING_DIR
-    paths = [get_effective_recording_dir(settings, internal_dir), internal_dir]
-    return _unique_existing_paths(paths)
+    return _media_search_dirs(
+        get_effective_recording_dir(settings, internal_dir), internal_dir, 'audio/recordings'
+    )
 
 
 def get_audio_search_dirs(
@@ -311,8 +322,9 @@ def get_audio_search_dirs(
     internal_dir: str | None = None,
 ) -> list[str]:
     internal_dir = internal_dir or EXTRACTED_AUDIO_DIR
-    paths = [get_effective_extracted_audio_dir(settings, internal_dir), internal_dir]
-    return _unique_existing_paths(paths)
+    return _media_search_dirs(
+        get_effective_extracted_audio_dir(settings, internal_dir), internal_dir, 'audio/extracted_songs'
+    )
 
 
 def get_spectrogram_search_dirs(
@@ -320,8 +332,9 @@ def get_spectrogram_search_dirs(
     internal_dir: str | None = None,
 ) -> list[str]:
     internal_dir = internal_dir or SPECTROGRAM_DIR
-    paths = [get_effective_spectrogram_dir(settings, internal_dir), internal_dir]
-    return _unique_existing_paths(paths)
+    return _media_search_dirs(
+        get_effective_spectrogram_dir(settings, internal_dir), internal_dir, 'spectrograms'
+    )
 
 
 def get_allowed_recording_dirs(

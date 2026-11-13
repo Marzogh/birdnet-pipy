@@ -22,6 +22,14 @@ setup_logging('api')
 logger = get_logger(__name__)
 
 api = Blueprint('api', __name__)
+@api.before_request
+def protect_media_move():
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        from core.media_transfer import transfer_pending
+        if transfer_pending():
+            return jsonify({'error': 'Media is being moved. Wait for it to finish before making changes.'}), 409
+
+
 db_manager = DatabaseManager()
 db_executor = create_db_executor('threading')
 

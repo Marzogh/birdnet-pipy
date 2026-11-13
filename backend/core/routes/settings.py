@@ -372,6 +372,19 @@ def update_settings():
         changed_paths = get_setting_differences(current_settings, new_settings)
         change_plan = classify_setting_changes(changed_paths, current_settings, new_settings)
 
+        if request.headers.get('X-Move-Existing-Media') == 'true':
+            if 'storage.media_target' not in changed_paths:
+                return jsonify({'error': 'Choose a different media storage location first.'}), 400
+            from core.media_transfer import queue_transfer
+            try:
+                transfer = queue_transfer(new_settings, {
+                    'changed_paths': changed_paths,
+                    **change_plan,
+                })
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
+            return jsonify({'transfer': transfer}), 202
+
         # Save settings to JSON file and clear caches
         save_user_settings(new_settings)
         # display.* preferences feed _localize_* in the cached payload;
@@ -402,7 +415,7 @@ def update_settings():
         if not changed_paths:
             message = 'No changes detected.'
         elif change_plan['full_restart_required']:
-            message = 'Settings saved. Restart services to apply the model change.'
+            message = 'Settings saved. Restart services to apply these changes.'
         else:
             message = 'Settings saved. Live settings take effect at the next processing boundary.'
 

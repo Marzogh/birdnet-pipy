@@ -17,7 +17,7 @@
         class="shrink-0 ml-4"
         :loading="loading"
         loading-text="Saving..."
-        :disabled="!loaded || restartInProgress || quietHoursSaving || sourceSaving"
+        :disabled="!loaded || restartInProgress || mediaTransferActive || quietHoursSaving || sourceSaving"
         @click="saveSettings"
       >
         {{ modelChanged ? 'Save and restart' : 'Save' }}
@@ -83,12 +83,26 @@
 
     <!-- Restart/Update Progress (replaces update available banner when active) -->
     <div
-      v-if="(serviceRestart.isRestarting.value || systemUpdate.isRestarting.value) && (serviceRestart.restartMessage.value || systemUpdate.restartMessage.value)"
+      v-if="mediaTransferActive || ((serviceRestart.isRestarting.value || systemUpdate.isRestarting.value) && (serviceRestart.restartMessage.value || systemUpdate.restartMessage.value))"
       class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg"
     >
       <div class="flex items-center gap-2 text-blue-700 text-sm">
         <Spinner class="h-4 w-4" />
-        <span>{{ serviceRestart.restartMessage.value || systemUpdate.restartMessage.value }}</span>
+        <span role="status">{{ mediaTransferActive ? mediaTransferMessage : serviceRestart.restartMessage.value || systemUpdate.restartMessage.value }}</span>
+      </div>
+      <div
+        v-if="mediaTransferActive && mediaTransferProgress.bytes_total > 0"
+        class="mt-2 w-full h-2 bg-gray-200 rounded-full overflow-hidden"
+        role="progressbar"
+        aria-label="Media copied"
+        :aria-valuenow="mediaTransferPercent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div
+          class="h-full bg-green-600 rounded-full transition-all duration-300"
+          :style="{ width: mediaTransferPercent + '%' }"
+        />
       </div>
     </div>
 
@@ -144,7 +158,7 @@
     <fieldset
       v-if="loaded"
       class="space-y-4"
-      :disabled="loading || serviceRestart.isRestarting.value || systemUpdate.isRestarting.value"
+      :disabled="loading || mediaTransferActive || serviceRestart.isRestarting.value || systemUpdate.isRestarting.value"
     >
       <!-- Location & Audio -->
       <div class="bg-white rounded-lg shadow-sm border border-gray-100 p-5">
@@ -354,6 +368,7 @@
             <select
               id="mediaStorageTarget"
               v-model="settings.storage.media_target"
+              :disabled="mediaTransferActive"
               class="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
             >
               <option
@@ -377,6 +392,7 @@
               <input
                 id="mediaStorageMoveExisting"
                 v-model="moveExistingMedia"
+                :disabled="mediaTransferActive"
                 type="checkbox"
                 class="mt-1 rounded text-green-600 focus:ring-green-600"
               >
@@ -384,6 +400,12 @@
             </label>
             <p class="mt-1 text-xs text-gray-500">
               Database and settings stay where they are.
+            </p>
+            <p
+              v-if="moveExistingMedia"
+              class="mt-1 text-xs text-gray-500"
+            >
+              Recording pauses during the move and resumes automatically.
             </p>
           </div>
 
@@ -1704,7 +1726,7 @@ import { FILTER_DEFAULTS, modelTypeOptions } from '@/utils/modelDefaults'
 import { isSourceEnabled, sourceAudioStatus, sourceIsChanging, streamingError, summarizeAudioStatus } from '@/utils/audioStatus'
 import { QUIET_HOURS_DEFAULTS, describeQuietHours, parseHHMM } from '@/utils/quietHours'
 import api from '@/services/api'
-import { supersededSettingsRevision } from '@/services/settingsWrites'
+import { acceptSettingsRevision, supersededSettingsRevision } from '@/services/settingsWrites'
 import SpeciesFilterModal from '@/components/SpeciesFilterModal.vue'
 import AlertBanner from '@/components/AlertBanner.vue'
 import AppButton from '@/components/AppButton.vue'
@@ -1814,6 +1836,19 @@ export default {
     const storage = ref(null)
     const mediaStorageStatus = ref(null)
     const moveExistingMedia = ref(false)
+    const mediaTransferProgress = ref(null)
+    const mediaTransferActive = computed(() => mediaTransferProgress.value
+      && !['idle', 'complete', 'failed'].includes(mediaTransferProgress.value.state))
+    const mediaTransferPercent = computed(() => mediaTransferProgress.value?.bytes_total
+      ? Math.min(100, Math.floor(mediaTransferProgress.value.bytes_done * 100 / mediaTransferProgress.value.bytes_total))
+      : 0)
+    const mediaTransferMessage = computed(() => {
+      const p = mediaTransferProgress.value
+      if (!p) return ''
+      if (!p.files_total) return p.message
+      const mb = bytes => (bytes / (1024 * 1024)).toFixed(1)
+      return `${p.message} · ${p.files_done} / ${p.files_total} files · ${mb(p.bytes_done)} / ${mb(p.bytes_total)} MB copied`
+    })
 
     // One settings-status snapshot confirms recording, live streaming, pause
     // and per-source errors, all from the same acknowledged revision.
@@ -1838,12 +1873,12 @@ export default {
     const currentApplicationStatus = computed(() => {
       // Not `updating`: the stack is still up while an update is dispatched,
       // and no banner yet explains a blank status.
-      if (serviceRestart.isRestarting.value || systemUpdate.isRestarting.value) return null
+      if (mediaTransferActive.value || serviceRestart.isRestarting.value || systemUpdate.isRestarting.value) return null
       const status = applicationStatus.value
       return settingsStore.revision.value && status?.revision !== settingsStore.revision.value ? null : status
     })
     const modelStatus = computed(() => currentApplicationStatus.value?.model_service || null)
-    const modelUnreported = computed(() => !restartInProgress.value && !settingsStatusLoading.value &&
+    const modelUnreported = computed(() => !mediaTransferActive.value && !restartInProgress.value && !settingsStatusLoading.value &&
       modelStatus.value?.status !== 'loading' && currentApplicationStatus.value?.model?.state !== 'active')
     const savedSources = computed(() => settingsStore.settings.value?.audio?.sources || [])
     const sourceStatuses = computed(() => Object.fromEntries(savedSources.value.map(source =>
@@ -2380,6 +2415,50 @@ export default {
       }
     }
 
+    const waitForMediaTransfer = async (initial) => {
+      mediaTransferProgress.value = initial
+      while (!viewStopped) {
+        const response = await api.get('/system/media-transfer')
+        const progress = response.data
+        mediaTransferProgress.value = progress
+        if (['complete', 'failed'].includes(progress.state)) {
+          if (progress.settings) {
+            acceptSettingsRevision(response)
+            settingsStore.setSettings(progress.settings)
+          }
+          if (progress.state === 'failed') {
+            // A removal/resume error can happen after the destination was
+            // saved. Adopt server truth rather than offering a stale retry.
+            if (progress.location_saved && progress.settings) adoptSettings(progress.settings)
+            throw new Error(progress.message)
+          }
+          moveExistingMedia.value = false
+          await loadStorageInfo()
+          return {
+            settings: progress.settings,
+            changes: progress.changes,
+            message: progress.warning || progress.message
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      throw new Error('The media move continues. Return to Settings to see its progress.')
+    }
+
+    const recoverMediaTransfer = async () => {
+      try {
+        const { data } = await api.get('/system/media-transfer')
+        if (!data.state || ['idle', 'complete', 'failed'].includes(data.state)) return
+        const result = await waitForMediaTransfer(data)
+        adoptSettings(result.settings)
+        await loadMediaTargets()
+        const restarted = await triggerRestartIfRequired(result)
+        if (!restarted) showStatus('success', result.message)
+      } catch (error) {
+        settingsSaveError.value = error.message
+      }
+    }
+
     // Save settings to API (returns response payload on success, null on failure)
     const saveSettingsOnly = async () => {
       // Do not let a stale full-document save overlap the schedule endpoint.
@@ -2396,12 +2475,6 @@ export default {
       try {
         loading.value = true
         settingsSaveError.value = ''
-        // The transfer operation is a separate implementation step. Never
-        // silently save a move request as a new-media-only change.
-        if (mediaStorageChanged.value && moveExistingMedia.value) {
-          settingsSaveError.value = 'Existing media cannot be moved yet. Uncheck “Move existing media to new location” to save this change.'
-          return null
-        }
         const patch = changedSettings(originalSettings.value, getComparableSettings(settings.value))
         // A model change makes an omitted threshold use the server's default,
         // so include the user's selection even if it matches the old value.
@@ -2409,7 +2482,11 @@ export default {
           patch.detection = { ...patch.detection, species_filter_threshold: settings.value.detection.species_filter_threshold }
         }
         if (!Object.keys(patch).length) return { changes: { changed_paths: [] } }
-        const { data } = await settingsStore.save(patch, { base: originalSettings.value })
+        let { data } = await settingsStore.save(patch, {
+          base: originalSettings.value,
+          moveExistingMedia: mediaStorageChanged.value && moveExistingMedia.value
+        })
+        if (data.transfer) data = await waitForMediaTransfer(data.transfer)
         acknowledgeSettings(settings.value, originalSettings.value, patch, data.settings || patch)
         await loadMediaTargets()
         return data
@@ -3009,6 +3086,7 @@ export default {
 
     // Navigation guard - intercept route changes when there are unsaved changes
     onBeforeRouteLeave(async () => {
+      if (mediaTransferActive.value) return false
       if (hasUnsavedChanges.value) {
         showUnsavedModal.value = true
         // Return a Promise - navigation blocked until resolved
@@ -3020,7 +3098,7 @@ export default {
     })
 
     const refreshOnFocus = () => {
-      if (settingsStore.pendingWrites.value > 0 || restartInProgress.value) return
+      if (settingsStore.pendingWrites.value > 0 || restartInProgress.value || mediaTransferActive.value) return
       if (hasUnsavedChanges.value || hasOpenSettingsDialog.value) settingsStore.refresh()
       else loadSettings()
     }
@@ -3057,6 +3135,7 @@ export default {
       loadSettings()
       loadStorageInfo()
       loadMediaTargets()
+      recoverMediaTransfer()
       loadSpeciesList()
       // Its failure message never auto-clears, so it must not blame a restart
       // already under way; the watcher above loads it once services are back.
@@ -3104,6 +3183,10 @@ export default {
       mediaStorageStatus,
       mediaStorageChanged,
       moveExistingMedia,
+      mediaTransferActive,
+      mediaTransferProgress,
+      mediaTransferMessage,
+      mediaTransferPercent,
       mediaStorageTargets,
       externalMediaTargets,
       formatMediaTargetOption,
