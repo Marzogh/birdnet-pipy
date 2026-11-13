@@ -462,6 +462,32 @@ describe('Settings', () => {
       await details.trigger('toggle')
     })
 
+    it('opens a disabled format confirmation for an eligible synthetic drive', async () => {
+      mockApi.get.mockImplementation((url) => url === '/system/storage-devices'
+        ? Promise.resolve({ data: { state: 'available', devices: [{
+            path: '/dev/sda', name: 'BIRDSTORE', size_bytes: 500000000000,
+            connection: 'USB', filesystems: ['exfat'], mounted: false,
+            preparation_eligible: true, eligibility_reason: 'Eligible for preparation'
+          }] } })
+        : defaultGetResponse(url))
+      const wrapper = mountSettings()
+      document.body.appendChild(wrapper.element)
+      await flushPromises()
+      const details = wrapper.get('details')
+      details.element.open = true
+      await details.trigger('toggle')
+      await flushPromises()
+      await details.get('button').trigger('click')
+      expect(wrapper.get('dialog').text()).toContain('BIRDSTORE · 500 GB')
+      expect(wrapper.get('dialog').text()).toContain('/dev/sda')
+      const buttons = wrapper.get('dialog').findAll('button')
+      expect(buttons.find(button => button.text() === 'Format drive').element.disabled).toBe(true)
+      await buttons.find(button => button.text() === 'Cancel').trigger('click')
+      expect(wrapper.find('dialog').exists()).toBe(false)
+      expect(mockApi.put).not.toHaveBeenCalled()
+      expect(mockApi.post).not.toHaveBeenCalled()
+    })
+
     it('loads and displays available media storage targets', async () => {
       let moveQueued = false
       const movedSettings = createMockSettings()

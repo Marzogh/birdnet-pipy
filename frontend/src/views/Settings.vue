@@ -429,6 +429,15 @@
                 >
                   {{ drive.eligibility_reason }}
                 </dd>
+                <dd v-if="drive.preparation_eligible === true">
+                  <button
+                    type="button"
+                    class="text-xs text-gray-600 underline underline-offset-2 hover:text-red-700"
+                    @click="openFormatConfirmation(drive)"
+                  >
+                    Format…
+                  </button>
+                </dd>
               </div>
             </dl>
           </details>
@@ -1735,6 +1744,13 @@
       @delete="handleDeleteNotificationFromModal"
     />
 
+    <FormatDriveModal
+      v-if="selectedFormatDrive"
+      :drive="selectedFormatDrive"
+      :size-label="formatDriveSize(selectedFormatDrive.size_bytes)"
+      @close="selectedFormatDrive = null"
+    />
+
     <!-- Confirm Remove Notification URL -->
     <ConfirmModal
       v-if="confirmRemoveIndex !== null"
@@ -1783,6 +1799,7 @@ import MigrationModal from '@/components/MigrationModal.vue'
 import ExportModal from '@/components/ExportModal.vue'
 import AddNotificationModal from '@/components/AddNotificationModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import FormatDriveModal from '@/components/FormatDriveModal.vue'
 import StreamSourceModal from '@/components/StreamSourceModal.vue'
 import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
@@ -1815,6 +1832,7 @@ export default {
     ExportModal,
     AddNotificationModal,
     ConfirmModal,
+    FormatDriveModal,
     StreamSourceModal,
     CollapsibleSection,
     ToggleSwitch,
@@ -1882,6 +1900,13 @@ export default {
     const storage = ref(null)
     const mediaStorageStatus = ref(null)
     const driveDiscovery = ref(null)
+    const selectedFormatDrive = ref(null)
+    const openFormatConfirmation = (drive) => {
+      if (drive.preparation_eligible === true && !mediaTransferActive.value) {
+        selectedFormatDrive.value = { ...drive }
+      }
+    }
+
     let driveDiscoveryTimer = null
     const loadConnectedDrives = async () => {
       try {
@@ -3250,6 +3275,8 @@ export default {
       storage,
       mediaStorageStatus,
       driveDiscovery,
+      selectedFormatDrive,
+      openFormatConfirmation,
       toggleDriveDiscovery,
       formatDriveSize,
       mediaStorageChanged,

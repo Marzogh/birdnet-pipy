@@ -113,6 +113,10 @@ and the host filesystem identities, including separate database/settings mounts.
 Only mount metadata is inspected; container environment variables are not read.
 The label describes the current inventory and does not authorize formatting.
 Any future formatting action must recheck eligibility against current devices.
+Eligible drives have a **Format…** confirmation preview showing the selected
+drive, the erase warning and ext4 as the new format. The drive name must match
+exactly in the confirmation field. The final **Format drive** action remains
+disabled; the dialog cannot make changes to a drive.
 
 The existing `birdnet-pipy` host service refreshes this inventory every
 15 seconds using `lsblk`. The app receives a metadata snapshot through its
