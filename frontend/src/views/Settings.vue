@@ -346,105 +346,46 @@
           Auto-cleanup removes oldest recordings when usage exceeds {{ settings.storage.trigger_percent }}%.
         </p>
         <div class="mt-5 border-t border-gray-100 pt-4 space-y-3">
-          <fieldset class="space-y-3">
-            <legend class="text-sm text-gray-600">
-              Preferred media storage
-            </legend>
-            <p class="text-xs text-gray-400 mt-1">
-              Choose where new recordings, clips, and spectrograms are written.
-            </p>
-            <label class="flex items-start gap-3 rounded-md border border-gray-200 p-3 cursor-pointer">
-              <input
-                id="mediaStorageInternal"
-                v-model="mediaStorageMode"
-                type="radio"
-                value="internal"
-                class="mt-0.5 text-green-600 focus:ring-green-600"
-              >
-              <span>
-                <span class="block text-sm font-medium text-gray-800">SD card / internal storage</span>
-                <span class="block text-xs text-gray-500">Store media with the BirdNET-PiPy application data.</span>
-              </span>
-            </label>
+          <div>
             <label
-              class="flex items-start gap-3 rounded-md border border-gray-200 p-3"
-              :class="externalMediaTargets.length ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'"
-            >
-              <input
-                id="mediaStorageExternal"
-                v-model="mediaStorageMode"
-                type="radio"
-                value="external"
-                :disabled="externalMediaTargets.length === 0"
-                class="mt-0.5 text-green-600 focus:ring-green-600"
-              >
-              <span>
-                <span class="block text-sm font-medium text-gray-800">External media</span>
-                <span class="block text-xs text-gray-500">Use a configured USB drive or external disk.</span>
-              </span>
-            </label>
-          </fieldset>
-
-          <div v-if="mediaStorageMode === 'external'">
-            <label
-              for="externalMediaTarget"
+              for="mediaStorageTarget"
               class="text-sm text-gray-600"
-            >External drive</label>
+            >Media storage</label>
             <select
-              id="externalMediaTarget"
+              id="mediaStorageTarget"
               v-model="settings.storage.media_target"
               class="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
             >
               <option
-                v-for="target in externalMediaTargets"
+                v-for="target in mediaStorageTargets"
                 :key="target.id"
                 :value="target.id"
               >
                 {{ formatMediaTargetOption(target) }}
               </option>
             </select>
-            <p class="mt-1 text-xs text-gray-400">
+            <p
+              v-if="settings.storage.media_target !== 'internal'"
+              class="mt-1 text-xs text-gray-400"
+            >
               BirdNET-PiPy falls back to the SD card if this drive is missing or unwritable.
             </p>
           </div>
 
-          <fieldset
-            v-if="mediaStorageChanged"
-            class="space-y-2"
-          >
-            <legend class="text-sm text-gray-600 mb-2">
-              Existing media
-            </legend>
-            <label class="flex items-start gap-2 text-sm text-gray-800">
-              <input
-                id="mediaStorageNewOnly"
-                v-model="mediaTransferMode"
-                type="radio"
-                value="new_only"
-                class="mt-1 text-green-600 focus:ring-green-600"
-              >
-              <span>
-                Use for new media only
-                <span class="block text-xs text-gray-500">Keep existing files where they are.</span>
-              </span>
-            </label>
+          <div v-if="mediaStorageChanged">
             <label class="flex items-start gap-2 text-sm text-gray-800">
               <input
                 id="mediaStorageMoveExisting"
-                v-model="mediaTransferMode"
-                type="radio"
-                value="move_existing"
-                class="mt-1 text-green-600 focus:ring-green-600"
+                v-model="moveExistingMedia"
+                type="checkbox"
+                class="mt-1 rounded text-green-600 focus:ring-green-600"
               >
-              <span>
-                Move existing media too
-                <span class="block text-xs text-gray-500">Move recordings, clips and spectrograms to the selected storage.</span>
-              </span>
+              <span>Move existing media to new location</span>
             </label>
-            <p class="text-xs text-gray-500">
+            <p class="mt-1 text-xs text-gray-500">
               Database and settings stay where they are.
             </p>
-          </fieldset>
+          </div>
 
           <p
             v-if="externalMediaTargets.length === 0"
@@ -1872,7 +1813,7 @@ export default {
     // Storage state
     const storage = ref(null)
     const mediaStorageStatus = ref(null)
-    const mediaTransferMode = ref('new_only')
+    const moveExistingMedia = ref(false)
 
     // One settings-status snapshot confirms recording, live streaming, pause
     // and per-source errors, all from the same acknowledged revision.
@@ -2239,7 +2180,7 @@ export default {
 
     // A different destination starts with the non-moving option.
     watch(() => settings.value.storage?.media_target, () => {
-      mediaTransferMode.value = 'new_only'
+      moveExistingMedia.value = false
     })
 
     const externalMediaTargets = computed(() => {
@@ -2248,25 +2189,10 @@ export default {
       return targets.filter(target => target.id !== 'internal')
     })
 
-    const mediaStorageMode = computed({
-      get: () => (settings.value.storage?.media_target || 'internal') === 'internal'
-        ? 'internal'
-        : 'external',
-      set: (mode) => {
-        if (!settings.value.storage) settings.value.storage = {}
-        if (mode === 'internal') {
-          settings.value.storage.media_target = 'internal'
-          return
-        }
-
-        const selectedTargetExists = externalMediaTargets.value.some(
-          target => target.id === settings.value.storage.media_target
-        )
-        if (!selectedTargetExists && externalMediaTargets.value.length > 0) {
-          settings.value.storage.media_target = externalMediaTargets.value[0].id
-        }
-      }
-    })
+    const mediaStorageTargets = computed(() => [
+      { id: 'internal', label: 'SD card / internal storage', available: true },
+      ...externalMediaTargets.value
+    ])
 
     const formatMediaTargetOption = (target) => {
       if (!target) return 'Unknown target'
@@ -2472,8 +2398,8 @@ export default {
         settingsSaveError.value = ''
         // The transfer operation is a separate implementation step. Never
         // silently save a move request as a new-media-only change.
-        if (mediaStorageChanged.value && mediaTransferMode.value === 'move_existing') {
-          settingsSaveError.value = 'Existing media cannot be moved yet. Choose “Use for new media only” to save this change.'
+        if (mediaStorageChanged.value && moveExistingMedia.value) {
+          settingsSaveError.value = 'Existing media cannot be moved yet. Uncheck “Move existing media to new location” to save this change.'
           return null
         }
         const patch = changedSettings(originalSettings.value, getComparableSettings(settings.value))
@@ -3177,8 +3103,8 @@ export default {
       storage,
       mediaStorageStatus,
       mediaStorageChanged,
-      mediaTransferMode,
-      mediaStorageMode,
+      moveExistingMedia,
+      mediaStorageTargets,
       externalMediaTargets,
       formatMediaTargetOption,
       showExportModal,
