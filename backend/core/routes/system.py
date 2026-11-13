@@ -11,7 +11,9 @@ import time
 import requests
 from flask import jsonify, request
 
-from core.api_infra import api
+from config.settings import BASE_DIR
+from core import api_infra as infra
+from core.api_infra import _run_db, api
 from core.api_utils import handle_api_errors
 from core.auth import get_request_tier, require_auth, require_scope
 from core.ha_mode import get_runtime_mode, is_home_assistant_mode
@@ -31,6 +33,7 @@ from core.update_service import (
     load_ha_source_commit,
     load_version_info,
     read_update_status,
+    reset_update_progress,
     reset_update_status,
     should_show_update_note,
     write_flag,
@@ -79,7 +82,7 @@ def _cache_and_return_update_result(result, cache_key, now):
     _update_check_cache['result'] = result
     _update_check_cache['timestamp'] = now
     _update_check_cache['cache_key'] = cache_key
-    return jsonify(result), 200
+    return jsonify(_public_update_check_view(result)), 200
 
 
 
@@ -87,6 +90,27 @@ def _cache_and_return_update_result(result, cache_key, now):
 # homeassistant.update_entity (fire-and-forget) before giving up.
 _HA_ENTITY_POLL_TIMEOUT_SECONDS = 15
 _HA_ENTITY_POLL_INTERVAL_SECONDS = 0.5
+
+
+@api.route('/api/system/storage/cleanup-preview', methods=['GET'])
+@require_auth
+@log_api_request
+@handle_api_errors
+def get_cleanup_preview():
+    """Dry-run for a cleanup policy: what would it delete right now?
+
+    Query param ``policy``: retention | budget | pressure. The response's
+    ``exact`` flag is False while the resolution frontier is still
+    stamping history — the UI labels the figure partial until then.
+    Owner-only: this exists to preview destructive settings.
+    """
+    from core.storage_manager import preview_policy
+
+    policy = request.args.get('policy', 'pressure')
+    if policy not in ('retention', 'budget', 'pressure'):
+        return jsonify({'error': 'policy must be retention, budget, or pressure'}), 400
+    preview = _run_db(preview_policy, infra.db_manager, policy)
+    return jsonify(preview)
 
 
 @api.route('/api/system/storage', methods=['GET'])
@@ -137,6 +161,44 @@ def _public_version_view(response):
         for field in ('current_commit', 'current_commit_date', 'current_branch'):
             response.pop(field, None)
     return response
+
+
+# Allowlist, not a denylist: a field added to an update-check result must not
+# reach anonymous callers just because nobody remembered to exclude it.
+_PUBLIC_UPDATE_CHECK_FIELDS = (
+    'update_available', 'runtime_mode', 'fresh_sync', 'update_note',
+)
+
+
+def _public_update_check_view(result):
+    """Clamp an update-check result to the public tier.
+
+    Same reasoning as _public_version_view — stripping the commit there is
+    pointless if this endpoint hands it straight back on the same anonymous page
+    load. Anonymous callers keep ``update_available`` (all the frontend's
+    logged-out badge needs); the owner still gets the full result.
+
+    Builds a new dict rather than popping: the result is retained in the shared
+    cache across tiers, so mutating it in place would strip the fields from the
+    owner's view for the rest of the cache window.
+    """
+    if get_request_tier() != 'public':
+        return result
+
+    return {k: result[k] for k in _PUBLIC_UPDATE_CHECK_FIELDS if k in result}
+
+
+def _update_check_error_response(error, status_code=500):
+    """Return update-check diagnostics only to the authenticated owner.
+
+    GitHub request errors can contain the comparison URL, whose path embeds the
+    exact installed commit. Anonymous callers only need a stable failure message;
+    the detailed cause remains available to the owner and in server logs.
+    """
+    message = 'Failed to check for updates'
+    if get_request_tier() != 'public':
+        message = f'{message}: {error}'
+    return jsonify({'error': message}), status_code
 
 
 @api.route('/api/system/version', methods=['GET'])
@@ -232,15 +294,18 @@ def check_for_updates():
 
             info, error = _call_supervisor('GET', '/addons/self/info')
             if error:
-                return jsonify({'error': f'Failed to check for updates: {error}'}), 502
+                logger.error("Home Assistant update check failed", extra={'error': error})
+                return _update_check_error_response(error, 502)
 
-            return jsonify({
+            # Clamped like the native branch: this is the fourth return path in
+            # this handler, and the one most likely to be forgotten.
+            return jsonify(_public_update_check_view({
                 'update_available': bool(info.get('update_available')),
                 'runtime_mode': 'ha',
                 'current_version': info.get('version', 'unknown'),
                 'latest_version': info.get('version_latest'),
                 'update_note': None,
-            }), 200
+            })), 200
 
         force = request.args.get('force', 'false').lower() == 'true'
 
@@ -268,7 +333,9 @@ def check_for_updates():
                     'cache_key': cache_key,
                     'cache_age_seconds': int(now - _update_check_cache['timestamp'])
                 })
-                return jsonify(_update_check_cache['result']), 200
+                return jsonify(
+                    _public_update_check_view(_update_check_cache['result'])
+                ), 200
 
         logger.info("Update check initiated", extra={
             'current_commit': current_commit,
@@ -298,7 +365,7 @@ def check_for_updates():
                 remote_info, remote_error = get_latest_remote_commit(target_branch)
                 if remote_error:
                     logger.error("Failed to get remote commit", extra={'error': remote_error})
-                    return jsonify({'error': f'Failed to check for updates: {remote_error}'}), 500
+                    return _update_check_error_response(remote_error)
 
                 remote_commit = remote_info['sha']
                 # If commits differ, update is available (fresh sync required)
@@ -330,7 +397,7 @@ def check_for_updates():
             else:
                 # Do NOT cache error responses - let them retry
                 logger.error("GitHub API comparison failed", extra={'error': error})
-                return jsonify({'error': f'Failed to check for updates: {error}'}), 500
+                return _update_check_error_response(error)
 
         # Determine if update is available
         # ahead_by: how many commits the target branch is ahead of current
@@ -378,7 +445,9 @@ def check_for_updates():
 
     except Exception as e:
         # Do NOT cache error responses - let them retry
-        return jsonify({'error': f'Failed to check for updates: {str(e)}'}), 500
+        logger.error("Unexpected update check failure", extra={'error': str(e)},
+                     exc_info=True)
+        return _update_check_error_response(e)
 
 @api.route('/api/system/update', methods=['POST'])
 @require_auth
@@ -527,8 +596,10 @@ def trigger_system_update():
         # Clear any stale terminal status before the host script takes over,
         # then write the update flag with target branch as content. The
         # read-back value is echoed to the frontend so it knows what status
-        # was verifiably in place at dispatch.
+        # was verifiably in place at dispatch. The stage file goes too (see
+        # reset_update_progress for why).
         post_reset_status = reset_update_status()
+        reset_update_progress()
         write_flag('update-requested', target_branch)
 
         logger.info("System update triggered", extra={

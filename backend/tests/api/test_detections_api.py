@@ -1,8 +1,12 @@
 """Tests for the /api/detections paginated endpoint and DELETE endpoint."""
 
 import os
-import tempfile
+from datetime import datetime, timedelta
 from unittest.mock import patch
+
+import pytest
+
+from tests.api.conftest import insert_detection, make_rows_legacy
 
 
 class TestDetectionsAPI:
@@ -484,6 +488,7 @@ class TestDetectionsAPI:
             'sensitivity': 0.75,
             'overlap': 0.25
         })
+        make_rows_legacy(real_db_manager)  # synthesized names = legacy-row path
 
         response = api_client.get('/api/detections')
         data = response.get_json()
@@ -561,55 +566,133 @@ class TestDeleteDetectionAPI:
         detection = real_db_manager.get_detection_by_id(detection_id)
         assert detection is None
 
-    def test_delete_detection_removes_files(self, api_client, real_db_manager):
+    def test_delete_detection_removes_files(self, api_client, real_db_manager,
+                                            storage_media_dirs):
         """Test that deletion also removes associated files."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audio_dir = os.path.join(tmpdir, 'audio')
-            spectrogram_dir = os.path.join(tmpdir, 'spectrograms')
-            os.makedirs(audio_dir)
-            os.makedirs(spectrogram_dir)
+        audio_dir, spectrogram_dir = storage_media_dirs
+        detection_id = insert_detection(real_db_manager)
+        make_rows_legacy(real_db_manager)  # legacy station: pattern-named files
 
-            # Insert a detection
-            detection_id = real_db_manager.insert_detection({
-                'timestamp': '2024-01-15T10:30:00',
-                'group_timestamp': '2024-01-15T10:30:00',
-                'common_name': 'American Robin',
-                'scientific_name': 'Turdus migratorius',
-                'confidence': 0.8500,
-                'latitude': 40.7128,
-                'longitude': -74.0060,
-                'cutoff': 0.5,
-                'sensitivity': 0.75,
-                'overlap': 0.25
-            })
+        # Get the detection to know the filenames
+        detection = real_db_manager.get_detection_by_id(detection_id)
+        audio_file = os.path.join(audio_dir, detection['audio_filename'])
+        spectrogram_file = os.path.join(
+            spectrogram_dir, detection['spectrogram_filename'])
+        for path in (audio_file, spectrogram_file):
+            with open(path, 'w') as f:
+                f.write('media data')
 
-            # Get the detection to know the filenames
-            detection = real_db_manager.get_detection_by_id(detection_id)
-            audio_file = os.path.join(audio_dir, detection['audio_filename'])
-            spectrogram_file = os.path.join(spectrogram_dir, detection['spectrogram_filename'])
+        with patch('core.auth.is_authenticated', return_value=True):
+            response = api_client.delete(f'/api/detections/{detection_id}')
 
-            # Create the files
-            with open(audio_file, 'w') as f:
-                f.write('audio data')
-            with open(spectrogram_file, 'w') as f:
-                f.write('spectrogram data')
+        assert response.status_code == 200
+        assert response.get_json()['files_deleted'] == [
+            detection['audio_filename'],
+            detection['spectrogram_filename'],
+        ]
+        assert not os.path.exists(audio_file)
+        assert not os.path.exists(spectrogram_file)
 
-            assert os.path.exists(audio_file)
-            assert os.path.exists(spectrogram_file)
+    def test_delete_reports_resolved_legacy_source_filenames(
+            self, api_client, real_db_manager, storage_media_dirs):
+        """The response names the source-ID files it actually removes."""
+        audio_dir, spectrogram_dir = storage_media_dirs
+        timestamp = '2024-01-15T10:30:00'
+        detection_id = insert_detection(
+            real_db_manager, timestamp=timestamp, confidence=0.85,
+            extra={}, audio_source='source_0')
+        make_rows_legacy(real_db_manager)  # transition-era row: pattern-named files
 
-            # Delete with auth bypass and patched directories
-            # Note: Patch storage_manager where delete_detection_files looks up the dirs
-            with patch('core.auth.is_authenticated', return_value=True), \
-                 patch('core.storage_manager.EXTRACTED_AUDIO_DIR', audio_dir), \
-                 patch('core.storage_manager.SPECTROGRAM_DIR', spectrogram_dir):
-                response = api_client.delete(f'/api/detections/{detection_id}')
-                assert response.status_code == 200
-                data = response.get_json()
-                assert len(data['files_deleted']) == 2
+        from core.utils import build_detection_filenames
 
-            # Verify files are deleted
-            assert not os.path.exists(audio_file)
-            assert not os.path.exists(spectrogram_file)
+        filenames = build_detection_filenames(
+            'American Robin', 0.85, timestamp, audio_source='source_0')
+        audio_file = os.path.join(audio_dir, filenames['audio_filename'])
+        spectrogram_file = os.path.join(
+            spectrogram_dir, filenames['spectrogram_filename'])
+        for path in (audio_file, spectrogram_file):
+            with open(path, 'w') as f:
+                f.write('media data')
+
+        with patch('core.auth.is_authenticated', return_value=True):
+            response = api_client.delete(f'/api/detections/{detection_id}')
+
+        assert response.status_code == 200
+        assert response.get_json()['files_deleted'] == [
+            filenames['audio_filename'],
+            filenames['spectrogram_filename'],
+        ]
+        assert not os.path.exists(audio_file)
+        assert not os.path.exists(spectrogram_file)
+
+
+class TestBatchDeleteAPI:
+    """DELETE /api/detections/batch: request validation, per-id outcomes and
+    the 100-id cap the Table page chunks its selection to."""
+
+    def _delete(self, api_client, body):
+        with patch('core.auth.is_authenticated', return_value=True):
+            return api_client.delete('/api/detections/batch', json=body)
+
+    @pytest.mark.parametrize('body, error', [
+        ({}, 'Missing ids array'),
+        ({'ids': 'abc'}, 'ids must be an array'),
+        ({'ids': []}, 'ids array is empty'),
+        ({'ids': list(range(1, 102))}, 'Maximum 100 items per batch'),
+    ])
+    def test_rejects_invalid_requests_without_deleting(
+            self, api_client, real_db_manager, body, error):
+        detection_id = insert_detection(real_db_manager)
+
+        response = self._delete(api_client, body)
+
+        assert response.status_code == 400
+        assert response.get_json()['error'] == error
+        assert real_db_manager.get_detection_by_id(detection_id) is not None
+
+    def test_accepts_exactly_100_ids(self, api_client, real_db_manager):
+        detection_id = insert_detection(real_db_manager)
+
+        response = self._delete(
+            api_client, {'ids': [detection_id] + list(range(90001, 90100))})
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body['deleted'] == 1
+        assert body['failed'] == 99
+        assert real_db_manager.get_detection_by_id(detection_id) is None
+
+    def test_reports_each_id_and_never_treats_true_as_row_1(
+            self, api_client, real_db_manager):
+        first = insert_detection(real_db_manager)
+        target = insert_detection(real_db_manager, common_name='Blue Jay',
+                                  scientific_name='Cyanocitta cristata')
+        assert first == 1  # JSON true == 1 in Python: the row it would hit
+
+        response = self._delete(api_client, {'ids': [True, 'abc', 99999, target]})
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body['deleted'] == 1
+        assert body['deleted_ids'] == [target]
+        assert body['failed'] == 3
+        assert body['errors'] == [
+            {'id': True, 'error': 'Invalid ID type'},
+            {'id': 'abc', 'error': 'Invalid ID type'},
+            {'id': 99999, 'error': 'Not found'},
+        ]
+        assert real_db_manager.get_detection_by_id(first) is not None
+        assert real_db_manager.get_detection_by_id(target) is None
+
+    def test_requires_auth(self, api_client, real_db_manager):
+        detection_id = insert_detection(real_db_manager)
+
+        with patch('core.auth.is_authenticated', return_value=False):
+            response = api_client.delete('/api/detections/batch',
+                                         json={'ids': [detection_id]})
+
+        assert response.status_code == 401
+        assert real_db_manager.get_detection_by_id(detection_id) is not None
 
 
 class TestDetectionsDatabaseMethods:
@@ -743,8 +826,10 @@ class TestExportDetectionsAPI:
 
     def test_export_blocked_when_auth_enabled(self, api_client, real_db_manager):
         """Test that export returns 401 when auth is enabled but not authenticated."""
-        # Enable auth
-        with patch('core.auth.is_auth_enabled', return_value=True):
+        # require_auth consults is_authenticated(), which folds in the
+        # auth-enabled check and the session epoch — patch that, not the
+        # enabled flag it reads internally.
+        with patch('core.auth.is_authenticated', return_value=False):
             response = api_client.get('/api/detections/export')
             assert response.status_code == 401
 
@@ -754,6 +839,9 @@ class TestExportDetectionsAPI:
         response = api_client.get('/api/detections/export')
         assert response.status_code == 200
         assert response.content_type == 'text/csv; charset=utf-8'
+        # Nothing matched: the header alone still comes through.
+        from core.export_jobs import CSV_HEADER
+        assert response.data.decode('utf-8').strip() == ','.join(CSV_HEADER)
 
     def test_export_csv_format(self, api_client, real_db_manager):
         """Test that export returns valid CSV format."""
@@ -869,7 +957,7 @@ class TestExportDetectionsAPI:
                 'overlap': 0.25
             })
 
-        with patch('core.routes.detections._EXPORT_BATCH_ROWS', 2):
+        with patch('core.export_jobs.EXPORT_BATCH_ROWS', 2):
             response = api_client.get('/api/detections/export')
             # Drain the stream inside the patch — the generator reads the
             # batch size lazily, chunk by chunk.
@@ -887,7 +975,7 @@ class TestExportDetectionsDatabaseMethods:
     """Tests for the get_detections_for_export_batch database method."""
 
     def test_export_batch_basic(self, real_db_manager):
-        """A single batch returns all rows, newest first, with all fields."""
+        """A single batch returns all rows, newest first, in CSV column order."""
         for i in range(5):
             real_db_manager.insert_detection({
                 'timestamp': f'2024-01-15T10:{i:02d}:00',
@@ -908,12 +996,10 @@ class TestExportDetectionsDatabaseMethods:
         timestamps = [d['timestamp'] for d in detections]
         assert timestamps == sorted(timestamps, reverse=True)
 
-        # Check all expected fields are present
-        for detection in detections:
-            assert 'id' in detection
-            assert 'timestamp' in detection
-            assert 'group_timestamp' in detection
-            assert 'common_name' in detection
+        # Rows are written to the CSV as-is, so their columns must be the
+        # header's, in order.
+        from core.export_jobs import CSV_HEADER
+        assert all(list(d.keys()) == CSV_HEADER for d in detections)
 
     def test_export_batch_keyset_walk(self, real_db_manager):
         """Walking with before_timestamp/before_id covers every row exactly
@@ -982,3 +1068,181 @@ class TestExportDetectionsDatabaseMethods:
         """Test fetch on empty database."""
         detections = real_db_manager.get_detections_for_export_batch(limit=100)
         assert len(detections) == 0
+
+    def test_export_batch_date_bounded_walk(self, real_db_manager):
+        """A multi-batch walk under a date range returns exactly the in-range
+        rows once each — batches after the first keep the end bound as a
+        filter even though it no longer drives the index seek, so a cursor
+        from outside the range still can't leak rows past end_date."""
+        for day in range(10, 20):
+            for hour in range(3):
+                insert_detection(real_db_manager,
+                                 timestamp=f'2024-01-{day}T{hour:02d}:00:00')
+        date_range = {'start_date': '2024-01-12', 'end_date': '2024-01-16'}
+
+        seen = []
+        before_timestamp = before_id = None
+        while True:
+            batch = real_db_manager.get_detections_for_export_batch(
+                before_timestamp=before_timestamp, before_id=before_id,
+                limit=4, **date_range)
+            seen.extend(batch)
+            if len(batch) < 4:
+                break
+            before_timestamp = batch[-1]['timestamp']
+            before_id = batch[-1]['id']
+
+        assert len(seen) == 15  # 5 days x 3 rows
+        assert len({d['id'] for d in seen}) == 15
+        assert all('2024-01-12' <= d['timestamp'][:10] <= '2024-01-16'
+                   for d in seen)
+
+        # A cursor past the range: no rows from after end_date.
+        leaked = real_db_manager.get_detections_for_export_batch(
+            before_timestamp='2024-01-19T23:00:00', before_id=10**9,
+            limit=100, **date_range)
+        assert len(leaked) == 15
+        assert max(d['timestamp'] for d in leaked) <= '2024-01-16T23:59:59'
+
+    def test_export_batch_rejects_half_cursor(self, real_db_manager):
+        """before_id without before_timestamp would compare against NULL and
+        return nothing — an early, complete-looking end. It must raise."""
+        with pytest.raises(ValueError):
+            real_db_manager.get_detections_for_export_batch(
+                before_id=5, limit=10)
+
+    @pytest.mark.parametrize('fresh_stats', [False, True],
+                             ids=['stale-stats', 'fresh-stats'])
+    def test_export_batch_cost_independent_of_cursor_depth(
+            self, real_db_manager, fresh_stats):
+        """A batch deep into the walk costs about the same as one near the
+        top, for every filter shape: the cursor must be an index seek, not a
+        scan from the newest row down to it (which makes the whole export
+        quadratic). Measured in SQLite VM steps, so it's timing-free; a
+        plan-text check can't tell a seek on the cursor from one on
+        end_date — both print as `timestamp>? AND timestamp<?`.
+
+        Planner stats change which plan wins, so both states a station can be
+        in are checked: stale (startup ANALYZE ran before the table grew —
+        the fixture analyzed it empty) and fresh. Each alone misses a known
+        regression: the old OR-form cursor only scans with stale stats here,
+        yet it scanned on a fully analyzed 1.16M-row station DB."""
+        species = [('Turdus migratorius', 'Robin'), ('Cyanocitta cristata', 'Jay')]
+        start = datetime(2024, 1, 1)
+        values = []
+        for i in range(2000):  # one row per second, species alternating
+            ts = (start + timedelta(seconds=i)).strftime('%Y-%m-%dT%H:%M:%S')
+            values.append((ts, ts) + species[i % 2])
+        # Bulk SQL insert: the species rollup isn't read by the export.
+        with real_db_manager.get_db_connection() as conn:
+            conn.executemany(
+                "INSERT INTO detections (timestamp, group_timestamp, "
+                "scientific_name, common_name, confidence) VALUES (?, ?, ?, ?, 0.9)",
+                values)
+            conn.commit()
+            if fresh_stats:
+                conn.execute("ANALYZE")
+            keys = conn.execute(
+                "SELECT timestamp, id FROM detections "
+                "ORDER BY timestamp DESC, id DESC").fetchall()
+        shallow, deep = keys[20], keys[-40]
+
+        filters = {
+            'none': {},
+            'date': {'start_date': '2024-01-01', 'end_date': '2024-01-01'},
+            'species': {'scientific_name': 'Turdus migratorius'},
+            'species+date': {'scientific_name': 'Turdus migratorius',
+                             'start_date': '2024-01-01', 'end_date': '2024-01-01'},
+        }
+
+        def vm_steps(cursor, **kwargs):
+            steps = 0
+
+            def count():
+                nonlocal steps
+                steps += 1
+                return 0
+
+            # Same thread → the method reuses this thread-local connection.
+            with real_db_manager.get_db_connection() as conn:
+                conn.set_progress_handler(count, 1)
+            try:
+                batch = real_db_manager.get_detections_for_export_batch(
+                    before_timestamp=cursor[0], before_id=cursor[1],
+                    limit=10, **kwargs)
+            finally:
+                with real_db_manager.get_db_connection() as conn:
+                    conn.set_progress_handler(None, 1)
+            assert len(batch) == 10
+            return steps
+
+        for name, kwargs in filters.items():
+            shallow_steps = vm_steps(shallow, **kwargs)
+            deep_steps = vm_steps(deep, **kwargs)
+            assert deep_steps < shallow_steps * 2, (
+                f"{name}: deep batch cost {deep_steps} VM steps vs "
+                f"{shallow_steps} near the top — cursor is scanned, not sought")
+
+
+class TestDeleteMaintenanceContract:
+    """While the index build holds the maintenance lease, deletes return an
+    explicit retryable maintenance response with zero side effects."""
+
+    def test_delete_returns_retryable_503_during_build(
+            self, api_client, real_db_manager, monkeypatch):
+        from core import maintenance_lease
+        detection_id = insert_detection(real_db_manager)
+        maintenance_lease.acquire(real_db_manager, 'index_build', 'builder', 120)
+        monkeypatch.setattr(
+            'core.routes.detections._MAINTENANCE_RETRY_SECONDS', 0)
+
+        with patch('core.auth.is_authenticated', return_value=True):
+            response = api_client.delete(f'/api/detections/{detection_id}')
+
+        assert response.status_code == 503
+        body = response.get_json()
+        assert body['retryable'] is True
+        # zero side effects: the row survives untouched
+        assert real_db_manager.get_detection_by_id(detection_id) is not None
+
+        # lease released -> the same call succeeds
+        maintenance_lease.release(real_db_manager, 'builder')
+        with patch('core.auth.is_authenticated', return_value=True):
+            response = api_client.delete(f'/api/detections/{detection_id}')
+        assert response.status_code == 200
+
+    def test_batch_reports_what_it_deleted_before_maintenance_began(
+            self, api_client, real_db_manager, monkeypatch):
+        """The Table page relies on deleted_ids in this 503 to drop the
+        already-deleted rows from its selection before a retry."""
+        from core import maintenance_lease
+        from core.routes import detections as detections_routes
+        ids = [insert_detection(real_db_manager, common_name=f'Robin {i}')
+               for i in range(3)]
+        monkeypatch.setattr(detections_routes, '_MAINTENANCE_RETRY_SECONDS', 0)
+        real_delete = detections_routes._delete_with_maintenance_retry
+
+        def delete_then_start_build(detection_id):
+            result = real_delete(detection_id)
+            maintenance_lease.acquire(real_db_manager, 'index_build', 'builder', 120)
+            return result
+
+        monkeypatch.setattr(detections_routes, '_delete_with_maintenance_retry',
+                            delete_then_start_build)
+
+        with patch('core.auth.is_authenticated', return_value=True), \
+             patch.object(detections_routes, 'invalidate_dashboard_cache') as dashboard, \
+             patch.object(detections_routes, 'invalidate_gallery_cache') as gallery:
+            response = api_client.delete('/api/detections/batch', json={'ids': ids})
+
+        assert response.status_code == 503
+        body = response.get_json()
+        assert body['retryable'] is True
+        assert body['deleted'] == 1
+        assert body['deleted_ids'] == [ids[0]]
+        # The row that did go must drop out of the cached pages.
+        dashboard.assert_called_once()
+        gallery.assert_called_once()
+        assert real_db_manager.get_detection_by_id(ids[0]) is None
+        assert real_db_manager.get_detection_by_id(ids[1]) is not None
+        assert real_db_manager.get_detection_by_id(ids[2]) is not None

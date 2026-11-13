@@ -1,5 +1,8 @@
-"""Tests for runtime setting change classification."""
+"""Tests for runtime setting change classification and the settings cache."""
 
+import pytest
+
+import core.runtime_config as rc
 from core.runtime_config import _sources_only_labels_changed, classify_setting_changes
 
 
@@ -9,29 +12,40 @@ def _make_settings(sources):
 
 
 class TestClassifySettingChanges:
+    def test_schedule_is_hot_reload_paths(self):
+        """schedule.* must stay hot-applied: the main container re-evaluates
+        quiet hours from the settings file every recorder tick (no restart)."""
+        paths = ["schedule.quiet_hours.enabled", "schedule.quiet_hours.start"]
+
+        plan = classify_setting_changes(paths)
+
+        assert plan["full_restart_required"] is False
+        assert plan["component_restarts"] == []
+        assert plan["hot_reload_paths"] == paths
+
     def test_model_switch_requires_full_restart(self):
         plan = classify_setting_changes(["model.type"])
 
         assert plan["full_restart_required"] is True
         assert "model.type" in plan["full_restart_paths"]
 
-    def test_audio_overlap_is_component_restart_only(self):
+    def test_audio_overlap_reloads_at_next_analysis(self):
         plan = classify_setting_changes(["audio.overlap"])
 
         assert plan["full_restart_required"] is False
-        assert "audio.overlap" in plan["component_restarts"]
+        assert "audio.overlap" in plan["hot_reload_paths"]
 
-    def test_audio_sources_change_requires_full_restart(self):
+    def test_audio_sources_reconnect_independently(self):
         plan = classify_setting_changes(["audio.sources.0.enabled"])
 
-        assert plan["full_restart_required"] is True
-        assert "audio.sources.0.enabled" in plan["full_restart_paths"]
+        assert plan["full_restart_required"] is False
+        assert "audio.sources.0.enabled" in plan["component_restarts"]
 
-    def test_audio_next_source_id_requires_full_restart(self):
+    def test_audio_next_source_id_needs_no_restart(self):
         plan = classify_setting_changes(["audio.next_source_id"])
 
-        assert plan["full_restart_required"] is True
-        assert "audio.next_source_id" in plan["full_restart_paths"]
+        assert plan["full_restart_required"] is False
+        assert "audio.next_source_id" in plan["hot_reload_paths"]
 
     def test_audio_recording_length_is_component_restart(self):
         plan = classify_setting_changes(["audio.recording_length"])
@@ -39,20 +53,20 @@ class TestClassifySettingChanges:
         assert plan["full_restart_required"] is False
         assert "audio.recording_length" in plan["component_restarts"]
 
-    def test_location_change_is_hot_applied(self):
+    def test_location_change_is_hot_reload_paths(self):
         """Location is read live from config — no restart needed."""
         plan = classify_setting_changes(["location.latitude", "location.longitude", "location.timezone"])
 
         assert plan["full_restart_required"] is False
-        assert "location.latitude" in plan["hot_applied"]
-        assert "location.longitude" in plan["hot_applied"]
-        assert "location.timezone" in plan["hot_applied"]
+        assert "location.latitude" in plan["hot_reload_paths"]
+        assert "location.longitude" in plan["hot_reload_paths"]
+        assert "location.timezone" in plan["hot_reload_paths"]
 
 
 class TestSourceLabelOnlyChanges:
     """Tests for label-only source edits skipping restart."""
 
-    def test_label_only_change_is_hot_applied(self):
+    def test_label_only_change_is_hot_reload_paths(self):
         old = _make_settings([
             {"id": "source_0", "type": "pulseaudio", "device": "default", "label": "Old Name"}
         ])
@@ -63,7 +77,7 @@ class TestSourceLabelOnlyChanges:
         plan = classify_setting_changes(["audio.sources"], old, new)
 
         assert plan["full_restart_required"] is False
-        assert "audio.sources" in plan["hot_applied"]
+        assert "audio.sources" in plan["hot_reload_paths"]
 
     def test_label_change_with_url_change_requires_restart(self):
         old = _make_settings([
@@ -75,8 +89,8 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
-        assert "audio.sources" in plan["full_restart_paths"]
+        assert plan["full_restart_required"] is False
+        assert "audio.sources" in plan["component_restarts"]
 
     def test_label_change_with_device_change_requires_restart(self):
         old = _make_settings([
@@ -88,7 +102,7 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
+        assert plan["full_restart_required"] is False
 
     def test_source_added_requires_restart(self):
         old = _make_settings([
@@ -101,7 +115,7 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
+        assert plan["full_restart_required"] is False
 
     def test_source_removed_requires_restart(self):
         old = _make_settings([
@@ -114,7 +128,7 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
+        assert plan["full_restart_required"] is False
 
     def test_enabled_toggle_requires_restart(self):
         old = _make_settings([
@@ -126,9 +140,9 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
+        assert plan["full_restart_required"] is False
 
-    def test_multiple_sources_label_only_is_hot_applied(self):
+    def test_multiple_sources_label_only_is_hot_reload_paths(self):
         old = _make_settings([
             {"id": "source_0", "type": "pulseaudio", "device": "default", "label": "Old Mic"},
             {"id": "source_1", "type": "rtsp", "url": "rtsp://cam", "label": "Old Cam"}
@@ -141,7 +155,7 @@ class TestSourceLabelOnlyChanges:
         plan = classify_setting_changes(["audio.sources"], old, new)
 
         assert plan["full_restart_required"] is False
-        assert "audio.sources" in plan["hot_applied"]
+        assert "audio.sources" in plan["hot_reload_paths"]
 
     def test_one_label_change_one_url_change_requires_restart(self):
         old = _make_settings([
@@ -155,14 +169,14 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
+        assert plan["full_restart_required"] is False
 
-    def test_without_old_new_settings_falls_back_to_full_restart(self):
+    def test_without_old_new_settings_reconnects_sources(self):
         """Backward compatibility: no old/new settings means full restart."""
         plan = classify_setting_changes(["audio.sources"])
 
-        assert plan["full_restart_required"] is True
-        assert "audio.sources" in plan["full_restart_paths"]
+        assert plan["full_restart_required"] is False
+        assert "audio.sources" in plan["component_restarts"]
 
     def test_source_id_changed_requires_restart(self):
         old = _make_settings([
@@ -174,7 +188,7 @@ class TestSourceLabelOnlyChanges:
 
         plan = classify_setting_changes(["audio.sources"], old, new)
 
-        assert plan["full_restart_required"] is True
+        assert plan["full_restart_required"] is False
 
     def test_label_only_mixed_with_other_restart_paths(self):
         """Label change + model change: model still triggers restart."""
@@ -191,9 +205,9 @@ class TestSourceLabelOnlyChanges:
 
         assert plan["full_restart_required"] is True
         assert "model.type" in plan["full_restart_paths"]
-        assert "audio.sources" in plan["hot_applied"]
+        assert "audio.sources" in plan["hot_reload_paths"]
 
-    def test_next_source_id_still_requires_restart_with_label_only(self):
+    def test_next_source_id_and_labels_need_no_restart(self):
         """next_source_id change isn't affected by label-only exemption."""
         old = _make_settings([
             {"id": "source_0", "type": "pulseaudio", "device": "default", "label": "Old"}
@@ -206,9 +220,9 @@ class TestSourceLabelOnlyChanges:
             ["audio.sources", "audio.next_source_id"], old, new
         )
 
-        assert plan["full_restart_required"] is True
-        assert "audio.next_source_id" in plan["full_restart_paths"]
-        assert "audio.sources" in plan["hot_applied"]
+        assert plan["full_restart_required"] is False
+        assert "audio.next_source_id" in plan["hot_reload_paths"]
+        assert "audio.sources" in plan["hot_reload_paths"]
 
 
 class TestSourcesOnlyLabelsChanged:
@@ -257,3 +271,45 @@ class TestSourcesOnlyLabelsChanged:
         old = _make_settings([{"id": "s0", "type": "pulseaudio", "device": "default", "label": "Mic"}])
         new = _make_settings([{"id": "s0", "type": "pulseaudio", "device": "default"}])
         assert _sources_only_labels_changed(old, new) is True
+
+
+class TestSettingsCacheInvalidationRace:
+    """A reload that raced an invalidation must not publish over it.
+
+    The settings parse runs outside _settings_lock (it can log and rewrite
+    the file on migration paths — nothing that can log may run under a
+    native lock). A save whose rewrite keeps a coarsely-equal mtime relies
+    on invalidate_runtime_settings_cache() to force the next read; a stale
+    in-flight parse publishing after that invalidation would pin old
+    settings until the next mtime change.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        rc.invalidate_runtime_settings_cache()
+        yield
+        rc.invalidate_runtime_settings_cache()
+
+    def test_reload_racing_invalidation_does_not_pin_stale_cache(self, monkeypatch):
+        loads = []
+
+        def fake_load(**kwargs):
+            loads.append(1)
+            if len(loads) == 1:
+                # A save lands mid-parse: same coarse mtime, so only the
+                # invalidation can force the next read to reload.
+                rc.invalidate_runtime_settings_cache()
+                return {"stale": True}
+            return {"fresh": True}
+
+        monkeypatch.setattr(rc, "load_user_settings", fake_load)
+        monkeypatch.setattr(rc, "_safe_mtime", lambda path: 1000.0)
+
+        # The racing caller gets its own (stale) read — same as before the
+        # parse moved out of the lock — but must not publish it.
+        assert rc._load_cached_settings() == {"stale": True}
+        # The invalidation survived, so the next read reloads and wins.
+        assert rc._load_cached_settings() == {"fresh": True}
+        # And the fresh result is now cached (no third parse).
+        assert rc._load_cached_settings() == {"fresh": True}
+        assert len(loads) == 2

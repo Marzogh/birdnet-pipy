@@ -16,7 +16,7 @@ BirdNET-PiPy is a self-hosted system that uses the [BirdNET](https://birdnet.cor
 
 ## Quick Start
 
-**Prerequisites:** Raspberry Pi 4/5 (2GB+) running Raspberry Pi OS (64-bit).
+**Prerequisites:** Raspberry Pi 5, 4, 3, or Zero 2W running Raspberry Pi OS (64-bit).
 
 Run the automated installer:
 
@@ -33,6 +33,7 @@ Once installed, access the dashboard from any device on the same network:
 
 ## Documentation
 
+- **[API](docs/API.md):** Species summary requests and authentication.
 - **[Installation Guide](docs/INSTALLATION.md):** Detailed hardware requirements and setup instructions.
 - **[Deployment & Administration](deployment/README.md):** Service management, audio architecture, and system internals.
 - **[Privacy and Data Handling](docs/PRIVACY.md):** How your audio and data are processed locally on your device.

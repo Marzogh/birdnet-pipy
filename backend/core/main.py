@@ -4,6 +4,7 @@ import os
 import signal
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -16,11 +17,11 @@ from config.settings import (
     API_HOST,
     API_PORT,
     BIRDNET_SERVER_ENDPOINT,
-    BIRDWEATHER_ID,
     EXTRACTED_AUDIO_DIR,
     LAT,
     LOCATION_CONFIGURED,
     LON,
+    MODEL_TYPE,
     RECORDING_DIR,
     RECORDING_LENGTH,
     SAMPLE_RATE,
@@ -42,11 +43,27 @@ from core.media_storage import (
     get_media_storage_status,
     get_recording_scan_dirs,
 )
+from core.media_ownership import (
+    KIND_AUDIO,
+    KIND_SPECTROGRAM,
+    PART_SUFFIX,
+    DetectionMissingError,
+    publish_media_file,
+    with_media_suffix,
+)
 from core.notification_service import get_notification_service
+from core.recording_schedule import (
+    REASON_NO_SOURCES,
+    REASON_QUIET_HOURS,
+    ScheduleDecision,
+    enabled_sources,
+    evaluate_recording_gate,
+)
 from core.runtime_config import get_runtime_settings, resolve_source_label
+from core.source_config import reconcile_recorders, recorder_source_revision
 from core.spectrogram import generate_spectrogram
 from core.storage_manager import storage_monitor_loop
-from core.timezone_service import get_timezone_str
+from core.timezone_service import get_timezone_str, local_now
 from core.utils import (
     build_detection_filenames,
     extract_audio_segment,
@@ -67,8 +84,18 @@ BIRDNET_RETRY_BASE_DELAY = 2  # Base delay for exponential backoff (seconds)
 RECORDING_THREAD_SHUTDOWN_TIMEOUT = 10  # Max wait for recording thread (seconds)
 PROCESSING_THREAD_SHUTDOWN_TIMEOUT = 5  # Max wait for processing thread (seconds)
 DEGRADED_FAILURE_THRESHOLD = 3  # Consecutive failures before 'degraded' state
-STATUS_REFRESH_INTERVAL = 60   # Re-broadcast recorder status every N seconds
+STATUS_REFRESH_INTERVAL = 5   # Re-broadcast recorder status every N seconds
 AUDIO_STATUS_NOTIFY_COOLDOWN = 600  # Min seconds between repeat audio-degradation alerts
+
+# (pausing, resuming) log lines per gate reason (core.recording_schedule),
+# paired so a new reason can't get half its wording.
+_PAUSE_LOG = {
+    REASON_QUIET_HOURS: ("⏸️ Quiet hours started, pausing recording",
+                         "▶️ Quiet hours ended, resuming recording"),
+    REASON_NO_SOURCES: ("⏸️ No active audio source, pausing recording",
+                        "▶️ Audio source enabled, resuming recording"),
+}
+_PAUSE_LOG_DEFAULT = ("⏸️ Pausing recording", "▶️ Resuming recording")
 
 
 class ModelServiceUnavailableError(RuntimeError):
@@ -93,41 +120,12 @@ ensure_effective_media_dirs(
     spectrogram_dir=SPECTROGRAM_DIR,
 )
 
-def _get_audio_settings() -> dict[str, Any]:
-    return get_runtime_settings().get('audio', {})
-
-
-def _get_enabled_sources(audio_settings: dict[str, Any]) -> list[dict]:
-    """Get list of enabled source entries from audio settings."""
-    return [s for s in audio_settings.get('sources', []) if s.get('enabled', True)]
-
-
-def _get_first_enabled_source(audio_settings: dict[str, Any]) -> dict | None:
-    """Get the first enabled source (used for single-recorder compat)."""
-    sources = _get_enabled_sources(audio_settings)
-    return sources[0] if sources else None
-
-
 def _get_recording_length(audio_settings: dict[str, Any]) -> float:
     return audio_settings.get('recording_length', RECORDING_LENGTH)
 
 
 def _get_analysis_chunk_length() -> float:
     return get_runtime_settings().get('audio', {}).get('recording_chunk_length', ANALYSIS_CHUNK_LENGTH)
-
-
-def _get_recorder_signature(audio_settings: dict[str, Any]) -> tuple:
-    """Hash the enabled sources to detect config changes."""
-    enabled = _get_enabled_sources(audio_settings)
-    source_tuples = tuple(
-        (s.get('id'), s.get('type'), s.get('url', ''), s.get('device', ''))
-        for s in enabled
-    )
-    return (
-        source_tuples,
-        _get_recording_length(audio_settings),
-        get_effective_recording_dir(internal_dir=RECORDING_DIR),
-    )
 
 
 def _is_valid_timezone(tz: str | None) -> bool:
@@ -252,40 +250,80 @@ def _get_aggregate_state(
     return RecorderState.RUNNING
 
 
-def broadcast_recorder_status(
+def build_recorder_status(
     state: str, recorders: dict[str, BaseRecorder],
-    sources: list[dict], thread_logger,
+    sources: list[dict], settings: dict,
     health_cache: dict[str, bool] | None = None,
-) -> bool:
-    """Send recorder health status to API for WebSocket broadcast.
+    pause: dict | None = None,
+    failures: dict | None = None,
+) -> dict:
+    """Sample once for both change detection and WebSocket delivery.
 
-    Returns True if broadcast succeeded, False otherwise.
+    ``pause`` (see _pause_payload) marks an intentional stop: sources
+    without a recorder then report 'paused' rather than 'stopped' so the
+    UI can tell quiet hours from a fault.
     """
-    try:
-        per_source = {}
-        for source in sources:
-            sid = source.get('id', '')
-            recorder = recorders.get(sid)
-            if recorder:
-                healthy = health_cache[sid] if health_cache else recorder.is_healthy()
-                per_source[sid] = {
-                    'label': source.get('label', sid),
-                    'type': source.get('type', ''),
-                    'state': _get_recorder_state(recorder, healthy),
-                    **recorder.get_health_status(healthy=healthy),
-                }
-            else:
-                per_source[sid] = {
-                    'label': source.get('label', sid),
-                    'type': source.get('type', ''),
-                    'state': RecorderState.STOPPED,
-                    **BaseRecorder.default_health_status(),
-                }
+    per_source = {}
+    reported_sources = {source['id']: source for source in sources}
+    for sid in recorders:
+        reported_sources.setdefault(sid, {'id': sid})
+    for source in reported_sources.values():
+        sid = source.get('id', '')
+        recorder = recorders.get(sid)
+        if recorder:
+            healthy = health_cache[sid] if health_cache else recorder.is_healthy()
+            per_source[sid] = {
+                'label': source.get('label', sid),
+                'type': source.get('type', ''),
+                'state': _get_recorder_state(recorder, healthy),
+                **recorder.get_health_status(healthy=healthy),
+                'config_revision': getattr(recorder, 'config_revision', None),
+                'application_state': ('active' if recorder.last_success_time and healthy
+                                      and not recorder.consecutive_failures else
+                                      'failed' if recorder.consecutive_failures else 'connecting'),
+            }
+        else:
+            per_source[sid] = {
+                'label': source.get('label', sid),
+                'type': source.get('type', ''),
+                'state': RecorderState.PAUSED if pause else RecorderState.STOPPED,
+                **BaseRecorder.default_health_status(),
+            }
+        if failures and sid in failures:
+            per_source[sid]['reload_error'] = failures[sid]
 
-        status_data = {
-            'state': state,
-            'sources': per_source,
-        }
+    status_data = {
+        'state': state,
+        'sources': per_source,
+        'pause': pause,
+        'model_type': MODEL_TYPE,
+        'updated_at': time.time(),
+        'source_settings_revisions': {
+            source['id']: recorder_source_revision(source, settings)
+            for source in settings.get('audio', {}).get('sources', [])
+        },
+    }
+    return status_data
+
+
+def recorder_status_key(status):
+    """Ignore changing metrics; states, errors and acknowledgements trigger delivery.
+
+    Full counters and timestamps still travel on the periodic heartbeat.
+    """
+    return {
+        **{key: value for key, value in status.items() if key != 'updated_at'},
+        'sources': {
+            sid: {key: value for key, value in source.items()
+                  if key not in {'last_success_time', 'last_error_time', 'consecutive_failures'}}
+            for sid, source in status['sources'].items()
+        },
+    }
+
+
+def broadcast_recorder_status(status_data: dict, thread_logger) -> bool:
+    """Send the sampled status; acknowledge only successful HTTP delivery."""
+    try:
         resp = requests.post(
             f'http://{API_HOST}:{API_PORT}/api/broadcast/recorder-status',
             json=status_data,
@@ -414,6 +452,40 @@ def _maybe_notify_audio_status(
     })
 
 
+def _pause_payload(decision: ScheduleDecision) -> dict | None:
+    """Status-broadcast fragment for an intentional pause; None when recording.
+
+    ``resumes_at`` is station-local naive ISO (minutes), matching the
+    convention detection timestamps already use.
+    """
+    if decision.record:
+        return None
+    resumes_at = decision.resumes_at
+    return {
+        'reason': decision.reason,
+        'resumes_at': resumes_at.isoformat(timespec='minutes') if resumes_at else None,
+    }
+
+
+def _log_schedule_error(
+    decision: ScheduleDecision, previous_error: str | None, thread_logger,
+) -> str | None:
+    """Warn once when an enabled schedule is being ignored, and once when it
+    becomes usable again. Returns the error to carry into the next tick."""
+    if decision.error != previous_error:
+        if decision.error:
+            # The gate composes both rules, so an invalid schedule can coincide
+            # with a pause from another rule (no enabled source). Don't promise
+            # recording continues when it isn't.
+            thread_logger.warning(
+                "Recording schedule invalid, schedule ignored"
+                + (", recording continues" if decision.record else ""),
+                extra={'error': decision.error})
+        else:
+            thread_logger.info("Recording schedule valid again")
+    return decision.error
+
+
 def continuous_audio_recording(thread_logger):
     """Continuous audio recording from one or more audio sources.
 
@@ -421,40 +493,67 @@ def continuous_audio_recording(thread_logger):
     It does not scan for files or queue them - that's the processing thread's job.
     """
     recorders: dict[str, BaseRecorder] = {}  # source_id → recorder
-    current_signature: tuple | None = None
-    last_broadcast_state: str | None = None
+    recording_failures: dict[str, str] = {}
+    last_broadcast_key: dict | None = None
     last_broadcast_time: float = 0.0
     last_notify_state: str | None = None
     audio_alert_tracker = _AudioAlertTracker()
+    # Why the gate has recording stopped (None = recording); not a fault.
+    pause_reason: str | None = None
+    schedule_error: str | None = None
 
-    def _start_all(audio_settings, sig):
-        nonlocal current_signature
-        enabled = _get_enabled_sources(audio_settings)
-        recording_length = _get_recording_length(audio_settings)
-        for source in enabled:
-            sid = source.get('id', 'unknown')
-            try:
-                rec = setup_recorder(source, recording_length, thread_logger)
-                rec.start()
-                recorders[sid] = rec
-            except ValueError as e:
-                thread_logger.error("Recorder configuration invalid",
-                                    extra={'source_id': sid, 'error': str(e)})
-        current_signature = sig
+    def _reconcile(audio_settings):
+        nonlocal recording_failures
+        recording_failures = reconcile_recorders(
+            recorders, enabled_sources(audio_settings), _get_recording_length(audio_settings),
+            lambda source, length: setup_recorder(source, length, thread_logger))
+        for sid, error in recording_failures.items():
+            thread_logger.warning(error, extra={'source_id': sid})
 
     def _stop_all():
-        for sid, rec in recorders.items():
+        nonlocal recording_failures
+        recording_failures = {}
+        for sid, rec in list(recorders.items()):
             try:
                 rec.stop()
+                del recorders[sid]
             except Exception as e:
+                recording_failures[sid] = 'Could not stop recorder; retrying'
                 thread_logger.debug(f"Error stopping recorder {sid}: {e}")
-        recorders.clear()
+
+    def _apply_gate(decision: ScheduleDecision) -> None:
+        """Enter or leave the paused state, logging once per transition.
+
+        ``pause_reason`` is the whole pause state: None means recording. A
+        reason change while already paused (quiet hours starting after the
+        last source was disabled, say) logs too — otherwise the resume line
+        would name a rule that is no longer the one in force.
+        """
+        nonlocal pause_reason
+        if decision.record:
+            if pause_reason:
+                thread_logger.info(
+                    _PAUSE_LOG.get(pause_reason, _PAUSE_LOG_DEFAULT)[1])
+                pause_reason = None
+            return
+        if pause_reason != decision.reason:
+            thread_logger.info(
+                _PAUSE_LOG.get(decision.reason, _PAUSE_LOG_DEFAULT)[0],
+                extra=_pause_payload(decision))
+            pause_reason = decision.reason
+        # Also with nothing to stop: a start failure from before the pause is
+        # not a fault of the pause, and nothing retries it until recording resumes.
+        _stop_all()
 
     try:
-        # Initialize recorders on startup
+        # Initialize recorders on startup (unless the schedule says not to)
         try:
-            initial_audio_settings = _get_audio_settings()
-            _start_all(initial_audio_settings, _get_recorder_signature(initial_audio_settings))
+            initial_settings = get_runtime_settings()
+            initial_audio_settings = initial_settings.get('audio', {})
+            initial_decision = evaluate_recording_gate(initial_settings, local_now())
+            _apply_gate(initial_decision)
+            if initial_decision.record:
+                _reconcile(initial_audio_settings)
         except Exception as e:
             log_fd_exhaustion_if_needed(e, thread_logger, 'recording_loop_init')
             thread_logger.error("Recording loop error", extra={'error': str(e)}, exc_info=True)
@@ -462,15 +561,15 @@ def continuous_audio_recording(thread_logger):
 
         while not stop_flag.is_set():
             try:
-                audio_settings = _get_audio_settings()
-                new_signature = _get_recorder_signature(audio_settings)
+                settings = get_runtime_settings()
+                audio_settings = settings.get('audio', {})
+                decision = evaluate_recording_gate(settings, local_now())
+                schedule_error = _log_schedule_error(decision, schedule_error, thread_logger)
+                _apply_gate(decision)
+                paused = not decision.record
 
-                if not recorders:
-                    _start_all(audio_settings, new_signature)
-                elif new_signature != current_signature:
-                    thread_logger.info("🔴 Audio settings changed, reloading recorders")
-                    _stop_all()
-                    _start_all(audio_settings, new_signature)
+                if not paused:
+                    _reconcile(audio_settings)
 
                 # Check recorder health (once per recorder) and restart unhealthy ones
                 health_cache = {
@@ -478,33 +577,48 @@ def continuous_audio_recording(thread_logger):
                     for sid, recorder in recorders.items()
                 }
                 for sid, healthy in health_cache.items():
-                    if not healthy:
+                    if not paused and not healthy and sid not in recording_failures:
                         thread_logger.warning(f"Recorder {sid} unhealthy, restarting...")
-                        recorders[sid].restart()
+                        try:
+                            recorders[sid].restart()
+                        except Exception:
+                            recording_failures[sid] = 'Could not restart recorder; retrying'
+                            thread_logger.warning('Recorder restart failed; retrying', extra={'source_id': sid})
                         health_cache[sid] = recorders[sid].is_healthy()
 
                 # Broadcast status on state change or periodic refresh
-                enabled_sources = _get_enabled_sources(audio_settings)
-                current_state = _get_aggregate_state(recorders, health_cache)
-                state_changed = current_state != last_broadcast_state
-                refresh_due = (time.time() - last_broadcast_time) >= STATUS_REFRESH_INTERVAL
-                if state_changed or refresh_due:
-                    ok = broadcast_recorder_status(
-                        current_state, recorders, enabled_sources, thread_logger,
-                        health_cache,
-                    )
-                    if ok:
-                        last_broadcast_state = current_state
-                        last_broadcast_time = time.time()
+                active_sources = enabled_sources(audio_settings)
+                pause_info = _pause_payload(decision)
+                current_state = (
+                    RecorderState.PAUSED if paused
+                    else _get_aggregate_state(recorders, health_cache)
+                )
+                status_data = build_recorder_status(
+                    current_state, recorders, active_sources, settings, health_cache,
+                    pause=pause_info, failures=recording_failures,
+                )
+                status_key = recorder_status_key(status_data)
+                refresh_due = (time.monotonic() - last_broadcast_time) >= STATUS_REFRESH_INTERVAL
+                if status_key != last_broadcast_key or refresh_due:
+                    if broadcast_recorder_status(status_data, thread_logger):
+                        last_broadcast_key = status_key
+                        last_broadcast_time = time.monotonic()
 
                 # Runs even if the broadcast above failed, so a flaky API
-                # socket can't mask audio degradation.
-                _maybe_notify_audio_status(
-                    current_state, last_notify_state, recorders,
-                    enabled_sources, health_cache, audio_alert_tracker,
-                    thread_logger,
-                )
-                last_notify_state = current_state
+                # socket can't mask audio degradation. A pause (quiet hours
+                # or no active source) is invisible to the notifier: it is
+                # not a problem, and by not advancing last_notify_state
+                # through it, the first state after resuming is judged
+                # against the state before the pause — an unresolved
+                # degradation still gets its recovery alert, and a stream
+                # that died during the pause still alerts.
+                if not paused:
+                    _maybe_notify_audio_status(
+                        current_state, last_notify_state, recorders,
+                        active_sources, health_cache, audio_alert_tracker,
+                        thread_logger,
+                    )
+                    last_notify_state = current_state
 
                 time.sleep(FILE_SCAN_INTERVAL)
 
@@ -522,7 +636,7 @@ def continuous_audio_recording(thread_logger):
         thread_logger.info("🔴 Stopping audio recording")
         _stop_all()
 
-def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> str:
+def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> tuple[str, int]:
     """Extract audio segment for detection and convert to MP3.
 
     The frontend's analysis-window bar mirrors this start/end math from the
@@ -533,9 +647,9 @@ def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> 
         input_file_path: Path to the source audio file
 
     Returns:
-        Path to the MP3 file
+        Tuple of (path to the MP3 file, size in bytes)
     """
-    analysis_chunk_length = _get_analysis_chunk_length()
+    analysis_chunk_length = detection.get('bird_song_duration', _get_analysis_chunk_length())
     step_seconds = detection.get('step_seconds', analysis_chunk_length)
     audio_segments_indices = select_audio_chunks(
         detection['chunk_index'], detection['total_chunks'])
@@ -553,12 +667,17 @@ def extract_detection_audio(detection: dict[str, Any], input_file_path: str) -> 
     ).replace('.wav', '.mp3')
 
     normalize = get_runtime_settings().get('playback', {}).get('normalize', False)
-    extract_audio_segment(input_file_path, mp3_path, start_time, end_time,
-                          normalize=normalize)
-    return mp3_path
+    # Atomic publication: ffmpeg writes the temp name (explicit -f, since
+    # .part hides the container), then the final name is claimed without
+    # ever exposing a partial file under it.
+    part_path = mp3_path + PART_SUFFIX
+    extract_audio_segment(input_file_path, part_path, start_time, end_time,
+                          normalize=normalize, output_format='mp3')
+    size = publish_media_file(part_path, mp3_path)
+    return mp3_path, size
 
 
-def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str) -> str:
+def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str) -> tuple[str, int]:
     """Generate spectrogram image for detection.
 
     Args:
@@ -566,9 +685,9 @@ def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str
         input_file_path: Path to the source audio file
 
     Returns:
-        Path to the spectrogram image
+        Tuple of (path to the spectrogram image, size in bytes)
     """
-    analysis_chunk_length = _get_analysis_chunk_length()
+    analysis_chunk_length = detection.get('bird_song_duration', _get_analysis_chunk_length())
     step_seconds = detection.get('step_seconds', analysis_chunk_length)
     ensure_effective_media_dirs(
         recording_dir=RECORDING_DIR,
@@ -588,9 +707,13 @@ def create_detection_spectrogram(detection: dict[str, Any], input_file_path: str
     start_time = step_seconds * detection['chunk_index']
     end_time = start_time + analysis_chunk_length
 
-    generate_spectrogram(input_file_path, spectrogram_path, title,
+    # Atomic publication (Pillow's format comes from the explicit 'WEBP'
+    # arg, so the .part suffix is fine as a write target).
+    part_path = spectrogram_path + PART_SUFFIX
+    generate_spectrogram(input_file_path, part_path, title,
                         start_time=start_time, end_time=end_time)
-    return spectrogram_path
+    size = publish_media_file(part_path, spectrogram_path)
+    return spectrogram_path, size
 
 
 def save_detection_to_db(detection: dict[str, Any]) -> None:
@@ -660,7 +783,14 @@ def broadcast_detection(detection: dict[str, Any], thread_logger) -> None:
 
 
 def handle_detection(detection: dict[str, Any], input_file_path: str, thread_logger) -> None:
-    """Process a single bird detection: create audio, spectrogram, save to DB, broadcast.
+    """Process a single bird detection: save to DB, create media, broadcast.
+
+    Row-first creation (media-ownership design): the detection row is
+    committed before any file exists, media files are published under
+    id+nonce names, and ownership is recorded before anything downstream
+    sees the detection. A crash mid-way leaves either a file-less row
+    (normal) or a nonce-named orphan reconciliation can repair — never an
+    unrecognizable state.
 
     Args:
         detection: Detection dictionary from BirdNet analysis
@@ -673,16 +803,14 @@ def handle_detection(detection: dict[str, Any], input_file_path: str, thread_log
         'time': detection['timestamp'].split('T')[1].split('.')[0]
     })
 
-    extract_detection_audio(detection, input_file_path)
-    create_detection_spectrogram(detection, input_file_path)
-
     runtime_settings = get_runtime_settings()
     location = runtime_settings.get('location', {})
     lat = location.get('latitude', LAT)
     lon = location.get('longitude', LON)
     location_configured = location.get('configured', LOCATION_CONFIGURED)
 
-    # Attach weather data if location is configured (explicit None check for 0-coordinate support)
+    # Attach weather data if location is configured (explicit None check for
+    # 0-coordinate support). Before the save so it lands in the stored row.
     if location_configured and lat is not None and lon is not None:
         weather_service = get_weather_service(lat, lon)
         if weather_service:
@@ -701,22 +829,53 @@ def handle_detection(detection: dict[str, Any], input_file_path: str, thread_log
                     'temp': weather_data.get('temp')
                 })
 
-    # Upload to BirdWeather if configured
-    birdweather_id = runtime_settings.get('birdweather', {}).get('id', BIRDWEATHER_ID)
-    if birdweather_id:
-        bw_service = get_birdweather_service()
-        if bw_service:
-            analysis_chunk_length = _get_analysis_chunk_length()
-            step_seconds = detection.get('step_seconds', analysis_chunk_length)
-            bw_start_time = step_seconds * detection['chunk_index']
-            bw_end_time = bw_start_time + analysis_chunk_length
-            bw_service.publish(detection, input_file_path, bw_start_time, bw_end_time)
-
     thread_logger.debug("Saving detection to database", extra={
         'species': detection['common_name'],
         'scientific_name': detection['scientific_name']
     })
     save_detection_to_db(detection)
+
+    # The row's id + persisted nonce name the media files; every consumer
+    # from here on (broadcast, notifications, API reads) sees these names.
+    nonce = db_manager.get_media_nonce(detection['id'])
+    detection['bird_song_file_name'] = with_media_suffix(
+        detection['bird_song_file_name'].replace('.wav', '.mp3'),
+        detection['id'], nonce)
+    detection['spectrogram_file_name'] = with_media_suffix(
+        detection['spectrogram_file_name'], detection['id'], nonce)
+
+    audio_path, audio_bytes = extract_detection_audio(detection, input_file_path)
+    spectrogram_path, spectrogram_bytes = create_detection_spectrogram(
+        detection, input_file_path)
+
+    try:
+        db_manager.record_detection_media(detection['id'], [
+            {'filename': detection['bird_song_file_name'],
+             'kind': KIND_AUDIO, 'rank': 0, 'bytes': audio_bytes},
+            {'filename': detection['spectrogram_file_name'],
+             'kind': KIND_SPECTROGRAM, 'rank': 0, 'bytes': spectrogram_bytes},
+        ])
+    except DetectionMissingError:
+        # A delete won the race between the insert and here — leave no
+        # ownership residue and no unowned files behind.
+        thread_logger.info("Detection deleted mid-creation; removing media", extra={
+            'detection_id': detection['id']})
+        for path in (audio_path, spectrogram_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        return
+
+    # Calling the lifecycle owner also applies disable requests.
+    bw_service = get_birdweather_service()
+    if bw_service:
+        analysis_chunk_length = detection.get('bird_song_duration', _get_analysis_chunk_length())
+        step_seconds = detection.get('step_seconds', analysis_chunk_length)
+        bw_start_time = step_seconds * detection['chunk_index']
+        bw_service.publish(detection, input_file_path, bw_start_time,
+                           bw_start_time + analysis_chunk_length)
+
     broadcast_detection(detection, thread_logger)
 
     # Send notification if configured (service reads config from file per-detection)
@@ -736,11 +895,11 @@ def is_valid_recording(file_path: str, thread_logger) -> bool:
     """
     try:
         file_size = os.path.getsize(file_path)
-        # Calculate duration: mono 16-bit = 2 bytes per sample
-        actual_duration = file_size / (SAMPLE_RATE * 2)
-        min_acceptable_size = SAMPLE_RATE * 2 * MIN_RECORDING_DURATION
+        # Captured WAV metadata remains valid across model/sample-rate changes.
+        with wave.open(file_path, 'rb') as recording:
+            actual_duration = recording.getnframes() / recording.getframerate()
 
-        if file_size >= min_acceptable_size:
+        if actual_duration >= MIN_RECORDING_DURATION:
             return True
         else:
             thread_logger.warning("Recording too short, removing", extra={
@@ -751,7 +910,7 @@ def is_valid_recording(file_path: str, thread_logger) -> bool:
             })
             return False
 
-    except OSError as e:
+    except (OSError, wave.Error, EOFError) as e:
         log_fd_exhaustion_if_needed(e, thread_logger, 'validate_recording', extra={
             'file': os.path.basename(file_path),
         })
@@ -953,6 +1112,8 @@ def process_audio_file(audio_file_path: str) -> list[dict[str, Any]]:
                 timeout=BIRDNET_REQUEST_TIMEOUT
             )
 
+            if response.status_code == 503:
+                raise ModelServiceUnavailableError('BirdNet service temporarily unavailable')
             if response.status_code == 200:
                 detections = response.json()
                 logger.debug("BirdNet analysis complete", extra={
@@ -1017,6 +1178,9 @@ def process_audio_file(audio_file_path: str) -> list[dict[str, Any]]:
             raise ModelServiceUnavailableError(
                 "BirdNet service request failed"
             ) from e
+
+        except ModelServiceUnavailableError:
+            raise
 
         except Exception as e:
             log_fd_exhaustion_if_needed(e, logger, 'birdnet_request', extra={
@@ -1106,6 +1270,14 @@ if __name__ == "__main__":
     lon = location.get('longitude', LON)
     if lat is not None and lon is not None:
         get_weather_service(lat, lon)
+
+    # One-time live-media index build BEFORE any local writer exists
+    # (media-ownership design: the build holds the writer lock for its
+    # whole duration; deferred under the maintenance lease if the API
+    # container's bulk importer is running). Function-local import:
+    # media_frontier imports storage_manager.
+    from core.media_frontier import ensure_live_media_index
+    ensure_live_media_index(db_manager)
 
     # Start the recording thread
     recording_logger = get_logger(f"{__name__}.recording")

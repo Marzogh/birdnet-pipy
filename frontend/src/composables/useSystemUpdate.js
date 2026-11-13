@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import api, { createLongRequest } from '@/services/api'
 import { UPDATE_DISMISSED_UNTIL_KEY } from '@/utils/storageKeys'
+import { UPDATE_PROGRESS_URL } from '@/utils/updateStage'
 import { useLogger } from './useLogger'
 import {
   captureRestartBaseline,
@@ -20,6 +21,12 @@ const checking = ref(false)
 const updating = ref(false)
 const statusMessage = ref(null)
 const statusType = ref(null) // 'success', 'error', 'info'
+// Orders update checks: the reply's shape depends on the auth tier it was
+// requested under, so a slow pre-login reply must not replace a newer one.
+// Only an adopted reply supersedes — a newer check that fails leaves the
+// older reply free to land.
+let checkRevision = 0
+let adoptedCheckRevision = 0
 
 // Update banner is snoozable for 7 days.
 const dismissal = useDismissible(UPDATE_DISMISSED_UNTIL_KEY, 7 * 24 * 60 * 60 * 1000)
@@ -98,6 +105,7 @@ export function useSystemUpdate() {
   const checkForUpdates = async (options = {}) => {
     const { silent = false, force = false } = options
 
+    const requestId = ++checkRevision
     checking.value = true
     if (!silent) {
       statusMessage.value = null
@@ -107,6 +115,8 @@ export function useSystemUpdate() {
       logger.info('Checking for updates...', { silent, force })
       const url = force ? '/system/update-check?force=true' : '/system/update-check'
       const { data } = await api.get(url)
+      if (requestId < adoptedCheckRevision) return data
+      adoptedCheckRevision = requestId
       updateInfo.value = data
       updateAvailable.value = data.update_available
 
@@ -132,30 +142,14 @@ export function useSystemUpdate() {
       }
       throw error
     } finally {
-      checking.value = false
+      if (requestId === checkRevision) checking.value = false
     }
   }
 
   /**
-   * Trigger system update
-   * @param {boolean} skipConfirm - Skip the browser confirmation dialog (when using custom modal)
+   * Trigger system update. The caller confirms first (Settings' update modal).
    */
-  const triggerUpdate = async (skipConfirm = false) => {
-    // Confirmation dialog (skip if already confirmed via custom modal)
-    if (!skipConfirm) {
-      const confirmed = window.confirm(
-        `This will update the system and restart all services.\n\n` +
-        `Expected downtime: 2-5 minutes\n` +
-        `Audio detection will be interrupted during this time.\n\n` +
-        `Continue with update?`
-      )
-
-      if (!confirmed) {
-        logger.info('Update cancelled by user')
-        return
-      }
-    }
-
+  const triggerUpdate = async () => {
     updating.value = true
     statusMessage.value = null
 
@@ -174,12 +168,6 @@ export function useSystemUpdate() {
       logger.info('Triggering system update...')
       const longApi = createLongRequest()
       const { data } = await longApi.post('/system/update')
-
-      if (data.status === 'no_update_needed') {
-        setStatus('info', 'System is already up to date')
-        updating.value = false
-        return
-      }
 
       setStatus('info', 'Update started. Services restarting...')
       logger.info('Update triggered successfully', data)
@@ -205,7 +193,9 @@ export function useSystemUpdate() {
         maxWaitSeconds: UPDATE_MAX_WAIT_SECONDS,
         autoReload: true,
         message: 'System updating',
-        timeoutMessage: 'Update taking longer than expected. Try refreshing later.'
+        timeoutMessage: 'Update taking longer than expected. Try refreshing later.',
+        // Native only — the HA path has no stage file (see the JSDoc)
+        progressUrl: UPDATE_PROGRESS_URL
       })
       if (!completed) {
         updating.value = false // cancelled via reset()

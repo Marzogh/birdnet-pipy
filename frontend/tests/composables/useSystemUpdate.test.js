@@ -58,7 +58,6 @@ vi.mock('@/composables/useServiceRestart', () => ({
 describe('useSystemUpdate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    global.window.confirm = vi.fn()
     global.window.location = { reload: vi.fn() }
     vi.useFakeTimers()
 
@@ -135,6 +134,40 @@ describe('useSystemUpdate', () => {
     expect(statusMessage.value).toBeNull()
   })
 
+  it('keeps the newer reply when an older check lands after it', async () => {
+    // Pre-login (public tier, no count) started first but answers last
+    let releasePublic
+    mockApi.get
+      .mockReturnValueOnce(new Promise(resolve => { releasePublic = resolve }))
+      .mockResolvedValueOnce({ data: { update_available: true, commits_behind: 5 } })
+
+    const { checkForUpdates, updateInfo, checking } = useSystemUpdate()
+    const publicCheck = checkForUpdates({ silent: true })
+    await checkForUpdates({ silent: true })
+    expect(checking.value).toBe(false)
+
+    releasePublic({ data: { update_available: true } })
+    await publicCheck
+
+    expect(updateInfo.value.commits_behind).toBe(5)
+  })
+
+  it('lets an older reply land when the newer check fails', async () => {
+    let releaseFirst
+    mockApi.get
+      .mockReturnValueOnce(new Promise(resolve => { releaseFirst = resolve }))
+      .mockRejectedValueOnce(new Error('Network error'))
+
+    const { checkForUpdates, updateInfo } = useSystemUpdate()
+    const first = checkForUpdates({ silent: true })
+    await expect(checkForUpdates({ silent: true })).rejects.toThrow()
+
+    releaseFirst({ data: { update_available: true } })
+    await first
+
+    expect(updateInfo.value).toEqual({ update_available: true })
+  })
+
   it('checks for updates and shows up to date when no updates', async () => {
     mockApi.get.mockResolvedValueOnce({
       data: {
@@ -161,8 +194,7 @@ describe('useSystemUpdate', () => {
     expect(statusMessage.value).toContain('Failed to check for updates')
   })
 
-  it('triggers update with user confirmation', async () => {
-    window.confirm.mockReturnValue(true)
+  it('triggers the update and reports services restarting', async () => {
     mockLongApi.post.mockResolvedValueOnce({
       data: {
         status: 'update_triggered',
@@ -175,39 +207,10 @@ describe('useSystemUpdate', () => {
     const { triggerUpdate, updating, statusMessage } = useSystemUpdate()
     await triggerUpdate()
 
-    expect(window.confirm).toHaveBeenCalled()
     expect(statusMessage.value).toContain('Services restarting')
   })
 
-  it('cancels update when user declines confirmation', async () => {
-    window.confirm.mockReturnValue(false)
-
-    const { triggerUpdate, updating } = useSystemUpdate()
-    await triggerUpdate()
-
-    expect(window.confirm).toHaveBeenCalled()
-    expect(updating.value).toBe(false)
-    expect(mockLongApi.post).not.toHaveBeenCalled()
-  })
-
-  it('handles update trigger when already up to date', async () => {
-    window.confirm.mockReturnValue(true)
-    mockLongApi.post.mockResolvedValueOnce({
-      data: {
-        status: 'no_update_needed',
-        message: 'System is already up to date'
-      }
-    })
-
-    const { triggerUpdate, updating, statusMessage } = useSystemUpdate()
-    await triggerUpdate()
-
-    expect(updating.value).toBe(false)
-    expect(statusMessage.value).toContain('already up to date')
-  })
-
   it('handles update trigger failure', async () => {
-    window.confirm.mockReturnValue(true)
     mockLongApi.post.mockRejectedValueOnce(new Error('Update failed'))
 
     const { triggerUpdate, updating, statusType, statusMessage } = useSystemUpdate()
@@ -220,8 +223,6 @@ describe('useSystemUpdate', () => {
   })
 
   it('delegates to useServiceRestart for monitoring reconnection', async () => {
-    window.confirm.mockReturnValue(true)
-
     mockLongApi.post.mockResolvedValueOnce({
       data: {
         status: 'update_triggered',
@@ -421,7 +422,6 @@ describe('useSystemUpdate', () => {
   })
 
   it('native update passes update expectation and baseline to waitForRestart', async () => {
-    window.confirm.mockReturnValue(true)
     mockCaptureBaseline.mockResolvedValueOnce({
       bootId: 'b1', commit: 'c1', version: '0.9.0', runtimeMode: 'native'
     })
@@ -440,8 +440,35 @@ describe('useSystemUpdate', () => {
     )
   })
 
+  it('native update points the wait at the host update-progress stage file', async () => {
+    mockCaptureBaseline.mockResolvedValueOnce({
+      bootId: 'b1', commit: 'c1', version: '0.9.0', runtimeMode: 'native'
+    })
+    mockLongApi.post.mockResolvedValueOnce({ data: { status: 'update_triggered' } })
+
+    const { triggerUpdate } = useSystemUpdate()
+    await triggerUpdate()
+
+    expect(mockServiceRestart.waitForRestart).toHaveBeenCalledWith(
+      expect.objectContaining({ progressUrl: '/update-progress' })
+    )
+  })
+
+  it('HA update never passes a progressUrl (Supervisor owns that update)', async () => {
+    const { triggerUpdate, versionInfo } = useSystemUpdate()
+    versionInfo.value = { runtime_mode: 'ha' }
+    mockLongApi.post.mockResolvedValueOnce({
+      data: { status: 'update_triggered', boot_id: 'boot-from-dispatch' }
+    })
+
+    await triggerUpdate()
+
+    expect(mockServiceRestart.waitForRestart).toHaveBeenCalledTimes(1)
+    const options = mockServiceRestart.waitForRestart.mock.calls[0][0]
+    expect(options.progressUrl).toBeUndefined()
+  })
+
   it('falls back to the trigger response boot_id when baseline capture failed', async () => {
-    window.confirm.mockReturnValue(true)
     // mockCaptureBaseline default resolves null (capture failed)
     mockLongApi.post.mockResolvedValueOnce({
       data: { status: 'update_triggered', boot_id: 'boot-from-post' }
@@ -459,7 +486,6 @@ describe('useSystemUpdate', () => {
   })
 
   it('merges cached version identity with the trigger response identity', async () => {
-    window.confirm.mockReturnValue(true)
     // mockCaptureBaseline default resolves null (capture failed); the
     // versionInfo cache still knows the running commit/version.
     const { triggerUpdate, versionInfo } = useSystemUpdate()
@@ -483,7 +509,6 @@ describe('useSystemUpdate', () => {
   })
 
   it('refreshes the baseline update status from the trigger response read-back', async () => {
-    window.confirm.mockReturnValue(true)
     // Stale 'failed' at capture time; the server read back 'pending' after
     // resetting it, so a later 'failed' is attributable to this attempt.
     mockCaptureBaseline.mockResolvedValueOnce({
@@ -509,7 +534,6 @@ describe('useSystemUpdate', () => {
   })
 
   it('treats a wait timeout as still-in-progress info, not failure', async () => {
-    window.confirm.mockReturnValue(true)
     mockLongApi.post.mockResolvedValueOnce({ data: { status: 'update_triggered' } })
     mockServiceRestart.waitForRestart.mockRejectedValueOnce(new Error('RESTART_TIMEOUT'))
 
@@ -522,7 +546,6 @@ describe('useSystemUpdate', () => {
   })
 
   it('reports a failed update distinctly when the wait rejects with UPDATE_FAILED', async () => {
-    window.confirm.mockReturnValue(true)
     mockLongApi.post.mockResolvedValueOnce({ data: { status: 'update_triggered' } })
     mockServiceRestart.waitForRestart.mockRejectedValueOnce(new Error('UPDATE_FAILED'))
 
@@ -542,7 +565,7 @@ describe('useSystemUpdate', () => {
     })
     mockLongApi.post.mockResolvedValueOnce({ data: { status: 'update_triggered' } })
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockLongApi.post).toHaveBeenCalledWith('/system/update')
     expect(mockServiceRestart.waitForRestart).toHaveBeenCalledWith(
@@ -560,7 +583,7 @@ describe('useSystemUpdate', () => {
     versionInfo.value = { runtime_mode: 'ha', version: '0.6.4-dev21' }
     mockLongApi.post.mockRejectedValueOnce(new Error('connection lost'))
 
-    await triggerUpdate(true)
+    await triggerUpdate()
     // Flush the rejected POST's .catch microtask
     await vi.advanceTimersByTimeAsync(0)
 
@@ -588,7 +611,7 @@ describe('useSystemUpdate', () => {
     )
     mockServiceRestart.reset.mockImplementationOnce(() => { resolveWait?.(false) })
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockServiceRestart.reset).toHaveBeenCalled()
     expect(statusType.value).toBe('error')
@@ -606,7 +629,7 @@ describe('useSystemUpdate', () => {
     backendErr.response = { status: 502, data: { error: 'Could not find update entity for addon' } }
     mockLongApi.post.mockRejectedValueOnce(backendErr)
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockServiceRestart.waitForRestart).not.toHaveBeenCalled()
     expect(statusType.value).toBe('error')
@@ -625,7 +648,7 @@ describe('useSystemUpdate', () => {
       data: { status: 'update_triggered', boot_id: 'boot-from-dispatch' }
     })
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockServiceRestart.waitForRestart).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -643,7 +666,7 @@ describe('useSystemUpdate', () => {
       data: { status: 'update_triggered', boot_id: 'boot-from-dispatch' }
     })
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockServiceRestart.waitForRestart).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -665,7 +688,7 @@ describe('useSystemUpdate', () => {
     // back, new boot, no status file) done.
     mockLongApi.post.mockImplementationOnce(() => new Promise(() => {}))
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockServiceRestart.waitForRestart).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -693,7 +716,7 @@ describe('useSystemUpdate', () => {
       () => new Promise(resolve => { resolveDispatch = resolve })
     )
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     const { baseline } = mockServiceRestart.waitForRestart.mock.calls[0][0]
     expect(baseline).toMatchObject({ version: '0.6.4-dev21', commit: 'ha-commit' })
@@ -714,7 +737,7 @@ describe('useSystemUpdate', () => {
     // Dispatch never settles (Supervisor kills the connection): must not block
     mockLongApi.post.mockImplementationOnce(() => new Promise(() => {}))
 
-    await triggerUpdate(true)
+    await triggerUpdate()
 
     expect(mockServiceRestart.waitForRestart).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -731,7 +754,7 @@ describe('useSystemUpdate', () => {
     networkError.code = 'ERR_NETWORK'
     mockLongApi.post.mockRejectedValueOnce(networkError)
 
-    await expect(triggerUpdate(true)).rejects.toThrow()
+    await expect(triggerUpdate()).rejects.toThrow()
     expect(statusType.value).toBe('error')
   })
 })

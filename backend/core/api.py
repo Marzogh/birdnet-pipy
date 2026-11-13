@@ -12,7 +12,7 @@ from flask import (
     jsonify,
     request,
 )
-from flask_socketio import SocketIO, emit, join_room
+from flask_socketio import SocketIO, emit, join_room, leave_room, rooms
 
 from config.settings import (
     API_PORT,
@@ -30,6 +30,8 @@ from core.api_utils import (
 )
 from core.auth import (
     configure_session,
+    get_request_tier,
+    get_session_id,
     is_authenticated,
     is_feature_public,
     require_auth,
@@ -39,11 +41,14 @@ from core.detection_presenter import (
     _localize_detection,
 )
 from core.logging_config import get_logger, log_api_request
+from core.recording_schedule import enabled_sources
 from core.routes.observations import (
     expire_dashboard_cache,
     invalidate_dashboard_cache,
     invalidate_gallery_cache,
 )
+from core.service_readiness import build_service_readiness, model_readiness
+from core.settings_monitor import SettingsStatusMonitor
 from core.settings_store import (
     load_user_settings,
 )
@@ -62,15 +67,22 @@ def get_stream_config():
     """Provide stream configuration for frontend based on enabled sources."""
     settings = load_user_settings()
     audio = settings.get('audio') or {}
-    sources = audio.get('sources', [])
-    enabled = [s for s in sources if s.get('enabled', True)]
+    enabled = enabled_sources(audio)
+
+    # Owner-chosen labels stay owner-only: they can hint at the station's
+    # location or layout, which is why _strip_public_metadata drops
+    # source_label and /api/recorder/status is owner-room-only. Anonymous
+    # live-feed listeners get a positional name instead — enough to tell two
+    # streams apart in the picker.
+    is_public = get_request_tier() == 'public'
 
     streams = []
-    for source in enabled:
+    for index, source in enumerate(enabled, start=1):
         sid = source.get('id', '')
+        label = f'Source {index}' if is_public else (source.get('label') or sid)
         streams.append({
             'source_id': sid,
-            'label': source.get('label') or sid,
+            'label': label,
             'url': f'stream/{sid}.mp3',
         })
 
@@ -163,14 +175,14 @@ def _unavailable_model_status():
     }
 
 
-@api.route('/api/model/status', methods=['GET'])
-@log_api_request
-@require_auth
-@handle_api_errors
-def get_model_service_status():
-    """Return authenticated model/filter health without exposing port 5001."""
+def read_model_service_status(timeout=3, quiet=False):
+    """Fetch the model server's /api/status, or an 'unavailable' stand-in.
+
+    ``quiet`` demotes the unreachable warning to debug for pollers that
+    expect the server to be down while it starts.
+    """
     try:
-        response = requests.get(BIRDNET_STATUS_ENDPOINT, timeout=3)
+        response = requests.get(BIRDNET_STATUS_ENDPOINT, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
         filter_status = payload.get('location_filter') if isinstance(payload, dict) else None
@@ -178,12 +190,20 @@ def get_model_service_status():
             'active', 'disabled', 'degraded'
         }:
             raise ValueError('Invalid model service status payload')
-        return jsonify(payload), 200
+        return payload
     except (requests.exceptions.RequestException, ValueError) as exc:
-        logger.warning("Unable to read model service status", extra={
-            'error': str(exc),
-        })
-        return jsonify(_unavailable_model_status()), 200
+        log = logger.debug if quiet else logger.warning
+        log("Unable to read model service status", extra={'error': str(exc)})
+        return _unavailable_model_status()
+
+
+def read_settings_status(model_service):
+    from core.runtime_config import read_saved_settings
+    from core.settings_status import build_settings_status, read_streaming_status
+    # The cache keys on file identity, so a save from any process is seen
+    # without re-parsing the file on every one-second monitor sample.
+    saved = read_saved_settings()
+    return build_settings_status(saved, _recorder_status, read_streaming_status(), model_service)
 
 @api.route('/api/health', methods=['GET'])
 def health_check():
@@ -191,6 +211,23 @@ def health_check():
     couple liveness to transient SQLite locks. Must stay unauthenticated.
     """
     return jsonify({'status': 'ok'}), 200
+
+
+@api.route('/api/system/readiness', methods=['GET'])
+def get_service_readiness():
+    """Unauthenticated readiness probe polled by the frontend before it reloads
+    after a restart or update. Public like /api/health: a visitor on the update
+    overlay may be signed out, and the payload is coarse per-service states
+    only (see core.service_readiness).
+    """
+    # Short timeout: this is polled exactly while the model server may be
+    # down, and a removed container can black-hole the connect.
+    model_service = read_model_service_status(timeout=1, quiet=True)
+    reachable = model_service.get('status') != 'unavailable'
+    startup_failed = (not reachable
+                      and read_startup_failure(MODEL_STARTUP_STATUS_PATH) is not None)
+    return jsonify(build_service_readiness(
+        model_readiness(reachable, startup_failed), _recorder_status)), 200
 
 
 # Global SocketIO instance to be used by other modules
@@ -209,6 +246,16 @@ _recorder_status = {}
 # — which carries source labels/types and ffmpeg error text that can echo RTSP
 # credentials — is broadcast to owners only, matching the @require_auth REST route.
 _OWNER_ROOM = 'owners'
+_PUBLIC_ROOM = 'public-listeners'
+# Sockets whose page shows settings status. The sampler and the model-service
+# probe run only while this room has members, not for every owner on every page.
+_SETTINGS_STATUS_ROOM = 'settings-status'
+_OWNER_SESSION_ROOM_PREFIX = 'owner-session:'
+
+
+def _owner_session_room(session_id):
+    """Return the private Socket.IO room for one browser login."""
+    return f'{_OWNER_SESSION_ROOM_PREFIX}{session_id}'
 
 def create_app(async_mode='threading'):
     # The 'threading' default is load-bearing, not cosmetic. requirements.txt
@@ -242,6 +289,14 @@ def create_app(async_mode='threading'):
     except Exception as e:
         logger.warning("Startup migration temp cleanup failed", extra={'error': str(e)})
 
+    from core.export_jobs import cleanup_export_dir, reset_writer_lane
+
+    reset_writer_lane(async_mode)
+    try:
+        cleanup_export_dir()
+    except Exception as e:
+        logger.warning("Startup export cleanup failed", extra={'error': str(e)})
+
     import core.routes  # noqa: F401
 
     app.register_blueprint(api)
@@ -252,6 +307,8 @@ def create_app(async_mode='threading'):
     # request host headers (same-origin only). Do not set this to [] (blocks all origins).
     socketio = SocketIO(app, async_mode=async_mode, cors_allowed_origins=None,
                          logger=False, engineio_logger=False)
+    settings_monitor = SettingsStatusMonitor(socketio, _SETTINGS_STATUS_ROOM, read_settings_status, read_model_service_status)
+    app.extensions['settings_status_monitor'] = settings_monitor
 
     # WebSocket event handlers
     @socketio.on('connect')
@@ -260,6 +317,8 @@ def create_app(async_mode='threading'):
         if not is_feature_public('live_feed') and not is_owner:
             return False  # Reject connection
         logger.info('WebSocket client connected')
+        if not is_owner or not get_session_id():
+            join_room(_PUBLIC_ROOM)
         emit('status', {'message': 'Connected to live detection feed'})
         # recorder_status is owner-only (source labels/types + ffmpeg error text
         # that can contain RTSP credentials), matching the @require_auth
@@ -268,14 +327,91 @@ def create_app(async_mode='threading'):
         # only them (see broadcast_recorder_status_endpoint).
         if is_owner:
             join_room(_OWNER_ROOM)
+            session_id = get_session_id()
+            if session_id:
+                join_room(_owner_session_room(session_id))
             if _recorder_status:
                 emit('recorder_status', _recorder_status)
+
+    # Settings status is owner-only like recorder_status: it names sources and
+    # can carry ffmpeg error text. Membership ends with the socket, so a
+    # reconnecting page asks again.
+    @socketio.on('watch_settings_status')
+    def handle_watch_settings_status():
+        if _OWNER_ROOM not in rooms():
+            return
+        join_room(_SETTINGS_STATUS_ROOM)
+        settings_monitor.subscribe()
+
+    @socketio.on('unwatch_settings_status')
+    def handle_unwatch_settings_status():
+        leave_room(_SETTINGS_STATUS_ROOM)
 
     @socketio.on('disconnect')
     def handle_disconnect():
         logger.info('WebSocket client disconnected')
 
     return app, socketio
+
+def revoke_public_sockets(*, force=False):
+    """Enforce tighter access on connections authorized before the change."""
+    if socketio is None or (not force and is_feature_public('live_feed')):
+        return
+    participants = list(socketio.server.manager.get_participants('/', _PUBLIC_ROOM))
+    for sid, _ in participants:
+        socketio.server.disconnect(sid, namespace='/')
+
+
+def revoke_owner_sockets(reason='password_changed'):
+    """Evict every socket currently in the owner room.
+
+    HTTP gates re-check the session epoch on each request, but a WebSocket is
+    authenticated once at connect and would otherwise keep receiving
+    recorder_status — source labels and ffmpeg error text that can echo RTSP
+    credentials — for the life of the tab. The event explains the reason to
+    cooperative clients, while server-side disconnects enforce revocation even
+    when a client ignores it.
+
+    Every owner socket is evicted, not just the caller's: a session owns no
+    identifiable set of sids. Devices whose session is still valid reconnect
+    and rejoin transparently; the revoked one is refused at connect.
+    """
+    global socketio
+    if not socketio:
+        return
+
+    participants = tuple(
+        socketio.server.manager.get_participants('/', _OWNER_ROOM)
+    )
+    socketio.emit('session_revoked', {'reason': reason},
+                  room=_OWNER_ROOM)
+    for sid, _ in participants:
+        socketio.server.disconnect(sid, namespace='/')
+    logger.info("Owner sockets revoked", extra={'count': len(participants)})
+
+
+def revoke_owner_session_sockets(session_id):
+    """Disconnect sockets belonging to one logged-out browser session.
+
+    Do not emit ``session_revoked`` here. Its cooperative client handler
+    reconnects after password changes, but during logout that reconnect can
+    beat the HTTP response that clears the signed session cookie and rejoin as
+    an owner. A server-initiated disconnect does not auto-reconnect.
+    """
+    global socketio
+    if not socketio or not session_id:
+        return
+
+    room = _owner_session_room(session_id)
+    participants = tuple(
+        socketio.server.manager.get_participants('/', room)
+    )
+    for sid, _ in participants:
+        socketio.server.disconnect(sid, namespace='/')
+    logger.info("Owner session sockets revoked", extra={
+        'count': len(participants),
+    })
+
 
 def broadcast_detection(detection_data):
     """Function to broadcast detection to all connected clients"""
@@ -284,6 +420,7 @@ def broadcast_detection(detection_data):
     # (see expire_dashboard_cache); week/month/allTime stay warm.
     expire_dashboard_cache()
     if socketio:
+        revoke_public_sockets()
         detection_payload = _localize_detection(detection_data)
         socketio.emit('bird_detected', detection_payload)
         logger.debug("Detection broadcasted to WebSocket clients", extra={

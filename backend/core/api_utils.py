@@ -59,29 +59,24 @@ def handle_api_errors(f):
     return decorated_function
 
 
-def validate_date_param(param_name='date', required=False, default_today=True):
+def validate_date_param(required=False):
     """
-    Decorator to validate date parameters in YYYY-MM-DD format
+    Decorator to validate the `date` query parameter in YYYY-MM-DD format
 
     Args:
-        param_name: Name of the date parameter to validate
-        required: Whether the parameter is required
-        default_today: If True and parameter missing, use today's date
+        required: Whether the parameter is required; when it is optional and
+            missing, the endpoint applies its own default
     """
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            date_str = request.args.get(param_name)
+            date_str = request.args.get('date')
 
             # Handle missing parameter
             if not date_str:
                 if required:
                     return jsonify({"error": "Date parameter is required"}), 400
-                elif default_today:
-                    # No need to validate, will use default in endpoint
-                    return f(*args, **kwargs)
-                else:
-                    return f(*args, **kwargs)
+                return f(*args, **kwargs)
 
             # Validate format
             try:
@@ -101,20 +96,31 @@ def _as_directory_list(directories):
     return [os.fspath(directory) for directory in directories]
 
 
-def serve_file_with_fallback(directory, filename, default_file_path, file_type="file"):
+def serve_file_with_fallback(directory, filename, default_file_path, file_type="file",
+                             on_rename=None):
     """
     Generic file serving function with fallback to default file
 
     Args:
         directory: Directory, or ordered directories, to look for the file
         filename: Name of the file to serve
-        default_file_path: Full path to default file if requested file not found
+        default_file_path: Full path to default file if requested file not
+            found, or None to answer a miss with 404 instead. A placeholder
+            suits an <img> (a broken-image icon otherwise); an <audio>
+            element needs the error, or it silently plays the stand-in
+            clip as if it were the recording.
         file_type: Type of file for logging (e.g., "audio", "spectrogram")
+        on_rename: Optional callback(old_name, new_name) fired after the lazy
+            colon->dash rename, so media ownership records can follow the
+            on-disk name (media-ownership design: every rename goes through
+            the ownership boundary). Callback errors must not fail the serve.
 
     Returns:
         Flask response object
     """
     def serve_default():
+        if default_file_path is None:
+            return jsonify({'error': f'{file_type.capitalize()} file not found'}), 404
         default_dir = os.path.dirname(default_file_path)
         default_name = os.path.basename(default_file_path)
         return make_response(send_from_directory(default_dir, default_name))
@@ -166,6 +172,13 @@ def serve_file_with_fallback(directory, filename, default_file_path, file_type="
                             'new_file': filename,
                             'file_type': file_type
                         })
+                        if on_rename is not None:
+                            try:
+                                on_rename(legacy_filename, filename)
+                            except Exception:
+                                logger.warning(
+                                    f"Ownership record update failed after {file_type} rename",
+                                    exc_info=True)
                         return make_response(send_from_directory(candidate_dir, filename))
                     except OSError as e:
                         # Rename failed, serve from old location
@@ -177,7 +190,7 @@ def serve_file_with_fallback(directory, filename, default_file_path, file_type="
                         })
                         return make_response(send_from_directory(candidate_dir, legacy_filename))
 
-    logger.warning(f"{file_type.capitalize()} file not found, serving default", extra={
+    logger.warning(f"{file_type.capitalize()} file not found", extra={
         'requested_file': filename,
         'file_type': file_type
     })

@@ -41,10 +41,7 @@ vi.mock('@/composables/useServiceRestart', () => ({
 vi.mock('@/composables/useAppStatus', () => ({
   useAppStatus: () => ({
     locationConfigured: { value: null },
-    isRestarting: { value: false },
-    setLocationConfigured: vi.fn(),
-    setRestarting: vi.fn(),
-    isReady: vi.fn(() => false)
+    setLocationConfigured: vi.fn()
   })
 }))
 
@@ -284,7 +281,7 @@ describe('SetupWizard', () => {
       expect(mockWaitForRestart).toHaveBeenCalledWith(
         expect.objectContaining({
           autoReload: true,
-          message: 'Applying settings'
+          message: 'Settings saved — starting BirdNET-PiPy'
         })
       )
     })

@@ -11,21 +11,18 @@ import numpy as np
 
 from config import settings
 from config.constants import (
-    DEFAULT_GEOMODEL_FILTER_THRESHOLD,
     DEFAULT_SPECIES_FILTER_THRESHOLD,
-    ModelType,
 )
 
 # Suppress NumPy floating point limit warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='numpy.core.getlimits')
 import os
-import sys
+import subprocess
 import time
 import wave
 
 from flask import Flask, jsonify, request
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logging_config import get_logger, log_execution_time, setup_logging
 from core.media_storage import get_allowed_recording_dirs
 from core.runtime_config import get_runtime_settings
@@ -55,6 +52,14 @@ app = Flask(__name__)
 setup_logging('birdnet')
 logger = get_logger(__name__)
 
+# A failure file describes the CURRENT load attempt only: clear any left by an
+# earlier attempt first, so a restart that fixes the model is not reported as
+# failed while it loads (the API's readiness probe and Settings read it).
+try:
+    clear_startup_failure(settings.MODEL_STARTUP_STATUS_PATH)
+except OSError:
+    logger.warning("Unable to clear stale model startup failure", exc_info=True)
+
 # Load the model using factory pattern
 model_type = get_model_type_from_settings()
 logger.info("Loading bird detection model", extra={
@@ -81,11 +86,6 @@ except Exception as exc:
     logger.error("Failed to load model", exc_info=True)
     raise
 
-try:
-    clear_startup_failure(settings.MODEL_STARTUP_STATUS_PATH)
-except OSError:
-    logger.warning("Unable to clear stale model startup failure", exc_info=True)
-
 # The V3.0 downloader wrote into the source tree. Cleanup is independent of
 # the selected model so stations that switched back to V2.4 also reclaim it.
 try:
@@ -105,6 +105,20 @@ except BirdNetV3AssetError as exc:
 
 # Create location filter (factory owns load + fallback)
 location_filter = create_location_filter(model_type, model=model)
+_active_filter_threshold = settings.user_settings['detection']['species_filter_threshold']
+
+
+def active_filter_threshold(runtime_settings):
+    """Keep the loaded model's threshold while another model awaits restart.
+
+    The two location filters use different scales/defaults. Saving the next
+    model must not apply its threshold to the model still serving requests.
+    """
+    global _active_filter_threshold
+    if runtime_settings.get('model', {}).get('type', model_type.value) == model_type.value:
+        _active_filter_threshold = runtime_settings.get('detection', {}).get(
+            'species_filter_threshold', _active_filter_threshold)
+    return _active_filter_threshold
 _location_filter_status = location_filter.status
 
 # Log location filter configuration
@@ -157,7 +171,7 @@ def split_audio(path, chunk_length, sample_rate, total_duration, overlap=0.0, mi
         path: Path to audio file
         chunk_length: Duration of each chunk in seconds (e.g., 3)
         sample_rate: Sample rate in Hz (e.g., 48000)
-        total_duration: Expected total duration in seconds (e.g., 9)
+        total_duration: Legacy argument, ignored; duration comes from the WAV header.
         overlap: Overlap between chunks in seconds (0.0 to 2.5)
         minlen: Minimum chunk length to keep (default 1.5s)
 
@@ -189,38 +203,16 @@ def split_audio(path, chunk_length, sample_rate, total_duration, overlap=0.0, mi
         'sample_rate': rate
     })
 
-    # Calculate target samples for normalization
-    target_samples = int(total_duration * rate)
-    original_samples = len(sig)
-    original_duration = original_samples / rate
-
-    # Normalize audio to exact target duration (trim or pad)
-    if original_samples > target_samples:
-        # Trim excess from end
-        trimmed_ms = (original_samples - target_samples) / rate * 1000
-        sig = sig[:target_samples]
-        logger.debug("Audio trimmed to target duration", extra={
-            'file': file_name,
-            'original_duration': round(original_duration, 3),
-            'target_duration': total_duration,
-            'trimmed_ms': round(trimmed_ms, 1)
-        })
-    elif original_samples < target_samples:
-        # Pad with zeros at end
-        padding_samples = target_samples - original_samples
-        padding_ms = padding_samples / rate * 1000
-        padding_percent = (padding_samples / target_samples) * 100
-        sig = np.pad(sig, (0, padding_samples), mode='constant')
-
-        # Log if padding is significant (>1% of total duration)
-        if padding_percent > 1.0:
-            logger.info("Audio padded to target duration", extra={
-                'file': file_name,
-                'original_duration': round(original_duration, 3),
-                'target_duration': total_duration,
-                'padding_ms': round(padding_ms, 1),
-                'padding_percent': round(padding_percent, 2)
-            })
+    # WAV metadata describes captured audio. A current recording-length
+    # preference must never trim or pad files already waiting in the queue.
+    if rate != sample_rate:
+        # Only model transitions pay for resampling; ffmpeg is already bundled.
+        result = subprocess.run(
+            ['ffmpeg', '-nostdin', '-v', 'error', '-i', path, '-ac', '1',
+             '-ar', str(sample_rate), '-f', 'f32le', 'pipe:1'],
+            capture_output=True, check=True, timeout=30)
+        sig = np.frombuffer(result.stdout, dtype='<f4')
+        rate = sample_rate
 
     # Calculate step size and chunk size in samples
     chunk_size = int(chunk_length * rate)
@@ -606,23 +598,12 @@ def analyze_audio_file():
         lon = location_settings.get('longitude')
         sensitivity = detection_settings.get('sensitivity', 0.75)
         cutoff = detection_settings.get('cutoff', 0.60)
-        default_threshold = (
-            DEFAULT_GEOMODEL_FILTER_THRESHOLD if model_type == ModelType.BIRDNET_V3
-            else DEFAULT_SPECIES_FILTER_THRESHOLD
-        )
-        species_filter_threshold = detection_settings.get('species_filter_threshold', default_threshold)
+        species_filter_threshold = active_filter_threshold(runtime_settings)
         overlap = audio_settings.get('overlap', 0.0)
         recording_length = audio_settings.get('recording_length', 9)
         allowed_species = species_filter_settings.get('allowed_species') or []
         blocked_species = species_filter_settings.get('blocked_species') or []
         included_species = species_filter_settings.get('included_species') or []
-
-        requested_model_type = runtime_settings.get('model', {}).get('type', settings.MODEL_TYPE)
-        if requested_model_type != settings.MODEL_TYPE:
-            logger.warning("Model type changed in settings; full restart required", extra={
-                'loaded_model_type': settings.MODEL_TYPE,
-                'requested_model_type': requested_model_type
-            })
 
         logger.info("Audio analysis request received", extra={
             'file': os.path.basename(audio_file_path),

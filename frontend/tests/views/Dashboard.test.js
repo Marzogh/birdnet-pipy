@@ -10,6 +10,7 @@ import { useSystemUpdate } from '@/composables/useSystemUpdate'
 import { useTimeFormat } from '@/composables/useTimeFormat'
 import { recordingPath } from '@/utils/detectionLinks'
 import { useAuth } from '@/composables/useAuth'
+import { stubViewportTier } from '../helpers/viewportTier'
 
 vi.mock('@/composables/useFetchBirdData')
 vi.mock('@/composables/useAppStatus')
@@ -122,10 +123,7 @@ describe('Dashboard', () => {
     useFetchBirdData.mockReturnValue(baseState())
     useAppStatus.mockReturnValue({
       locationConfigured: ref(true),
-      isRestarting: ref(false),
-      setLocationConfigured: vi.fn(),
-      setRestarting: vi.fn(),
-      isReady: vi.fn(() => true)
+      setLocationConfigured: vi.fn()
     })
     useAudioPlayer.mockReturnValue({
       currentPlayingId: ref(null),
@@ -614,6 +612,274 @@ describe('Dashboard', () => {
     expect(wrapper.vm.isDataEmpty).toBe(true)
     const reverseButton = wrapper.findAll('button').find(b => b.text().includes('Reverse'))
     expect(reverseButton).toBeFalsy()
+  })
+
+  describe('activity overview row sizing', () => {
+    const speciesRows = (n) => Array.from({ length: n }, (_, i) => ({
+      species: `Species ${i}`,
+      hourlyActivity: [1, ...Array(23).fill(0)]
+    }))
+
+    const useSpeciesCount = (n) => {
+      const state = baseState()
+      state.detailedBirdActivityData.value = speciesRows(n)
+      useFetchBirdData.mockReturnValue(state)
+      return state
+    }
+
+    beforeEach(() => {
+      useSpeciesCount(20)
+    })
+
+    it('sizes the chart region for 10 rows on laptop-sized viewports', async () => {
+      stubViewportTier(false)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      expect(useBirdCharts().createTotalObservationsChart.mock.lastCall[1]).toHaveLength(10)
+      expect(wrapper.html()).toContain('--rows: 10;')
+    })
+
+    it('sizes the chart region for 15 rows on tall desktop viewports', async () => {
+      stubViewportTier(true)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      // Both canvases get the same sliced list (lockstep)
+      expect(useBirdCharts().createTotalObservationsChart.mock.lastCall[1]).toHaveLength(15)
+      expect(useBirdCharts().createHourlyActivityHeatmap.mock.lastCall[1]).toHaveLength(15)
+      expect(wrapper.html()).toContain('--rows: 15;')
+    })
+
+    it('keeps the 10-row height on tall viewports with 10 or fewer species', async () => {
+      useSpeciesCount(7)
+      stubViewportTier(true)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      expect(useBirdCharts().createTotalObservationsChart.mock.lastCall[1]).toHaveLength(7)
+      expect(wrapper.html()).toContain('--rows: 10;')
+    })
+
+    it('grows the tall region row by row between 11 and 14 species', async () => {
+      const state = useSpeciesCount(12)
+      stubViewportTier(true)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      expect(wrapper.html()).toContain('--rows: 12;')
+
+      // Height tracks the live species count as new species arrive
+      state.detailedBirdActivityData.value = speciesRows(14)
+      await nextTick()
+      expect(wrapper.html()).toContain('--rows: 14;')
+    })
+
+    it('redraws with the new tier when the media query flips', async () => {
+      const mql = stubViewportTier(false)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      mql.dispatch(true)
+      await flushPromises()
+      expect(useBirdCharts().createTotalObservationsChart.mock.lastCall[1]).toHaveLength(15)
+      expect(wrapper.html()).toContain('--rows: 15;')
+
+      mql.dispatch(false)
+      await flushPromises()
+      expect(useBirdCharts().createTotalObservationsChart.mock.lastCall[1]).toHaveLength(10)
+      expect(wrapper.html()).toContain('--rows: 10;')
+    })
+
+  })
+
+  describe('recent observations and hourly activity sizing', () => {
+    const recentRows = (n) => Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      common_name: `Species ${i}`,
+      timestamp: '2024-01-01T12:00:00Z',
+      confidence: 0.9,
+      bird_song_file_name: `song${i}.mp3`
+    }))
+
+    // More rows than the tall tier shows — the client must slice down to
+    // its tier's count in both modes.
+    const useRecentRows = (n = 10) => {
+      const state = baseState()
+      state.recentObservationsData.value = recentRows(n)
+      state.hourlyBirdActivityError.value = null // render the chart container
+      useFetchBirdData.mockReturnValue(state)
+      return state
+    }
+
+    // The recent list is the only ul with space-y-2 (summary uses space-y-1)
+    const recentListItems = (wrapper) => wrapper.findAll('ul.space-y-2 > li')
+    const hourlyChartBox = (wrapper) =>
+      wrapper.find({ ref: 'hourlyActivityChart' }).element.parentElement
+
+    it('shows 7 recent rows on laptop viewports', async () => {
+      useRecentRows()
+      stubViewportTier(false)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      expect(recentListItems(wrapper)).toHaveLength(7)
+    })
+
+    it('shows 8 recent rows on tall viewports', async () => {
+      useRecentRows()
+      stubViewportTier(true)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      expect(recentListItems(wrapper)).toHaveLength(8)
+    })
+
+    it('adapts the recent row count when the media query flips', async () => {
+      useRecentRows()
+      const mql = stubViewportTier(false)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      mql.dispatch(true)
+      await flushPromises()
+      expect(recentListItems(wrapper)).toHaveLength(8)
+
+      mql.dispatch(false)
+      await flushPromises()
+      expect(recentListItems(wrapper)).toHaveLength(7)
+    })
+
+    // The hourly chart carries no per-tier height: it flex-fills its card,
+    // which the grid row stretches level with the recent list, with a
+    // min-height floor for mobile/short viewports.
+    it('lets the hourly chart flex-fill the card to track the recent list height', async () => {
+      useRecentRows()
+      stubViewportTier(false)
+      const wrapper = mountDashboard()
+      await flushPromises()
+
+      const box = hourlyChartBox(wrapper)
+      expect(box.className).toContain('flex-1')
+      expect(box.className).toContain('min-h-[220px]')
+    })
+  })
+
+  describe('playback errors', () => {
+    it('shows a failed recent-observation playback and dismisses it', async () => {
+      const error = ref(null)
+      const clearError = vi.fn(() => { error.value = null })
+      useAudioPlayer.mockReturnValue({
+        currentPlayingId: ref(null),
+        togglePlay: vi.fn(),
+        stopAudio: vi.fn(),
+        error,
+        clearError
+      })
+      const wrapper = mountDashboard()
+      await flushPromises()
+      expect(wrapper.text()).not.toContain('missing or can no longer be opened')
+
+      error.value = 'This recording is missing or can no longer be opened.'
+      await flushPromises()
+      expect(wrapper.text()).toContain('This recording is missing or can no longer be opened.')
+
+      await wrapper.findAll('button').find(b => b.text() === 'Dismiss').trigger('click')
+      expect(clearError).toHaveBeenCalled()
+      expect(wrapper.text()).not.toContain('missing or can no longer be opened')
+    })
+
+    // Audio elements whose play() does what `play` says and whose 'error'
+    // listener the test fires, as a browser does for a missing file.
+    const stubLatestPlayer = (play) => {
+      const elements = []
+      vi.stubGlobal('Audio', vi.fn().mockImplementation(function MockAudio(src) {
+        this.src = src
+        this.error = null
+        this.currentTime = 0
+        this.pause = vi.fn()
+        this.listeners = {}
+        this.addEventListener = vi.fn((type, cb) => { this.listeners[type] = cb })
+        this.play = vi.fn(play)
+        elements.push(this)
+      }))
+      vi.stubGlobal('AudioContext', vi.fn().mockImplementation(function MockAudioContext() {
+        this.state = 'running'
+        this.destination = {}
+        this.createAnalyser = vi.fn(() => ({ fftSize: 1024, frequencyBinCount: 512, connect: vi.fn() }))
+        this.createMediaElementSource = vi.fn(() => ({ connect: vi.fn() }))
+      }))
+      vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+      vi.stubGlobal('cancelAnimationFrame', vi.fn())
+      return elements
+    }
+
+    const mountWithLatest = async () => {
+      const state = baseState()
+      state.latestObservationData.value = {
+        id: 1,
+        common_name: 'Robin',
+        scientific_name: 'Turdus migratorius',
+        timestamp: '2024-01-01T12:00:00Z',
+        bird_song_file_name: 'gone.mp3'
+      }
+      useFetchBirdData.mockReturnValue(state)
+      const wrapper = mountDashboard()
+      await flushPromises()
+      return { wrapper, state }
+    }
+
+    it('says why the latest recording will not play', async () => {
+      const elements = stubLatestPlayer(() => new Promise(() => {}))
+      const { wrapper, state } = await mountWithLatest()
+
+      wrapper.vm.playLatestObservation()
+      const [audio] = elements
+      audio.error = { code: 4 } // how browsers report a 404
+      audio.listeners.error()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This recording is missing or can no longer be opened.')
+      expect(wrapper.vm.latestObservationIsPlaying).toBe(false)
+      expect(cancelAnimationFrame).toHaveBeenCalled()
+
+      // The message is about that recording; a new detection clears it.
+      state.latestObservationData.value = { ...state.latestObservationData.value, id: 2 }
+      await flushPromises()
+      expect(wrapper.text()).not.toContain('missing or can no longer be opened')
+    })
+
+    it('explains a blocked play but not one cut short by a pause', async () => {
+      let rejection
+      stubLatestPlayer(() => Promise.reject(rejection))
+      const { wrapper } = await mountWithLatest()
+
+      rejection = Object.assign(new Error('interrupted'), { name: 'AbortError' })
+      wrapper.vm.playLatestObservation()
+      await flushPromises()
+      expect(wrapper.vm.latestPlaybackError).toBe(null)
+
+      rejection = Object.assign(new Error('blocked'), { name: 'NotAllowedError' })
+      wrapper.vm.playLatestObservation()
+      await flushPromises()
+      expect(wrapper.text()).toContain('Your browser blocked playback. Try again.')
+      expect(wrapper.vm.latestObservationIsPlaying).toBe(false)
+    })
+
+    it('says so when the latest detection has no recording left', async () => {
+      const elements = stubLatestPlayer(() => Promise.resolve())
+      const { wrapper, state } = await mountWithLatest()
+      // Storage cleanup removed its media: the API sends no file name
+      state.latestObservationData.value = { ...state.latestObservationData.value, bird_song_file_name: null }
+      await flushPromises()
+
+      wrapper.vm.playLatestObservation()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This recording is no longer available.')
+      expect(wrapper.vm.latestObservationIsPlaying).toBe(false)
+      expect(elements).toHaveLength(0)
+    })
   })
 
   describe('unique species toggle', () => {

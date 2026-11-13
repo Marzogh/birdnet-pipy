@@ -5,21 +5,16 @@ core.runtime_config classifies which sections changed and the affected
 services pick the new values up live. Persistence itself lives in
 core.settings_store. Registered on the shared ``api`` blueprint at import.
 """
-import threading
 
 from flask import jsonify, request
 
 from config.constants import (
-    OVERLAP_OPTIONS,
-    RECORDING_LENGTH_OPTIONS,
     UPDATE_CHANNELS,
-    VALID_MODEL_TYPES,
 )
-from config.settings import get_default_settings
+from config.settings import SettingsUnreadable
 from core.api_infra import api
 from core.auth import require_auth
 from core.bird_name_utils import (
-    SUPPORTED_BIRD_NAME_LANGUAGES,
     clear_bird_name_caches,
 )
 from core.ha_mode import is_home_assistant_mode
@@ -29,50 +24,22 @@ from core.runtime_config import (
     classify_setting_changes,
     deep_merge_settings,
     get_setting_differences,
-    invalidate_runtime_settings_cache,
+    read_saved_settings,
 )
 from core.settings_store import (
     _persist_no_restart_setting,
     _validate_notification_settings,
     load_user_settings,
     save_user_settings,
+    serialize_settings_write,
+    settings_etag,
+    update_quiet_hours,
 )
+from core.settings_validation import validate_settings, validate_settings_shape
+from core.timezone_lookup import get_timezone_for_location
 from core.utils import normalize_site_url
 
 logger = get_logger(__name__)
-
-
-# Singleton TimezoneFinder (loads ~40MB shape data on first use). The import
-# itself is deferred into _get_timezone_finder(): it drags numpy/cffi/h3 into
-# the worker, and the only caller is the settings handler resolving a newly
-# saved location — a station that never edits its location never pays for it.
-_timezone_finder = None
-_tz_finder_lock = threading.Lock()
-
-
-def _get_timezone_finder():
-    """Lazy-import and lazy-load TimezoneFinder (loads ~40MB shape data)."""
-    global _timezone_finder
-    with _tz_finder_lock:
-        if _timezone_finder is None:
-            from timezonefinder import TimezoneFinder
-            _timezone_finder = TimezoneFinder()
-        return _timezone_finder
-
-
-def get_timezone_for_location(lat: float, lon: float) -> str | None:
-    """Offline timezone lookup. Returns IANA timezone or None on failure."""
-    try:
-        tf = _get_timezone_finder()
-        timezone = tf.timezone_at(lat=lat, lng=lon)
-        if timezone:
-            logger.info(f"Resolved timezone: {timezone}")
-            return timezone
-        logger.warning(f"No timezone found for ({lat}, {lon})")
-        return None
-    except Exception as e:
-        logger.error(f"Timezone lookup failed: {e}")
-        return None
 
 
 @api.route('/api/settings', methods=['GET'])
@@ -81,33 +48,15 @@ def get_timezone_for_location(lat: float, lon: float) -> str | None:
 def get_settings():
     """Get all user settings"""
     try:
-        settings = load_user_settings()
-        return jsonify(settings), 200
+        settings = read_saved_settings(force_reload=True)
+        response = jsonify(settings)
+        response.headers['ETag'] = settings_etag(settings)
+        return response, 200
+    except SettingsUnreadable as e:
+        logger.error("Saved settings unreadable", extra={'error': str(e)})
+        return jsonify({'error': str(e), 'code': 'settings_unreadable'}), 503
     except Exception as e:
         logger.error("Failed to get settings", extra={
-            'error': str(e)
-        }, exc_info=True)
-        return jsonify({'error': str(e)}), 500
-
-
-@api.route('/api/settings/defaults', methods=['GET'])
-@log_api_request
-@require_auth
-def get_default_settings_endpoint():
-    """Get default settings (single source of truth for frontend reset).
-
-    Auth-gated: the only caller is the Settings page's fallback when the
-    authenticated GET /api/settings load fails, so an unauthenticated client
-    has no reason to read this — and the payload carries the default station
-    coordinates, which should not be exposed pre-auth.
-    """
-    try:
-        defaults = get_default_settings()
-        # Set configured to true for reset (user is explicitly resetting)
-        defaults['location']['configured'] = True
-        return jsonify(defaults), 200
-    except Exception as e:
-        logger.error("Failed to get default settings", extra={
             'error': str(e)
         }, exc_info=True)
         return jsonify({'error': str(e)}), 500
@@ -116,6 +65,7 @@ def get_default_settings_endpoint():
 @api.route('/api/settings/channel', methods=['PUT'])
 @log_api_request
 @require_auth
+@serialize_settings_write
 def update_channel_setting():
     """Update the update channel setting without triggering a restart.
 
@@ -142,7 +92,6 @@ def update_channel_setting():
             current_settings['updates'] = {}
         current_settings['updates']['channel'] = channel
         save_user_settings(current_settings)
-        invalidate_runtime_settings_cache()
 
         logger.info("Update channel changed", extra={'channel': channel})
 
@@ -161,6 +110,7 @@ def update_channel_setting():
 @api.route('/api/settings/units', methods=['PUT'])
 @log_api_request
 @require_auth
+@serialize_settings_write
 def update_units_setting():
     """Update the display units setting without triggering a restart.
 
@@ -195,6 +145,7 @@ def update_units_setting():
 @api.route('/api/settings/time-format', methods=['PUT'])
 @log_api_request
 @require_auth
+@serialize_settings_write
 def update_time_format_setting():
     """Update the display time-format setting without triggering a restart.
 
@@ -230,6 +181,7 @@ def update_time_format_setting():
 @api.route('/api/settings/playback', methods=['PUT'])
 @log_api_request
 @require_auth
+@serialize_settings_write
 def update_playback_setting():
     """Update the recording-normalization setting without triggering a restart.
 
@@ -262,9 +214,47 @@ def update_playback_setting():
         return jsonify({'error': str(e)}), 500
 
 
+@api.route('/api/settings/schedule', methods=['PUT'])
+@log_api_request
+@require_auth
+@serialize_settings_write
+def update_schedule_setting():
+    """Update the recording schedule (quiet hours) without triggering a restart.
+
+    The main container re-evaluates schedule.* from the settings file on every
+    recorder tick, so the change takes effect within seconds. Accepts a
+    partial quiet_hours object; omitted fields keep their current value.
+    """
+    try:
+        data = request.json
+        if not data or 'quiet_hours' not in data:
+            return jsonify({'error': 'quiet_hours field required'}), 400
+        incoming = data['quiet_hours']
+        if not isinstance(incoming, dict):
+            return jsonify({'error': 'quiet_hours must be a JSON object'}), 400
+
+        merged, error = update_quiet_hours(incoming)
+        if error:
+            return jsonify({'error': error}), 400
+
+        logger.info("Quiet hours changed", extra={'quiet_hours': merged})
+
+        return jsonify({
+            'success': True,
+            'quiet_hours': merged
+        }), 200
+
+    except Exception as e:
+        logger.error("Failed to update schedule setting", extra={
+            'error': str(e)
+        }, exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @api.route('/api/settings/notifications', methods=['PUT'])
 @log_api_request
 @require_auth
+@serialize_settings_write
 def update_notification_settings():
     """Update notification settings without triggering a restart.
 
@@ -289,7 +279,6 @@ def update_notification_settings():
         if urls:
             current_settings['notifications']['apprise_urls'] = list(dict.fromkeys(urls))
         save_user_settings(current_settings)
-        invalidate_runtime_settings_cache()
 
         logger.info("Notification settings updated", extra={
             'changed_fields': list(data.keys())
@@ -310,15 +299,13 @@ def update_notification_settings():
 @api.route('/api/settings', methods=['PUT'])
 @log_api_request
 @require_auth
+@serialize_settings_write
 def update_settings():
     """Update user settings and apply changes without container restart."""
     try:
         incoming_settings = request.json
-        if not incoming_settings:
+        if not incoming_settings or not isinstance(incoming_settings, dict):
             return jsonify({'error': 'No settings data provided'}), 400
-        if not isinstance(incoming_settings, dict):
-            return jsonify({'error': 'Request body must be a JSON object'}), 400
-
         incoming_storage = incoming_settings.get('storage')
         if incoming_storage is not None:
             if not isinstance(incoming_storage, dict):
@@ -330,86 +317,28 @@ def update_settings():
         current_settings = load_user_settings()
         new_settings = deep_merge_settings(current_settings, incoming_settings)
 
-        # Validate audio settings
-        if 'audio' in incoming_settings:
-            incoming_audio = incoming_settings['audio']
-
-            # Validate sources array if provided
-            sources = incoming_audio.get('sources')
-            if sources is not None:
-                if not isinstance(sources, list):
-                    return jsonify({'error': 'sources must be an array'}), 400
-                seen_ids = set()
-                mic_count = 0
-                for source in sources:
-                    sid = source.get('id', '')
-                    if not sid or not sid.startswith('source_'):
-                        return jsonify({'error': f'Invalid source id: {sid}. Must match source_<int>'}), 400
-                    if sid in seen_ids:
-                        return jsonify({'error': f'Duplicate source id: {sid}'}), 400
-                    seen_ids.add(sid)
-
-                    stype = source.get('type', '')
-                    if stype not in ('pulseaudio', 'rtsp'):
-                        return jsonify({'error': f'Invalid source type: {stype}. Must be pulseaudio or rtsp'}), 400
-                    if stype == 'rtsp':
-                        url = source.get('url', '')
-                        if not url or not url.startswith(('rtsp://', 'rtsps://')):
-                            return jsonify({'error': f'RTSP source {sid} must have a valid rtsp:// or rtsps:// URL'}), 400
-                    if stype == 'pulseaudio':
-                        mic_count += 1
-                if mic_count > 1:
-                    return jsonify({'error': 'Only one microphone source is allowed'}), 400
-
-                # Validate next_source_id if provided
-                next_id = incoming_audio.get('next_source_id')
-                if next_id is not None and seen_ids:
-                    max_suffix = max(
-                        (int(sid.split('_', 1)[1]) for sid in seen_ids),
-                        default=-1
-                    )
-                    if next_id <= max_suffix:
-                        return jsonify({'error': f'next_source_id ({next_id}) must be greater than max existing id suffix ({max_suffix})'}), 400
-
-            # Validate recording_length
-            recording_length = incoming_audio.get('recording_length')
-            if recording_length is not None and recording_length not in RECORDING_LENGTH_OPTIONS:
-                return jsonify({'error': 'Invalid recording_length. Must be 9, 12, or 15 seconds'}), 400
-
-            # Validate overlap
-            overlap = incoming_audio.get('overlap')
-            if overlap is not None and overlap not in OVERLAP_OPTIONS:
-                return jsonify({'error': 'Invalid overlap. Must be 0.0, 0.5, 1.0, 1.5, 2.0, or 2.5 seconds'}), 400
-
-        # Validate model type
-        if 'model' in incoming_settings:
-            model_type = new_settings['model'].get('type')
-            if model_type and model_type not in VALID_MODEL_TYPES:
-                return jsonify({'error': f'Invalid model type. Must be one of: {", ".join(VALID_MODEL_TYPES)}'}), 400
-
-        # Validate display settings
-        if 'display' in incoming_settings:
-            bird_name_language = new_settings.get('display', {}).get('bird_name_language')
-            if bird_name_language and bird_name_language not in SUPPORTED_BIRD_NAME_LANGUAGES:
-                supported = ', '.join(sorted(SUPPORTED_BIRD_NAME_LANGUAGES))
-                return jsonify({
-                    'error': f'Invalid bird_name_language. Must be one of: {supported}'
-                }), 400
-
-            if 'site_url' in incoming_settings['display']:
-                site_url = incoming_settings['display']['site_url']
-                if not isinstance(site_url, str):
-                    return jsonify({'error': 'display.site_url must be a string'}), 400
-                try:
-                    new_settings['display']['site_url'] = normalize_site_url(site_url)
-                except ValueError as e:
-                    return jsonify({'error': str(e)}), 400
-
-        # Validate notification settings
-        if 'notifications' in incoming_settings:
-            error = _validate_notification_settings(incoming_settings['notifications'])
-            if error:
-                return jsonify({'error': error}), 400
+        # Types first, before any normalizer below touches a value; the value
+        # rules run on the finished document.
+        error = validate_settings_shape(new_settings)
+        if error:
+            return jsonify({'error': error}), 400
+        if any(key in incoming_settings.get('location', {}) for key in ('latitude', 'longitude')):
+            new_settings['location']['configured'] = True
+        # The server owns model-aware defaults, including API-only clients.
+        if new_settings.get('model', {}).get('type') != current_settings.get('model', {}).get('type'):
+            from config.constants import (
+                DEFAULT_GEOMODEL_FILTER_THRESHOLD,
+                DEFAULT_SPECIES_FILTER_THRESHOLD,
+            )
+            if 'species_filter_threshold' not in incoming_settings.get('detection', {}):
+                new_settings.setdefault('detection', {})['species_filter_threshold'] = (
+                    DEFAULT_GEOMODEL_FILTER_THRESHOLD if new_settings['model']['type'] == 'birdnet_v3'
+                    else DEFAULT_SPECIES_FILTER_THRESHOLD)
+        if 'site_url' in incoming_settings.get('display', {}):
+            try:
+                new_settings['display']['site_url'] = normalize_site_url(new_settings['display']['site_url'])
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
 
         # Compute timezone when location is being saved and timezone is missing or location changed
         # This ensures all containers have correct timezone on next restart
@@ -436,12 +365,15 @@ def update_settings():
                     # Preserve existing timezone if not in incoming payload
                     new_settings['location']['timezone'] = current_loc['timezone']
 
+        error = validate_settings(new_settings)
+        if error:
+            return jsonify({'error': error}), 400
+
         changed_paths = get_setting_differences(current_settings, new_settings)
         change_plan = classify_setting_changes(changed_paths, current_settings, new_settings)
 
         # Save settings to JSON file and clear caches
         save_user_settings(new_settings)
-        invalidate_runtime_settings_cache()
         # display.* preferences feed _localize_* in the cached payload;
         # location.* (lat/lon/timezone) feeds local_now() which sets the
         # today/week/month boundaries and the hourly-activity date. Any
@@ -457,6 +389,9 @@ def update_settings():
             invalidate_dashboard_cache()
             invalidate_gallery_cache()
         clear_bird_name_caches()
+        if any(path.startswith("access.") for path in changed_paths):
+            from core.api import revoke_public_sockets
+            revoke_public_sockets()
 
         logger.info("Settings updated", extra={
             'changed_sections': list(incoming_settings.keys()),
@@ -467,9 +402,9 @@ def update_settings():
         if not changed_paths:
             message = 'No changes detected.'
         elif change_plan['full_restart_required']:
-            message = 'Settings applied. Restarting...'
+            message = 'Settings saved. Restart services to apply the model change.'
         else:
-            message = 'Settings applied.'
+            message = 'Settings saved. Live settings take effect at the next processing boundary.'
 
         return jsonify({
             'status': 'updated',
@@ -477,7 +412,7 @@ def update_settings():
             'settings': new_settings,
             'changes': {
                 'changed_paths': changed_paths,
-                'hot_applied': change_plan['hot_applied'],
+                'hot_reload_paths': change_plan['hot_reload_paths'],
                 'component_restarts': change_plan['component_restarts'],
                 'full_restart_required': change_plan['full_restart_required'],
                 'full_restart_paths': change_plan['full_restart_paths'],

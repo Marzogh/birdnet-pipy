@@ -1,4 +1,5 @@
-FROM debian:bookworm-slim
+# Pin the multi-platform index so routine source updates keep their base layers.
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 # Build arguments for user/group IDs
 ARG UID=1000
@@ -12,7 +13,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ffmpeg \
     libpulse0 \
     curl \
-    jq
+    python3
 
 WORKDIR /app
 
@@ -25,6 +26,7 @@ RUN groupadd -g ${GID} streamer && \
 
 # Copy entry script and set permissions
 COPY --chown=streamer:streamer scripts/start-icecast.sh /app/start-icecast.sh
+COPY --chown=streamer:streamer scripts/stream_supervisor.py /app/stream_supervisor.py
 RUN chmod +x /app/start-icecast.sh
 
 # Switch to non-root user

@@ -8,18 +8,18 @@
         <div class="flex flex-wrap items-stretch gap-2 justify-center lg:justify-end">
           <div class="hidden sm:flex items-center bg-gray-100 rounded-full p-0.5">
             <button
-              v-for="opt in speciesLimitOptions"
-              :key="opt.value"
+              v-for="limit in speciesLimits"
+              :key="limit"
               :class="[
                 'px-3 py-1 text-xs font-medium rounded-full transition-all duration-200',
-                speciesLimit === opt.value
+                speciesLimit === limit
                   ? 'bg-white text-gray-900 shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               ]"
               :disabled="isUpdating"
-              @click="setSpeciesLimit(opt.value)"
+              @click="setSpeciesLimit(limit)"
             >
-              {{ opt.label }}
+              {{ limit === 0 ? 'All' : limit }}
             </button>
           </div>
           <button 
@@ -84,9 +84,11 @@
         </div>
       </div>
 
+      <!-- Same chart pair, row density and height easing as the Dashboard's
+           Activity Overview (.activity-chart-region in style.css). -->
       <div
-        class="transition-[height] duration-500 ease-in-out overflow-hidden"
-        :style="{ height: activityChartHeight }"
+        class="activity-chart-region"
+        :style="{ '--rows': activityRowsShown }"
       >
         <CenteredMessage
           v-if="!chartsLoadedOnce"
@@ -95,41 +97,12 @@
         >
           Fetching the latest data...
         </CenteredMessage>
-        <div
+        <ActivityOverviewCharts
           v-else-if="!isDataEmpty && !detailedBirdActivityError"
-          class="flex h-full"
-        >
-          <div class="w-full lg:w-1/3 lg:pr-2 relative">
-            <canvas
-              ref="totalObservationsChart"
-              class="h-full"
-            />
-            <SpeciesAxisLinks
-              :ticks="speciesAxisLayout.ticks"
-              :axis-left="speciesAxisLayout.axisLeft"
-              :axis-width="speciesAxisLayout.axisWidth"
-              :row-height="speciesAxisLayout.rowHeight"
-            />
-          </div>
-          <div class="hidden lg:block lg:w-2/3 lg:pl-2 h-full">
-            <!-- Inner wrapper is the positioning context: it has no padding,
-                 so the absolute overlay's origin matches the canvas origin
-                 (the chart's pixel coords are canvas-relative). -->
-            <div class="h-full relative">
-              <canvas
-                ref="hourlyActivityHeatmap"
-                class="h-full"
-              />
-              <TimeAxisLinks
-                :ticks="timeAxisLayout.ticks"
-                :axis-top="timeAxisLayout.axisTop"
-                :axis-height="timeAxisLayout.axisHeight"
-                :col-width="timeAxisLayout.colWidth"
-                :date="timeAxisLayout.date"
-              />
-            </div>
-          </div>
-        </div>
+          ref="activityCharts"
+          :species-axis-layout="speciesAxisLayout"
+          :time-axis-layout="timeAxisLayout"
+        />
         <CenteredMessage
           v-else-if="detailedBirdActivityError"
           variant="error"
@@ -155,31 +128,14 @@
         </h2>
         <div class="flex flex-wrap items-stretch gap-2 justify-center lg:justify-end">
           <!-- Time Range Dropdown -->
-          <select
+          <AppListbox
             v-model="trendsTimeRange"
+            :options="trendsRangeOptions"
             :disabled="isUpdatingTrends"
-            class="hidden sm:block h-9 px-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"
+            size="sm"
+            aria-label="Time range"
             @change="onTrendsTimeRangeChange"
-          >
-            <option value="7">
-              Week
-            </option>
-            <option value="14">
-              Two Week
-            </option>
-            <option value="30">
-              Month
-            </option>
-            <option value="90">
-              3 Month
-            </option>
-            <option value="180">
-              6 Month
-            </option>
-            <option value="365">
-              Year
-            </option>
-          </select>
+          />
 
           <!-- Date Navigation -->
           <button
@@ -288,87 +244,43 @@
         </h2>
         <div class="flex flex-wrap items-center gap-4 justify-center lg:justify-end">
           <!-- Species Dropdown -->
-          <div class="relative">
-            <div class="flex items-center space-x-2">
-              <div class="relative">
-                <input
-                  v-model="searchQuery"
-                  type="text"
-                  placeholder="Search or select species..."
-                  class="h-9 px-3 pr-8 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm w-56 sm:w-64 lg:w-72"
-                  :disabled="isLoadingSpecies"
-                  @focus="showDropdown = true"
-                  @blur="handleBlur"
-                  @input="filterSpecies"
-                >
-                <button
-                  class="absolute right-0 top-0 h-full px-2 text-gray-400 hover:text-gray-600"
-                  :disabled="isLoadingSpecies"
-                  @click="toggleDropdown"
-                >
-                  <ChevronIcon
-                    direction="down"
-                    class="h-4 w-4"
-                  />
-                </button>
-                                
-                <!-- Dropdown List -->
-                <div
-                  v-show="showDropdown && !isLoadingSpecies" 
-                  class="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-auto"
-                >
-                  <div
-                    v-if="filteredSpecies.length === 0"
-                    class="px-3 py-2 text-sm text-gray-500"
-                  >
-                    No species found
-                  </div>
-                  <button
-                    v-for="species in filteredSpecies"
-                    :key="species.common_name"
-                    class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 focus:bg-gray-100 focus:outline-none"
-                    @mousedown="selectSpecies(species)"
-                  >
-                    <div class="font-medium">
-                      {{ getDisplayCommonName(species) }}
-                    </div>
-                    <div class="text-xs text-gray-500">
-                      {{ species.scientific_name }}
-                    </div>
-                  </button>
-                </div>
+          <AppCombobox
+            :model-value="selectedSpecies"
+            :options="allSpecies"
+            :get-label="getDisplayCommonName"
+            :filter="matchesBirdQuery"
+            :option-key="speciesKey"
+            placeholder="Search or select species..."
+            aria-label="Species"
+            empty-text="No species found"
+            size="sm"
+            :disabled="isLoadingSpecies"
+            class="w-56 sm:w-64 lg:w-72"
+            @update:model-value="onSpeciesPicked"
+          >
+            <template #option="{ option }">
+              <div class="font-medium">
+                {{ getDisplayCommonName(option) }}
               </div>
-            </div>
-          </div>
+              <div class="text-xs text-gray-500">
+                {{ option.scientific_name }}
+              </div>
+            </template>
+          </AppCombobox>
 
           <!-- View Options and Navigation -->
           <div
             v-if="selectedSpecies"
-            class="flex items-center space-x-2 lg:space-x-4"
+            class="flex flex-wrap items-center justify-center gap-2 lg:gap-4"
           >
-            <select
-              :value="speciesView"
+            <AppListbox
+              :model-value="speciesView"
+              :options="speciesViewOptions"
               :disabled="isUpdatingSpecies"
+              size="sm"
               aria-label="View period"
-              class="hidden sm:block h-9 px-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"
-              @change="onSpeciesViewChange($event.target.value)"
-            >
-              <option value="day">
-                Day
-              </option>
-              <option value="week">
-                Week
-              </option>
-              <option value="month">
-                Month
-              </option>
-              <option value="6month">
-                6 Month
-              </option>
-              <option value="year">
-                Year
-              </option>
-            </select>
+              @change="onSpeciesViewChange"
+            />
 
             <!-- Navigation buttons -->
             <div class="flex items-center space-x-2">
@@ -456,20 +368,21 @@
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import Chart from 'chart.js/auto'
 import { MatrixController, MatrixElement } from 'chartjs-chart-matrix'
 import { useFetchBirdData } from '@/composables/useFetchBirdData'
 import { useBirdCharts } from '@/composables/useBirdCharts'
 import { useDateNavigation } from '@/composables/useDateNavigation'
 import { useChartHelpers } from '@/composables/useChartHelpers'
+import { useTallViewport, ACTIVITY_ROWS } from '@/composables/useTallViewport'
 import api from '@/services/api'
 import AppButton from '@/components/AppButton.vue'
 import AppDatePicker from '@/components/AppDatePicker.vue'
+import AppListbox from '@/components/AppListbox.vue'
 import CenteredMessage from '@/components/CenteredMessage.vue'
-import SpeciesAxisLinks from '@/components/SpeciesAxisLinks.vue'
-import TimeAxisLinks from '@/components/TimeAxisLinks.vue'
-import ChevronIcon from '@/components/icons/ChevronIcon.vue'
+import ActivityOverviewCharts from '@/components/ActivityOverviewCharts.vue'
+import AppCombobox from '@/components/AppCombobox.vue'
 import { getDisplayCommonName, matchesBirdQuery } from '@/utils/birdNames'
 
 Chart.register(MatrixController, MatrixElement)
@@ -479,10 +392,10 @@ export default {
     components: {
         AppButton,
         AppDatePicker,
+        AppListbox,
+        AppCombobox,
         CenteredMessage,
-        SpeciesAxisLinks,
-        TimeAxisLinks,
-        ChevronIcon
+        ActivityOverviewCharts,
     },
     setup() {
         const {
@@ -519,29 +432,40 @@ export default {
         // Main date selection (for bird activity overview)
         const selectedDate = ref(getLocalDateString())
         const maxDate = ref(getLocalDateString())
-        const isLoading = ref(false)
         const isUpdating = ref(false)
         const chartsLoadedOnce = ref(false)
 
-        // Species limit for heatmap
-        const speciesLimit = ref(10)
-        const speciesLimitOptions = [
-            { label: '10', value: 10 },
-            { label: '20', value: 20 },
-            { label: '30', value: 30 },
-            { label: 'All', value: 0 }
-        ]
+        // Species limit choices per viewport tier (0 = All). The first is the
+        // default and is the Dashboard's row count for that tier, so the two
+        // Activity Overviews open showing the same number of species.
+        const SPECIES_LIMITS = {
+            base: [ACTIVITY_ROWS.base, 20, 30, 0],
+            tall: [ACTIVITY_ROWS.tall, 30, 0]
+        }
+        const { isTallViewport } = useTallViewport()
+        const speciesLimits = computed(() => (
+            isTallViewport.value ? SPECIES_LIMITS.tall : SPECIES_LIMITS.base
+        ))
+        const speciesLimit = ref(speciesLimits.value[0])
+        // On a tier flip keep a choice both tiers offer (30, All); otherwise
+        // move to the new tier's default. No chart animation: the region is
+        // already easing to its new height mid-resize.
+        watch(speciesLimits, (limits) => {
+            if (limits.includes(speciesLimit.value)) return
+            speciesLimit.value = limits[0]
+            if (!isDataEmpty.value) createCharts({ animate: false })
+        })
 
-        // Chart refs
-        const totalObservationsChart = ref(null)
-        const hourlyActivityHeatmap = ref(null)
+        // The Activity Overview canvases live in ActivityOverviewCharts; these
+        // read like the template refs they replace, so the chart helpers
+        // (which take a ref or an element) are called exactly as before.
+        const activityCharts = ref(null)
+        const totalObservationsChart = computed(() => activityCharts.value?.barCanvas ?? null)
+        const hourlyActivityHeatmap = computed(() => activityCharts.value?.heatmapCanvas ?? null)
 
         // Species dropdown and chart
         const allSpecies = ref([])
-        const filteredSpecies = ref([])
         const selectedSpecies = ref(null)
-        const searchQuery = ref('')
-        const showDropdown = ref(false)
         const isLoadingSpecies = ref(false)
         const speciesChart = ref(null)
         const speciesChartInstance = ref(null)
@@ -571,35 +495,17 @@ export default {
             detailedBirdActivityData.value.every(bird => bird.hourlyActivity.every(count => count === 0))
         )
 
-        const formattedDate = computed(() => {
-            const date = new Date(selectedDate.value + 'T00:00:00')
-            return date.toLocaleDateString('en-US', {
-                weekday: 'long',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            })
-        })
-
         const canGoForward = computed(() => {
             return selectedDate.value < maxDate.value
         })
 
-        // The explicit height sits on the chart region, not the card, so the
-        // header and card padding can't eat into the rows: only Chart.js's
-        // own fixed canvas overhead (top layout padding + x-axis band, both
-        // constant) shares the region with the species rows, keeping the
-        // per-row height the same across the 10/20/30/All limits. Below
-        // BASE_SPECIES_COUNT the region is pinned to a 10-row height and the
-        // rows stretch to fill it.
-        const BASE_SPECIES_COUNT = 10
-        const ROW_HEIGHT = 26
-        const CHART_AXIS_OVERHEAD = 60  // canvas top padding + x-axis ticks and title
-
-        const activityChartHeight = computed(() => {
-            const rows = Math.max(limitedBirdActivityData.value.length, BASE_SPECIES_COUNT)
-            return `${rows * ROW_HEIGHT + CHART_AXIS_OVERHEAD}px`
-        })
+        // Rows the chart region is sized for, which keeps the per-row height
+        // the same across the species limits. With fewer species than the
+        // base tier shows, the region is pinned to that height and the rows
+        // stretch to fill it (as on the Dashboard).
+        const activityRowsShown = computed(() =>
+            Math.max(limitedBirdActivityData.value.length, ACTIVITY_ROWS.base)
+        )
 
         const canGoForwardTrends = computed(() => {
             return trendsEndDate.value < trendsMaxDate.value
@@ -622,6 +528,13 @@ export default {
             year: 'Year'
         }
 
+        // The two range pickers read from the label maps above, so a label only
+        // ever has to be changed in one place.
+        const toOptions = (labelMap) =>
+            Object.entries(labelMap).map(([value, label]) => ({ value, label }))
+        const trendsRangeOptions = toOptions(trendsRangeLabels)
+        const speciesViewOptions = toOptions(speciesViewLabels)
+
         const TRENDS_FETCH_ERROR = 'Failed to load detection trends'
 
         // Methods
@@ -629,7 +542,6 @@ export default {
             if (isUpdating.value) return
 
             isUpdating.value = true
-            isLoading.value = true
 
             try {
                 await fetchChartsData(selectedDate.value)
@@ -642,7 +554,6 @@ export default {
                     await createCharts()
                 }
             } finally {
-                isLoading.value = false
                 isUpdating.value = false
             }
         }
@@ -671,11 +582,11 @@ export default {
             onDateChange()
         }
 
-        const createCharts = async () => {
+        const createCharts = async ({ animate = true } = {}) => {
             // Add small delay to ensure DOM is ready
             await nextTick()
-            await createTotalObsChart(totalObservationsChart, limitedBirdActivityData.value, { title: null })
-            await createHeatmap(hourlyActivityHeatmap, limitedBirdActivityData.value, { title: null, date: selectedDate.value })
+            await createTotalObsChart(totalObservationsChart, limitedBirdActivityData.value, { animate, title: null })
+            await createHeatmap(hourlyActivityHeatmap, limitedBirdActivityData.value, { animate, title: null, date: selectedDate.value })
         }
 
         const setSpeciesLimit = (limit) => {
@@ -692,7 +603,6 @@ export default {
             try {
                 const { data } = await api.get('/species/all')
                 allSpecies.value = data
-                filteredSpecies.value = data
             } catch (error) {
                 console.error('Error fetching species list:', error)
                 speciesChartError.value = 'Failed to load species list'
@@ -701,36 +611,13 @@ export default {
             }
         }
 
-        const filterSpecies = () => {
-            filteredSpecies.value = allSpecies.value.filter(species =>
-                matchesBirdQuery(species, searchQuery.value)
-            )
-        }
+        // common_name is unique per species, so it is a stable option key.
+        const speciesKey = (species) => species.common_name
 
-        const selectSpecies = (species) => {
+        const onSpeciesPicked = (species) => {
             selectedSpecies.value = species
-            searchQuery.value = getDisplayCommonName(species)
-            showDropdown.value = false
             speciesChartError.value = null
-            updateSpeciesChart()
-        }
-
-        const toggleDropdown = () => {
-            showDropdown.value = !showDropdown.value
-            if (showDropdown.value) {
-                searchQuery.value = ''
-                filteredSpecies.value = allSpecies.value
-            }
-        }
-
-        const handleBlur = () => {
-            // Delay to allow click on dropdown items
-            setTimeout(() => {
-                showDropdown.value = false
-                if (selectedSpecies.value) {
-                    searchQuery.value = getDisplayCommonName(selectedSpecies.value)
-                }
-            }, 200)
+            updateSpeciesChart()  // no-op guard when species is null (cleared)
         }
 
         const updateSpeciesChart = async () => {
@@ -1038,9 +925,9 @@ export default {
             await updateTrendsChart()
         })
 
-        onUnmounted(() => {
-            destroyChart(totalObservationsChart)
-            destroyChart(hourlyActivityHeatmap)
+        // onBeforeUnmount, while the canvas refs are still set (see
+        // destroyChart). ActivityOverviewCharts releases its own two charts.
+        onBeforeUnmount(() => {
             destroyChart(speciesChart)
             destroyChart(trendsChart)
         })
@@ -1056,41 +943,35 @@ export default {
         return {
             selectedDate,
             maxDate,
-            totalObservationsChart,
+            activityCharts,
+            activityRowsShown,
             speciesAxisLayout,
             timeAxisLayout,
-            hourlyActivityHeatmap,
             isDataEmpty,
             detailedBirdActivityError,
-            formattedDate,
             onDateChange,
             canGoForward,
-            isLoading,
             isUpdating,
             chartsLoadedOnce,
-            activityChartHeight,
             speciesLimit,
-            speciesLimitOptions,
+            speciesLimits,
             setSpeciesLimit,
             previousDay,
             nextDay,
             goToToday,
             // Species dropdown and chart
             allSpecies,
-            filteredSpecies,
             selectedSpecies,
-            searchQuery,
-            showDropdown,
             isLoadingSpecies,
             getDisplayCommonName,
+            matchesBirdQuery,
             speciesView,
+            speciesViewOptions,
             speciesChart,
             speciesChartError,
             isUpdatingSpecies,
-            filterSpecies,
-            selectSpecies,
-            toggleDropdown,
-            handleBlur,
+            onSpeciesPicked,
+            speciesKey,
             updateSpeciesChart,
             speciesDateDisplay,
             canGoForwardSpecies,
@@ -1100,6 +981,7 @@ export default {
             // Detection Trends chart
             trendsChart,
             trendsTimeRange,
+            trendsRangeOptions,
             trendsEndDate,
             trendsMaxDate,
             trendsChartData,

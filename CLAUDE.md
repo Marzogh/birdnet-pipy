@@ -32,7 +32,8 @@ Prefer simple, modular code with small focused components.
 
 **Build & Deploy:**
 ```bash
-./build.sh                  # Builds frontend + backend, then deploys
+./build.sh                  # Builds all Docker images (frontend + backend); does NOT deploy
+docker compose up -d        # Deploy: recreate containers on the new images (backend: on every build, via its build-ID label)
 ./build.sh --test           # Run tests before building
 ./build.sh --help           # Show all options
 ```
@@ -70,7 +71,7 @@ docs/            # ARCHITECTURE, INSTALLATION, PRIVACY
 internal_docs/   # Planning notes (workflow, reviews, design docs) — gitignored, do not commit
 ```
 
-`AGENTS.md` is a symlink to this file.
+`AGENTS.md` is a local symlink to this file; it is gitignored, so a fresh clone won't have it.
 
 ## Development Notes
 
@@ -100,7 +101,7 @@ Before syncing dev to staging or main, always run `./build.sh` first and confirm
 
 ## Changelog
 
-Add user-facing changes as a bullet under `## [Unreleased]` in `CHANGELOG.md`. Keep each entry concise: lead with `Fixed`/`Added`/`Changed`/`Improved`, and state the change and (briefly) the why in one or two sentences. Prefer a single tight bullet over a paragraph — trim mechanism detail that belongs in the commit message, not the changelog. Don't reference GitHub issue numbers in changelog entries.
+Add user-facing changes as a bullet under `## [Unreleased]` in `CHANGELOG.md`. Keep each entry concise: lead with `Fixed`/`Added`/`Changed`/`Improved`, and state the change and (briefly) the why in one or two sentences. Prefer a single tight bullet over a paragraph — trim mechanism detail that belongs in the commit message, not the changelog. Keep the tone modest and plain: say what changed for the user, without speed-up figures, before/after numbers or superlatives. Don't reference GitHub issue numbers in changelog entries.
 
 ## Home Assistant Add-on
 

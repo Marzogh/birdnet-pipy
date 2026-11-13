@@ -7,11 +7,27 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from datetime import time as dt_time
 
+# Direct submodule imports (sys.modules-resolved) rather than the
+# package-attr form: the test suite evicts 'core.*' between tests but the
+# 'core' package survives with stale attributes, and `from core import X`
+# would bind a different module generation than the rest of the import
+# graph — splitting shared state (KIND_DIRS) and exception class identity
+# (MaintenanceInProgressError caught by routes).
+import core.db_rollups as db_rollups
+import core.db_species as db_species
+import core.maintenance_lease as maintenance_lease
+import core.media_ownership as media_ownership
 from config.settings import DATABASE_PATH
-from core import db_species
-from core.db_schema import TIMESTAMP_FORMAT, ensure_schema
+from core.db_schema import (
+    TIMESTAMP_FORMAT,
+    ensure_schema,
+    keyset_after,
+    keyset_before,
+)
 from core.logging_config import get_logger
+from core.storage_manager import delete_detection_files
 from core.timezone_service import local_now
 from core.utils import build_detection_filenames
 from model_service.label_utils import same_taxon_group
@@ -165,6 +181,24 @@ def _species_where(column, values):
     return f"{column} IN ({placeholders})", list(values)
 
 
+# The definition of a "playable" detection row: media resolved to at least
+# one file AND a canonical (rank 0) audio and spectrogram recorded — rank 0
+# is exactly the row whose filename the page presents (_canonical_media_map
+# reads rank 0), and it lets each EXISTS probe answer index-only from
+# ux_detection_media_canonical. The species+confidence scan itself rides
+# idx_detections_live_media_confidence (db_schema.LIVE_MEDIA_INDEXES).
+# Two bound params: KIND_AUDIO, KIND_SPECTROGRAM.
+PLAYABLE_MEDIA_CLAUSE = """
+    AND media_bytes > 0
+    AND EXISTS (SELECT 1 FROM detection_media m
+                WHERE m.detection_id = detections.id
+                AND m.kind = ? AND m.rank = 0)
+    AND EXISTS (SELECT 1 FROM detection_media m
+                WHERE m.detection_id = detections.id
+                AND m.kind = ? AND m.rank = 0)
+"""
+
+
 def _summary_stats_bucket(total, unique, hour, most_key, rare_key, names):
     """Build the 7-key summary-stats dict shared by the per-period and
     all-periods queries. ``names`` maps a species key to its resolved
@@ -314,12 +348,6 @@ class DatabaseManager:
         return sqlite3.connect(f"file:{self.db_path}?mode=ro",
                                uri=True, timeout=30)
 
-    def database_exists(self):
-        with self.get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='detections'")
-            return cursor.fetchone() is not None
-
     def insert_detection(self, detection):
         # Handle extra field - default to empty JSON object
         extra = detection.get('extra', {})
@@ -333,8 +361,9 @@ class DatabaseManager:
 
         query = """
         INSERT INTO detections (timestamp, group_timestamp, scientific_name, common_name, confidence,
-                                latitude, longitude, cutoff, sensitivity, overlap, extra, audio_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                latitude, longitude, cutoff, sensitivity, overlap, extra, audio_source,
+                                media_bytes, media_nonce)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self.get_db_connection() as conn:
             cur = conn.cursor()
@@ -350,14 +379,74 @@ class DatabaseManager:
                 detection['sensitivity'],
                 detection['overlap'],
                 extra,
-                detection.get('audio_source')
+                detection.get('audio_source'),
+                # Row-first creation: born resolved-and-empty (0, not NULL —
+                # NULL would expose the row to the legacy frontier walk),
+                # with its media identity persisted before any file exists.
+                0,
+                media_ownership.mint_media_nonce()
             ))
             detection_id = cur.lastrowid
-            # Same transaction: the species rollup can never disagree with
-            # a committed detection.
+            # Same transaction: the species and time rollups can never
+            # disagree with a committed detection.
             db_species.apply_insert(cur, detection, detection_id, extra_dict)
+            db_rollups.apply_insert(cur, detection)
             conn.commit()
             return detection_id
+
+    def get_rollup_revision(self):
+        """Cache-validation revision: bumped by every rollup ready/dirty
+        transition in any process (durable in meta)."""
+        with self.get_db_connection() as conn:
+            return db_rollups.get_revision(conn.cursor())
+
+    def get_media_nonce(self, detection_id):
+        """The row's persisted media identity (None for legacy rows)."""
+        with self.get_db_connection() as conn:
+            row = conn.execute(
+                "SELECT media_nonce FROM detections WHERE id = ?",
+                (detection_id,)).fetchone()
+            return row['media_nonce'] if row else None
+
+    def get_or_create_media_nonce(self, detection_id):
+        """The row's nonce, lazily initializing legacy NULL rows in one
+        transaction (importer Stages 2/3 call this before publishing media
+        for rows created by older code). Raises DetectionMissingError for
+        a deleted row — before any file could be published against it."""
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            nonce = media_ownership.get_or_create_media_nonce(cur, detection_id)
+            conn.commit()
+            return nonce
+
+    def get_media_owner(self, filename):
+        """The detection_id owning this filename, or None if unowned."""
+        with self.get_db_connection() as conn:
+            row = conn.execute(
+                "SELECT detection_id FROM detection_media WHERE filename = ?",
+                (filename,)).fetchone()
+            return row['detection_id'] if row else None
+
+    def record_detection_media(self, detection_id, files):
+        """Record ownership of published files in one transaction.
+
+        BEGIN IMMEDIATE first: the writer lock is held before the
+        detection-existence check, so a concurrent delete cannot commit
+        between the check and the ownership inserts (the schema has no FK
+        to catch a ghost row — the lock IS the guarantee; implementation
+        review finding 2). Raises media_ownership.DetectionMissingError if
+        a delete already won — the caller must remove the files it just
+        published.
+        """
+        with self.get_db_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.cursor()
+                media_ownership.record_media(cur, detection_id, files)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_latest_detections(self, limit=15, unique=False):
         if limit <= 0:
@@ -376,13 +465,11 @@ class DatabaseManager:
         else:
             rows = self._fetch_deduplicated(limit)
 
-        detections = []
-        for row in rows:
-            detection = self._normalize_detection(row, include_filenames=True)
+        detections = self._normalize_detections(rows, include_filenames=True)
+        for detection in detections:
             # Use legacy field names for backward compatibility with frontend
             detection['bird_song_file_name'] = detection.pop('audio_filename')
             detection['spectrogram_file_name'] = detection.pop('spectrogram_filename')
-            detections.append(detection)
 
         return detections
 
@@ -412,7 +499,8 @@ class DatabaseManager:
             overlap,
             week,
             extra,
-            audio_source
+            audio_source,
+            media_bytes
         FROM detections
         WHERE id IN (
             SELECT id FROM (
@@ -607,7 +695,9 @@ class DatabaseManager:
         })
         return species_activity
 
-    def get_activity_overview_both(self, date=None, num_species=10):
+    def get_activity_overview_both(self, date=None, *, num_species):
+        # num_species is required so the caller (the dashboard route) stays
+        # the single owner of the cap.
         species_activity = self._species_activity_for_day(date)
         most = sorted(species_activity, key=lambda x: x['totalObservations'],
                       reverse=True)[:num_species]
@@ -620,154 +710,104 @@ class DatabaseManager:
         })
         return {'most': most, 'least': least}
 
-    def get_summary_stats_all_periods(self, today_start, week_start, month_start):
-        """Compute today/week/month/allTime summary stats in one query.
+    @staticmethod
+    def _rollups_can_serve_period(period_start):
+        """Rollups aggregate whole days, so they can only stand in for a
+        raw query whose lower bound is a midnight (today, allTime, or any
+        calendar-aligned start). The rolling week/month windows carry a
+        time-of-day boundary — serving those from day buckets would
+        over-include the boundary day's pre-cutoff rows (implementation
+        review finding 1) — and their raw scans are cheap 7/30-day index
+        ranges anyway."""
+        return period_start.time() == dt_time.min
 
-        Replaces what used to be 4 sequential per-period calls. Each per-period
-        bucket has the same 7-key shape: totalObservations, uniqueSpecies,
-        mostActiveHour, mostCommonSpecies, mostCommonSpeciesScientificName,
-        rarestSpecies, rarestSpeciesScientificName.
+    def _summary_bucket_from_rollups(self, cur, start_date, now):
+        """(total, unique, hour, most_key, rare_key) for [start_date..now]
+        with EXACT raw semantics: whole days strictly before today come
+        from the rollups (O(rollup rows)); today is a raw
+        [midnight..now] slice (one day of rows), merged in Python. That
+        keeps the `timestamp <= now` upper bound the raw path has — a
+        date-only bound would admit a same-day future timestamp
+        (implementation re-review R3). Only valid for midnight-aligned
+        starts (_rollups_can_serve_period). ``now`` is the CALLER'S clock
+        — one temporal boundary per request; a second local_now() here
+        could cross midnight against the caller's raw buckets (second
+        re-review S2). Hours are 2-digit strings to match the raw path's
+        strftime('%H') (an int 0 would falsy-collapse midnight to N/A in
+        the bucket)."""
+        today = now.strftime('%Y-%m-%d')
+        species = {}
+        hours = {}
+        cur.execute(
+            "SELECT species_key, SUM(count) FROM species_day "
+            "WHERE date >= ? AND date < ? GROUP BY species_key",
+            (start_date, today))
+        for key, count in cur.fetchall():
+            species[key] = species.get(key, 0) + count
+        cur.execute(
+            "SELECT printf('%02d', hour), SUM(count) FROM hour_day "
+            "WHERE date >= ? AND date < ? GROUP BY hour",
+            (start_date, today))
+        for hour, count in cur.fetchall():
+            hours[hour] = hours.get(hour, 0) + count
+        # Today's raw slice, bounded at now exactly like the raw path.
+        cur.execute(
+            f"SELECT {_SPECIES_KEY} AS sk, COUNT(*) FROM detections "
+            f"WHERE timestamp >= ? AND timestamp <= ? GROUP BY sk",
+            (f"{today}T00:00:00", now.isoformat()))
+        for key, count in cur.fetchall():
+            species[key] = species.get(key, 0) + count
+        cur.execute(
+            "SELECT strftime('%H', timestamp) AS h, COUNT(*) FROM detections "
+            "WHERE timestamp >= ? AND timestamp <= ? GROUP BY h",
+            (f"{today}T00:00:00", now.isoformat()))
+        for hour, count in cur.fetchall():
+            hours[hour] = hours.get(hour, 0) + count
 
-        Species are grouped by the species key (scientific_name with a
-        common_name fallback for legacy rows) so V2/V3 English drift
-        collapses but unrelated blank-sci rows do not.
+        total = sum(species.values())
+        unique = len(species)
+        # Tie semantics mirror the raw ORDER BY clauses exactly:
+        # count DESC/ASC, then key ASC.
+        hour = min(hours.items(), key=lambda kv: (-kv[1], kv[0]))[0] \
+            if hours else None
+        most_key = min(species.items(), key=lambda kv: (-kv[1], kv[0]))[0] \
+            if species else None
+        rare_key = min(species.items(), key=lambda kv: (kv[1], kv[0]))[0] \
+            if species else None
+        return total, unique, hour, most_key, rare_key
 
-        The `WHERE c_<period> > 0` filters in the species and hour selects
-        are load-bearing — without them a period with no detections would
-        return the all-time top species/hour (since the per-period count
-        would be 0 but the row still exists in species_counts/hourly_per_period).
+    def _raw_summary_bucket(self, cur, period_start_iso, now_iso):
+        """(total, unique, hour, most_key, rare_key) for one period from the
+        raw event log — exact time-of-day boundaries. Cheap for the rolling
+        week/month windows (bounded index range); allTime's full scan is
+        what the rollup path exists to avoid."""
+        query = f"""
+        WITH filtered_detections AS (
+            SELECT scientific_name, common_name, timestamp
+            FROM detections
+            WHERE timestamp BETWEEN :period_start AND :now
+        ),
+        hourly_counts AS (
+            SELECT strftime('%H', timestamp) AS hour, COUNT(*) AS c
+            FROM filtered_detections GROUP BY hour
+        ),
+        species_counts AS (
+            SELECT {_SPECIES_KEY} AS species_key, COUNT(*) AS c
+            FROM filtered_detections GROUP BY species_key
+        )
+        SELECT
+            (SELECT COUNT(*) FROM filtered_detections) AS total,
+            (SELECT COUNT(DISTINCT {_SPECIES_KEY}) FROM filtered_detections) AS unique_species,
+            (SELECT hour FROM hourly_counts ORDER BY c DESC, hour ASC LIMIT 1) AS hour,
+            (SELECT species_key FROM species_counts ORDER BY c DESC, species_key ASC LIMIT 1) AS most_key,
+            (SELECT species_key FROM species_counts ORDER BY c ASC, species_key ASC LIMIT 1) AS rare_key
         """
-        now = local_now().isoformat()
-        params = {
-            'all_time_start': datetime.min.isoformat(),
-            'now': now,
-            'today_start': today_start.isoformat(),
-            'week_start': week_start.isoformat(),
-            'month_start': month_start.isoformat(),
-        }
-
-        with self.get_db_connection() as conn:
-            cur = conn.cursor()
-
-            logger.debug("Calculating summary stats for all periods", extra={
-                'today_start': params['today_start'][:10],
-                'week_start': params['week_start'][:10],
-                'month_start': params['month_start'][:10],
-                'now': now[:10],
-            })
-
-            query = f"""
-            WITH filtered_detections AS (
-                SELECT id, scientific_name, common_name, timestamp
-                FROM detections
-                WHERE timestamp BETWEEN :all_time_start AND :now
-            ),
-            counts AS (
-                SELECT
-                    COUNT(*) AS total_all,
-                    SUM(CASE WHEN timestamp >= :today_start THEN 1 ELSE 0 END) AS total_today,
-                    SUM(CASE WHEN timestamp >= :week_start  THEN 1 ELSE 0 END) AS total_week,
-                    SUM(CASE WHEN timestamp >= :month_start THEN 1 ELSE 0 END) AS total_month,
-                    COUNT(DISTINCT {_SPECIES_KEY}) AS unique_all,
-                    COUNT(DISTINCT CASE WHEN timestamp >= :today_start THEN {_SPECIES_KEY} END) AS unique_today,
-                    COUNT(DISTINCT CASE WHEN timestamp >= :week_start  THEN {_SPECIES_KEY} END) AS unique_week,
-                    COUNT(DISTINCT CASE WHEN timestamp >= :month_start THEN {_SPECIES_KEY} END) AS unique_month
-                FROM filtered_detections
-            ),
-            hourly_per_period AS (
-                SELECT strftime('%H', timestamp) AS hour,
-                       SUM(CASE WHEN timestamp >= :today_start THEN 1 ELSE 0 END) AS c_today,
-                       SUM(CASE WHEN timestamp >= :week_start  THEN 1 ELSE 0 END) AS c_week,
-                       SUM(CASE WHEN timestamp >= :month_start THEN 1 ELSE 0 END) AS c_month,
-                       COUNT(*) AS c_all
-                FROM filtered_detections
-                GROUP BY hour
-            ),
-            -- Secondary ORDER BY key makes ties deterministic. Without it,
-            -- two hours/species at the same count would flap call-to-call
-            -- depending on plan choices.
-            hour_today AS (SELECT hour FROM hourly_per_period WHERE c_today > 0 ORDER BY c_today DESC, hour ASC LIMIT 1),
-            hour_week  AS (SELECT hour FROM hourly_per_period WHERE c_week  > 0 ORDER BY c_week  DESC, hour ASC LIMIT 1),
-            hour_month AS (SELECT hour FROM hourly_per_period WHERE c_month > 0 ORDER BY c_month DESC, hour ASC LIMIT 1),
-            hour_all   AS (SELECT hour FROM hourly_per_period WHERE c_all   > 0 ORDER BY c_all   DESC, hour ASC LIMIT 1),
-            species_counts AS (
-                SELECT {_SPECIES_KEY} AS species_key,
-                       SUM(CASE WHEN timestamp >= :today_start THEN 1 ELSE 0 END) AS c_today,
-                       SUM(CASE WHEN timestamp >= :week_start  THEN 1 ELSE 0 END) AS c_week,
-                       SUM(CASE WHEN timestamp >= :month_start THEN 1 ELSE 0 END) AS c_month,
-                       COUNT(*) AS c_all
-                FROM filtered_detections
-                GROUP BY species_key
-            ),
-            most_today AS (SELECT species_key FROM species_counts WHERE c_today > 0 ORDER BY c_today DESC, species_key ASC LIMIT 1),
-            rare_today AS (SELECT species_key FROM species_counts WHERE c_today > 0 ORDER BY c_today ASC,  species_key ASC LIMIT 1),
-            most_week  AS (SELECT species_key FROM species_counts WHERE c_week  > 0 ORDER BY c_week  DESC, species_key ASC LIMIT 1),
-            rare_week  AS (SELECT species_key FROM species_counts WHERE c_week  > 0 ORDER BY c_week  ASC,  species_key ASC LIMIT 1),
-            most_month AS (SELECT species_key FROM species_counts WHERE c_month > 0 ORDER BY c_month DESC, species_key ASC LIMIT 1),
-            rare_month AS (SELECT species_key FROM species_counts WHERE c_month > 0 ORDER BY c_month ASC,  species_key ASC LIMIT 1),
-            most_all   AS (SELECT species_key FROM species_counts WHERE c_all   > 0 ORDER BY c_all   DESC, species_key ASC LIMIT 1),
-            rare_all   AS (SELECT species_key FROM species_counts WHERE c_all   > 0 ORDER BY c_all   ASC,  species_key ASC LIMIT 1)
-            SELECT
-                (SELECT total_today  FROM counts) AS total_today,
-                (SELECT total_week   FROM counts) AS total_week,
-                (SELECT total_month  FROM counts) AS total_month,
-                (SELECT total_all    FROM counts) AS total_all,
-                (SELECT unique_today FROM counts) AS unique_today,
-                (SELECT unique_week  FROM counts) AS unique_week,
-                (SELECT unique_month FROM counts) AS unique_month,
-                (SELECT unique_all   FROM counts) AS unique_all,
-                (SELECT hour FROM hour_today) AS hour_today,
-                (SELECT hour FROM hour_week)  AS hour_week,
-                (SELECT hour FROM hour_month) AS hour_month,
-                (SELECT hour FROM hour_all)   AS hour_all,
-                (SELECT species_key FROM most_today) AS most_today_key,
-                (SELECT species_key FROM rare_today) AS rare_today_key,
-                (SELECT species_key FROM most_week)  AS most_week_key,
-                (SELECT species_key FROM rare_week)  AS rare_week_key,
-                (SELECT species_key FROM most_month) AS most_month_key,
-                (SELECT species_key FROM rare_month) AS rare_month_key,
-                (SELECT species_key FROM most_all)   AS most_all_key,
-                (SELECT species_key FROM rare_all)   AS rare_all_key
-            """
-
-            cur.execute(query, params)
-            row = cur.fetchone()
-            selected_species_names = {}
-            if row is not None:
-                selected_keys = {
-                    row[f'{kind}_{period}_key']
-                    for period in ('today', 'week', 'month', 'all')
-                    for kind in ('most', 'rare')
-                    if row[f'{kind}_{period}_key']
-                }
-                selected_species_names = {
-                    species_key: self._get_species_display_name(
-                        cur, species_key)
-                    for species_key in selected_keys
-                }
-
+        cur.execute(query, {'period_start': period_start_iso, 'now': now_iso})
+        row = cur.fetchone()
         if row is None:
-            empty = _summary_stats_bucket(0, 0, None, None, None, {})
-            return {key: dict(empty) for key in ('today', 'week', 'month', 'allTime')}
-
-        return {
-            'today': _summary_stats_bucket(
-                row['total_today'], row['unique_today'], row['hour_today'],
-                row['most_today_key'], row['rare_today_key'], selected_species_names,
-            ),
-            'week': _summary_stats_bucket(
-                row['total_week'], row['unique_week'], row['hour_week'],
-                row['most_week_key'], row['rare_week_key'], selected_species_names,
-            ),
-            'month': _summary_stats_bucket(
-                row['total_month'], row['unique_month'], row['hour_month'],
-                row['most_month_key'], row['rare_month_key'], selected_species_names,
-            ),
-            'allTime': _summary_stats_bucket(
-                row['total_all'], row['unique_all'], row['hour_all'],
-                row['most_all_key'], row['rare_all_key'], selected_species_names,
-            ),
-        }
+            return 0, 0, None, None, None
+        return (row['total'] or 0, row['unique_species'] or 0,
+                row['hour'], row['most_key'], row['rare_key'])
 
     def get_summary_stats_for_period(self, period_start, now=None):
         """Compute summary stats for one dashboard period.
@@ -775,82 +815,42 @@ class DatabaseManager:
         Dashboard only shows one summary tab at a time. This period-specific
         query lets the initial page load pay for the visible period instead
         of always scanning the all-time history for hidden tabs.
+
+        Served from the time rollups when they are ready — readiness and
+        the data queries share ONE read transaction, so "queue empty" and
+        "rollup contents" can never disagree (single-snapshot contract).
+        Unready rollups fall back to the raw CTE scan below.
         """
-        now = (now or local_now()).isoformat()
-        params = {
-            'period_start': period_start.isoformat(),
-            'now': now,
-        }
+        now_dt = now or local_now()
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            try:
+                if (self._rollups_can_serve_period(period_start)
+                        and db_rollups.rollups_ready(cur)):
+                    total, unique, hour, most_key, rare_key = \
+                        self._summary_bucket_from_rollups(
+                            cur, period_start.strftime('%Y-%m-%d'), now_dt)
+                    names = {
+                        key: self._get_species_display_name(cur, key)
+                        for key in {most_key, rare_key} if key
+                    }
+                    return _summary_stats_bucket(
+                        total, unique, hour, most_key, rare_key, names)
+            finally:
+                conn.commit()
 
         with self.get_db_connection() as conn:
             cur = conn.cursor()
-            query = f"""
-            WITH filtered_detections AS (
-                SELECT scientific_name, common_name, timestamp
-                FROM detections
-                WHERE timestamp BETWEEN :period_start AND :now
-            ),
-            counts AS (
-                SELECT
-                    COUNT(*) AS total_observations,
-                    COUNT(DISTINCT {_SPECIES_KEY}) AS unique_species
-                FROM filtered_detections
-            ),
-            hourly_counts AS (
-                SELECT strftime('%H', timestamp) AS hour,
-                       COUNT(*) AS detection_count
-                FROM filtered_detections
-                GROUP BY hour
-            ),
-            species_counts AS (
-                SELECT {_SPECIES_KEY} AS species_key,
-                       COUNT(*) AS detection_count
-                FROM filtered_detections
-                GROUP BY species_key
-            )
-            SELECT
-                (SELECT total_observations FROM counts) AS total_observations,
-                (SELECT unique_species FROM counts) AS unique_species,
-                (SELECT hour FROM hourly_counts
-                 ORDER BY detection_count DESC, hour ASC LIMIT 1) AS most_active_hour,
-                (SELECT species_key FROM species_counts
-                 ORDER BY detection_count DESC, species_key ASC LIMIT 1) AS most_common_key,
-                (SELECT species_key FROM species_counts
-                 ORDER BY detection_count ASC, species_key ASC LIMIT 1) AS rarest_key
-            """
-            cur.execute(query, params)
-            row = cur.fetchone()
-
-            selected_species_names = {}
-            if row is not None:
-                selected_keys = {
-                    row[key]
-                    for key in ('most_common_key', 'rarest_key')
-                    if row[key]
-                }
-                selected_species_names = {
-                    species_key: self._get_species_display_name(
-                        cur, species_key)
-                    for species_key in selected_keys
-                }
-
-        if row is None:
-            total_observations = 0
-            unique_species = 0
-            most_active_hour = None
-            most_common_key = None
-            rarest_key = None
-        else:
-            total_observations = row['total_observations'] or 0
-            unique_species = row['unique_species'] or 0
-            most_active_hour = row['most_active_hour']
-            most_common_key = row['most_common_key']
-            rarest_key = row['rarest_key']
-
+            total, unique, hour, most_key, rare_key = \
+                self._raw_summary_bucket(
+                    cur, period_start.isoformat(), now_dt.isoformat())
+            names = {
+                key: self._get_species_display_name(cur, key)
+                for key in {most_key, rare_key} if key
+            }
         return _summary_stats_bucket(
-            total_observations, unique_species, most_active_hour,
-            most_common_key, rarest_key, selected_species_names,
-        )
+            total, unique, hour, most_key, rare_key, names)
 
     def _get_species_display_name(self, cur, species_key):
         """(common, scientific) display names for a summary species key —
@@ -923,18 +923,12 @@ class DatabaseManager:
             COUNT(*) as total_visits,
             MIN(timestamp) as first_detected,
             MAX(timestamp) as last_detected,
-            AVG(confidence) as average_confidence,
             (SELECT strftime('%H:00', timestamp)
             FROM detections d2
             WHERE d2.common_name = d1.common_name
             GROUP BY strftime('%H', timestamp)
             ORDER BY COUNT(*) DESC
             LIMIT 1) as peak_activity_time,
-            CASE
-                WHEN COUNT(DISTINCT strftime('%m', timestamp)) = 12 THEN 'Year-round'
-                WHEN COUNT(DISTINCT strftime('%m', timestamp)) >= 6 THEN 'Multi-season'
-                ELSE 'Seasonal'
-            END as seasonality,
             (SELECT {ebird}
             FROM detections d3
             WHERE d3.common_name = d1.common_name
@@ -954,10 +948,9 @@ class DatabaseManager:
             return dict(result)
 
     def _get_bird_details_from_rollup(self, scientific_names):
-        """Species detail card off the rollup: count, first/last, average
-        confidence and ebird_code are a primary-key read; peak hour and
-        seasonality are two bounded passes over the species' rows via the
-        covering (scientific_name, timestamp) index. Replaces correlated
+        """Species detail card off the rollup: count, first/last and
+        ebird_code are a primary-key read; peak hour is one bounded pass over
+        the species' rows via the covering (scientific_name, timestamp) index. Replaces correlated
         subqueries that re-grouped — and json-parsed — the species' full
         history per call (429-558ms on the top species, now ~tens of ms).
 
@@ -977,43 +970,29 @@ class DatabaseManager:
             cur = conn.cursor()
             cur.execute(
                 "SELECT species_key, common_name, scientific_name, ebird_code, "
-                "detection_count, sum_confidence, first_detected, "
+                "detection_count, first_detected, "
                 f"last_detected FROM species WHERE {key_clause}",
                 key_params)
             rows = cur.fetchall()
             if not rows:
                 return None
 
-            # One covering-index pass; at most 12x24 groups come back and
-            # Python folds them into peak hour + distinct months. substr at
-            # fixed offsets into db_schema.TIMESTAMP_FORMAT beats strftime
+            # One covering-index pass; at most 24 groups come back. substr at
+            # a fixed offset into db_schema.TIMESTAMP_FORMAT beats strftime
             # by ~30% here — no per-row datetime parsing.
             cur.execute(f"""
-                SELECT substr(timestamp, 6, 2) AS month,
-                       substr(timestamp, 12, 2) AS hour,
+                SELECT substr(timestamp, 12, 2) AS hour,
                        COUNT(*) AS count
                 FROM detections
                 WHERE {sci_clause}
-                GROUP BY month, hour
+                GROUP BY hour
                 """, sci_params)
-            buckets = cur.fetchall()
-
-        months_seen = len({b['month'] for b in buckets})
-        hour_counts = {}
-        for b in buckets:
-            hour_counts[b['hour']] = hour_counts.get(b['hour'], 0) + b['count']
+            hour_counts = {b['hour']: b['count'] for b in cur.fetchall()}
         # Rollup row without detection rows = drift mid-heal; degrade quietly
         peak_time = None
         if hour_counts:
             peak_hour = min(hour_counts, key=lambda h: (-hour_counts[h], h))
             peak_time = f'{peak_hour}:00'
-
-        if months_seen == 12:
-            seasonality = 'Year-round'
-        elif months_seen >= 6:
-            seasonality = 'Multi-season'
-        else:
-            seasonality = 'Seasonal'
 
         # Aggregate across the (usually one) matched rollup rows. Rank by
         # detection count so a placeholder duplicate can't outvote the key the
@@ -1028,7 +1007,6 @@ class DatabaseManager:
         )
         rep = ordered[0]
         total_visits = sum(r['detection_count'] for r in rows)
-        sum_confidence = sum(r['sum_confidence'] for r in rows)
         ebird_code = next((r['ebird_code'] for r in ordered if r['ebird_code']), None)
         return {
             'common_name': rep['common_name'],
@@ -1036,14 +1014,13 @@ class DatabaseManager:
             'total_visits': total_visits,
             'first_detected': min(r['first_detected'] for r in rows),
             'last_detected': max(r['last_detected'] for r in rows),
-            'average_confidence': sum_confidence / total_visits,
             'peak_activity_time': peak_time,
-            'seasonality': seasonality,
             'ebird_code': ebird_code,
         }
 
     def get_bird_recordings(self, species_name=None, sort='recent', limit=None,
-                             *, scientific_name=None, since=None):
+                             *, scientific_name=None, since=None,
+                             require_media=False):
         """
         Get recordings for a species with sorting options.
 
@@ -1059,6 +1036,11 @@ class DatabaseManager:
             since: Optional ISO timestamp lower bound (timestamp >= since), used
                 to restrict anonymous callers to a recent window so the public
                 view can't surface old all-time clips (incl. via 'best' sort).
+            require_media: Only rows whose audio AND spectrogram files are
+                recorded in detection_media (playable-page-exact). Callers may
+                pass True only once the resolution frontier is complete —
+                unresolved (NULL) rows can't be judged in SQL and would be
+                wrongly hidden.
 
         Returns:
             List of recording dicts with id, timestamp, common_name, confidence,
@@ -1076,11 +1058,16 @@ class DatabaseManager:
         species_clause, species_params = _species_where(filter_col, filter_values)
         window_clause = "AND timestamp >= ?" if since else ""
         order_by = "confidence DESC" if sort == 'best' else "timestamp DESC"
+        # The "both audio AND spectrogram" page rule (spectrogram
+        # generation can fail independently) — see PLAYABLE_MEDIA_CLAUSE.
+        media_clause = PLAYABLE_MEDIA_CLAUSE if require_media else ""
         query = f"""
-        SELECT id, timestamp, common_name, confidence, extra, audio_source
+        SELECT id, timestamp, common_name, confidence, extra, audio_source,
+               media_bytes
         FROM detections
         WHERE {species_clause}
         {window_clause}
+        {media_clause}
         ORDER BY {order_by}
         LIMIT ?
         """
@@ -1090,6 +1077,9 @@ class DatabaseManager:
         params = list(species_params)
         if since:
             params.append(since)
+        if require_media:
+            params.extend((media_ownership.KIND_AUDIO,
+                           media_ownership.KIND_SPECTROGRAM))
         params.append(limit_param)
 
         with self.get_db_connection() as conn:
@@ -1097,7 +1087,7 @@ class DatabaseManager:
             cur.execute(query, params)
             rows = cur.fetchall()
 
-        recordings = [self._normalize_detection(row, include_filenames=True) for row in rows]
+        recordings = self._normalize_detections(rows, include_filenames=True)
 
         logger.debug("Bird recordings retrieved", extra={
             'species': filter_values,
@@ -1192,22 +1182,30 @@ class DatabaseManager:
         # Initialize data with zeros
         data = {date: 0 for date in all_dates}
 
-        # Query counts per day
-        query = """
-        SELECT
-            date(timestamp) as day,
-            COUNT(*) as count
-        FROM detections
-        WHERE date(timestamp) >= date(?)
-        AND date(timestamp) <= date(?)
-        GROUP BY day
-        ORDER BY day
-        """
-
+        # Counts per day: from the time rollups when ready (readiness and
+        # data share one read transaction), else a sargable raw range scan
+        # off the plain timestamp index — no date(timestamp) expression
+        # filter anywhere, which is what let migration 5 retire the
+        # expression indexes.
         with self.get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute(query, (start_date, end_date))
-            results = cur.fetchall()
+            cur.execute("BEGIN")
+            try:
+                if db_rollups.rollups_ready(cur):
+                    cur.execute(
+                        "SELECT date AS day, SUM(count) AS count FROM hour_day "
+                        "WHERE date >= ? AND date <= ? GROUP BY date ORDER BY date",
+                        (start_date, end_date))
+                else:
+                    cur.execute(
+                        "SELECT substr(timestamp, 1, 10) AS day, COUNT(*) AS count "
+                        "FROM detections WHERE timestamp >= ? "
+                        "AND timestamp < datetime(?, '+1 day') "
+                        "GROUP BY day ORDER BY day",
+                        (f"{start_date}T00:00:00", f"{end_date}T00:00:00"))
+                results = cur.fetchall()
+            finally:
+                conn.commit()
 
         # Fill in counts
         for row in results:
@@ -1224,6 +1222,69 @@ class DatabaseManager:
         })
 
         return {'labels': labels, 'data': counts}
+
+    def get_species_summary(self, start_date=None, end_date=None):
+        """Summarize inclusive local dates, or all history when omitted.
+
+        Read readiness and aggregates in the same snapshot. Unbuilt or dirty
+        daily rollups must not return partial counts during imports/repair.
+        """
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute('BEGIN')
+            if db_rollups.rollups_ready(cur):
+                where = 'WHERE d.date >= ? AND d.date <= ?' if start_date else ''
+                params = (start_date, end_date) if start_date else ()
+                cur.execute(f"""
+                    SELECT s.scientific_name, s.common_name,
+                           SUM(d.count) AS count,
+                           MIN(d.first_ts) AS first_detected,
+                           MAX(d.last_ts) AS last_detected
+                    FROM species_day d JOIN species s ON s.species_key = d.species_key
+                    {where}
+                    GROUP BY d.species_key
+                """, params)
+            else:
+                where = 'WHERE timestamp >= ? AND timestamp < ?' if start_date else ''
+                params = (f'{start_date}T00:00:00', f'{end_date}T~') if start_date else ()
+                cur.execute(f"""
+                    WITH counts AS (
+                        SELECT {_SPECIES_KEY} AS species_key,
+                               MAX(scientific_name) AS scientific_name,
+                               MIN(common_name) AS common_name, COUNT(*) AS count,
+                               MIN(timestamp) AS first_detected,
+                               MAX(timestamp) AS last_detected
+                        FROM detections {where}
+                        GROUP BY {_SPECIES_KEY}
+                    )
+                    SELECT COALESCE(s.scientific_name, c.scientific_name) AS scientific_name,
+                           COALESCE(s.common_name, c.common_name) AS common_name,
+                           c.count, c.first_detected, c.last_detected
+                    FROM counts c LEFT JOIN species s ON s.species_key = c.species_key
+                """, params)
+            rows = cur.fetchall()
+
+        # Match the catalog's taxonomy grouping and most-detected representative.
+        # Explicit ordering also makes equal-count name choices deterministic.
+        merged = {}
+        for row in sorted(rows, key=lambda r: (r['common_name'] or '', r['scientific_name'] or '')):
+            group = same_taxon_group(row['scientific_name'])
+            key = ('scientific', group[0]) if group else ('common', row['common_name'] or '')
+            entry = merged.get(key)
+            if entry is None:
+                merged[key] = {**dict(row), '_representative_count': row['count']}
+                continue
+            if row['count'] > entry['_representative_count']:
+                entry.update(scientific_name=row['scientific_name'], common_name=row['common_name'],
+                             _representative_count=row['count'])
+            entry['count'] += row['count']
+            entry['first_detected'] = min(entry['first_detected'], row['first_detected'])
+            entry['last_detected'] = max(entry['last_detected'], row['last_detected'])
+        result = list(merged.values())
+        for entry in result:
+            del entry['_representative_count']
+        return sorted(result, key=lambda r: (-r['count'], r['scientific_name'] or '',
+                                             r['common_name'] or ''))
 
     def get_all_unique_species(self):
         """Get all unique bird species ever detected, sorted alphabetically.
@@ -1339,33 +1400,30 @@ class DatabaseManager:
 
         return protected, total
 
-    def get_cleanup_scan_batch(self, after_timestamp=None, after_id=None,
-                                *, limit):
-        """One oldest-first keyset batch of the fields cleanup needs.
+    def get_cleanup_candidates_batch(self, after_timestamp=None, after_id=None,
+                                     *, limit):
+        """One oldest-first keyset batch of rows that still own files.
 
-        Walks detections by (timestamp, id) ascending off
-        idx_detections_timestamp; pass the last row's values back as
-        after_timestamp/after_id for the next batch. The caller filters out
-        protected ids and rows whose files are already gone — this stays a
-        plain index walk with no window functions and never holds more than
-        ``limit`` rows, where the previous implementation materialized every
-        candidate row (~1M dicts on a large table) at once.
+        Served by the live-media partial index (WHERE media_bytes > 0 must
+        appear verbatim so the planner can use it), so the walk is bounded
+        by rows-with-files — disk capacity — never by station age. Rows
+        whose files are all removed drop out of the index, so restarted
+        walks never revisit them.
 
         Returns:
-            List of dicts with id, common_name, confidence, timestamp,
-            extra (raw JSON string); fewer than ``limit`` rows signals
-            the end of the table.
+            List of dicts with id, timestamp, media_bytes; fewer than
+            ``limit`` rows signals the walk is (currently) exhausted.
         """
-        where = _NO_FILTERS
+        keyset = ""
         params = []
         if after_id is not None:
-            where = "(timestamp > ? OR (timestamp = ? AND id > ?))"
-            params = [after_timestamp, after_timestamp, after_id]
+            clause, params = keyset_after(after_timestamp, after_id)
+            keyset = f"AND {clause}"
 
         query = f"""
-        SELECT id, common_name, confidence, timestamp, extra
+        SELECT id, timestamp, media_bytes
         FROM detections
-        WHERE {where}
+        WHERE media_bytes > 0 {keyset}
         ORDER BY timestamp ASC, id ASC
         LIMIT ?
         """
@@ -1374,6 +1432,78 @@ class DatabaseManager:
             cur = conn.cursor()
             cur.execute(query, params + [limit])
             return [dict(row) for row in cur.fetchall()]
+
+    def get_media_accounting(self, protected_ids, older_than=None):
+        """Exact deletable-media accounting for cleanup's achievability
+        check and the policy dry-run previews.
+
+        Returns a dict with deletable_bytes / deletable_rows (live media
+        outside the protected set — exact recorded bytes, no size
+        heuristic), total_bytes / live_rows (all live media, protected
+        included — the budget policy's subject), and unresolved_rows
+        (NULL media_bytes: history the frontier hasn't reached, whose
+        deletable size is only estimable). ``older_than`` restricts every
+        figure to rows before that timestamp (the retention policy's
+        subject).
+        """
+        ids = list(protected_ids)
+        age_filter = ""
+        age_params = []
+        if older_than is not None:
+            age_filter = "AND timestamp < ?"
+            age_params = [older_than]
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            # One scan for all three figures: the NULL count can't use the
+            # partial index anyway, so a combined pass costs no more than
+            # the NULL count alone did.
+            cur.execute(
+                f"SELECT COALESCE(SUM(CASE WHEN media_bytes > 0 "
+                f"         THEN media_bytes END), 0), "
+                f"       SUM(CASE WHEN media_bytes > 0 THEN 1 ELSE 0 END), "
+                f"       SUM(CASE WHEN media_bytes IS NULL THEN 1 ELSE 0 END) "
+                f"FROM detections WHERE 1=1 {age_filter}", age_params)
+            total_bytes, live_rows, unresolved_rows = cur.fetchone()
+            live_rows = live_rows or 0
+            unresolved_rows = unresolved_rows or 0
+            protected_bytes = 0
+            protected_rows = 0
+            protected_unresolved = 0
+            # Chunked lookups: the protected set can exceed SQLite's bound
+            # parameter limit on older builds. Protected UNRESOLVED rows
+            # are subtracted from the estimate base too — a protected row
+            # is never deletable no matter which side of the frontier it
+            # is on (implementation review finding 5).
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                placeholders = ','.join('?' * len(chunk))
+                cur.execute(
+                    f"SELECT COALESCE(SUM(CASE WHEN media_bytes > 0 "
+                    f"         THEN media_bytes END), 0), "
+                    f"       SUM(CASE WHEN media_bytes > 0 THEN 1 ELSE 0 END), "
+                    f"       SUM(CASE WHEN media_bytes IS NULL THEN 1 ELSE 0 END) "
+                    f"FROM detections WHERE id IN ({placeholders}) {age_filter}",
+                    chunk + age_params)
+                chunk_bytes, chunk_rows, chunk_unresolved = cur.fetchone()
+                protected_bytes += chunk_bytes
+                protected_rows += chunk_rows or 0
+                protected_unresolved += chunk_unresolved or 0
+        return {
+            'deletable_bytes': total_bytes - protected_bytes,
+            'deletable_rows': live_rows - protected_rows,
+            'total_bytes': total_bytes,
+            'live_rows': live_rows,
+            'unresolved_rows': unresolved_rows - protected_unresolved,
+        }
+
+    def remove_detection_media(self, filenames):
+        """Drop ownership rows for unlinked files and restamp their owners
+        in one transaction (cleanup's per-row commit)."""
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            affected = media_ownership.remove_media(cur, filenames)
+            conn.commit()
+        return affected
 
     def get_paginated_detections(self, page=1, per_page=25, start_date=None,
                                   end_date=None, species=None, sort='timestamp',
@@ -1433,7 +1563,8 @@ class DatabaseManager:
             overlap,
             week,
             extra,
-            audio_source
+            audio_source,
+            media_bytes
         FROM detections
         WHERE {where_clause}
         ORDER BY {sort} {order}
@@ -1451,8 +1582,8 @@ class DatabaseManager:
             cur.execute(data_query, params + [per_page, offset])
             rows = cur.fetchall()
 
-        # Build detection list with filenames
-        detections = [self._normalize_detection(row, include_filenames=True) for row in rows]
+        # Build detection list with filenames (batch media-name prefetch)
+        detections = self._normalize_detections(rows, include_filenames=True)
 
         logger.debug("Paginated detections retrieved", extra={
             'page': page,
@@ -1548,7 +1679,8 @@ class DatabaseManager:
             overlap,
             week,
             extra,
-            audio_source
+            audio_source,
+            media_bytes
         FROM detections
         WHERE {where_clause} AND scientific_name = ?
         ORDER BY timestamp DESC, id DESC
@@ -1580,18 +1712,28 @@ class DatabaseManager:
                 rows.extend(cur.fetchall())
                 remaining_offset = 0
 
-        detections = [self._normalize_detection(row, include_filenames=True)
-                      for row in rows]
+        detections = self._normalize_detections(rows, include_filenames=True)
         return detections, total_count
+
+    def count_detections_for_export(self, start_date=None, end_date=None):
+        """Rows an export over this date range will contain — the progress
+        denominator. Close, not exact: rows inserted before the export's
+        first batch are included (later ones sort ahead of the keyset cursor
+        and are never walked), and rows deleted mid-export are not."""
+        where_clause, params = self._build_detection_filters(start_date, end_date)
+        with self.get_db_connection() as conn:
+            return conn.execute(_count_query(where_clause), params).fetchone()[0]
 
     def get_detections_for_export_batch(self, start_date=None, end_date=None,
                                          species=None, *, scientific_name=None,
                                          before_timestamp=None, before_id=None,
                                          limit):
-        """One batch of raw detection rows for the streaming CSV export.
+        """One batch of export rows, newest-first (timestamp DESC, id DESC).
 
-        Rows come back newest-first (timestamp DESC, id DESC) with ``extra``
-        kept as its raw JSON string. Pass the last row's timestamp and id as
+        Rows are sqlite3.Row in export CSV column order (core.export_jobs
+        CSV_HEADER), ``extra`` as its raw JSON string with NULL read as '{}',
+        so a batch goes straight into csv.writer.writerows — no per-row dict
+        on a million-row export. Pass the last row's timestamp and id as
         ``before_timestamp``/``before_id`` to fetch the next batch: unlike
         LIMIT/OFFSET batching, the keyset walk never skips or duplicates
         pre-existing rows when detections are inserted mid-export — new rows
@@ -1608,14 +1750,31 @@ class DatabaseManager:
             limit: Maximum rows per batch
 
         Returns:
-            list: Up to ``limit`` detection dicts; fewer signals the last batch
+            list: Up to ``limit`` rows; fewer signals the last batch
         """
+        # Every batch must be an index seek to the cursor, not a walk down to
+        # it (see keyset_before; guarded by
+        # test_export_batch_cost_independent_of_cursor_depth). One more
+        # planner trap here, verified on SQLite 3.46: with two upper bounds on
+        # timestamp the planner seeks on end_date, so once a cursor exists the
+        # end bound is written `+timestamp` — unary plus keeps it as a filter
+        # but hides it from index selection.
+        if (before_id is None) != (before_timestamp is None):
+            # (timestamp, id) < (NULL, ?) is NULL: a half cursor would
+            # return no rows and end the export early, looking complete.
+            raise ValueError("before_timestamp and before_id go together")
+        cursor_set = before_id is not None
         where_clause, params = self._build_detection_filters(
-            start_date, end_date, species, scientific_name=scientific_name,
+            start_date, None if cursor_set else end_date, species,
+            scientific_name=scientific_name,
         )
-        if before_id is not None:
-            where_clause += " AND (timestamp < ? OR (timestamp = ? AND id < ?))"
-            params += [before_timestamp, before_timestamp, before_id]
+        if cursor_set:
+            if end_date:
+                where_clause += " AND +timestamp <= ?"
+                params.append(f"{end_date}T23:59:59")
+            clause, cursor_params = keyset_before(before_timestamp, before_id)
+            where_clause += f" AND {clause}"
+            params += cursor_params
 
         query = f"""
         SELECT
@@ -1631,7 +1790,7 @@ class DatabaseManager:
             sensitivity,
             overlap,
             week,
-            extra,
+            COALESCE(extra, '{{}}') AS extra,
             audio_source
         FROM detections
         WHERE {where_clause}
@@ -1642,7 +1801,7 @@ class DatabaseManager:
         with self.get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute(query, params + [limit])
-            return [dict(row) for row in cur.fetchall()]
+            return cur.fetchall()
 
     def get_detection_by_id(self, detection_id):
         """Get a single detection by ID.
@@ -1668,7 +1827,8 @@ class DatabaseManager:
             overlap,
             week,
             extra,
-            audio_source
+            audio_source,
+            media_bytes
         FROM detections
         WHERE id = ?
         """
@@ -1709,39 +1869,138 @@ class DatabaseManager:
             ))
             return [dict(row) for row in cur.fetchall()]
 
+    def get_detection_media(self, detection_id):
+        """Every file the row owns (all ranks), audio first."""
+        return self.get_detection_media_batch([detection_id]).get(
+            detection_id, [])
+
+    def get_detection_media_batch(self, detection_ids):
+        """{detection_id: owned files} for many rows in one query — the
+        cleanup walk reads media for a whole candidate batch at once."""
+        if not detection_ids:
+            return {}
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            placeholders = ','.join('?' * len(detection_ids))
+            cur.execute(
+                f"SELECT detection_id, filename, kind, rank, bytes "
+                f"FROM detection_media "
+                f"WHERE detection_id IN ({placeholders}) "
+                f"ORDER BY detection_id, kind, rank", list(detection_ids))
+            grouped = {}
+            for row in cur.fetchall():
+                entry = dict(row)
+                grouped.setdefault(entry.pop('detection_id'), []).append(entry)
+            return grouped
+
+    def rename_detection_media(self, old_name, new_name):
+        """Follow an on-disk rename (lazy colon->dash migration) in the
+        ownership record; a no-op for names no resolved row owns.
+
+        Raises MaintenanceInProgressError while the index build holds the
+        writer lock (the serving path treats the rename record as
+        best-effort and just serves — reconciliation heals a missed one).
+        """
+        if maintenance_lease.index_build_active(self):
+            raise maintenance_lease.MaintenanceInProgressError(
+                'index build in progress')
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            changed = media_ownership.rename_media(cur, old_name, new_name)
+            conn.commit()
+        return changed
+
     def delete_detection(self, detection_id):
-        """Delete a detection record by ID.
+        """Delete a detection row and the media it owns.
+
+        Unlink-before-delete (media-ownership design): files go first, DB
+        rows second, so a crash between the two leaves a row claiming
+        missing files — a state the next read of its media self-heals —
+        rather than files no row can ever clean up (the old order's leak).
+        Resolved rows unlink exactly their recorded files; unresolved
+        legacy rows fall back to the pattern-candidates walk. A file that
+        survives unlinking (rare OSError) becomes a nonce-named orphan the
+        weekly reconciliation removes once the row is gone.
 
         Args:
             detection_id: The detection ID to delete
 
         Returns:
-            dict: The deleted detection info (for file cleanup) or None if not found
+            dict: The deleted detection info with 'files_deleted' (the
+            names actually removed, audio first), or None if not found
+
+        Raises:
+            maintenance_lease.MaintenanceInProgressError: BEFORE any file
+            is unlinked, while the one-time index build holds the writer
+            lock — the caller returns a retryable maintenance response
+            with zero side effects (never a maintenance error after
+            irreversible work).
         """
-        # First get the detection info for file cleanup
-        detection = self.get_detection_by_id(detection_id)
+        if maintenance_lease.index_build_active(self):
+            raise maintenance_lease.MaintenanceInProgressError(
+                'index build in progress')
 
-        if not detection:
-            return None
-
-        # Delete the record and adjust the species rollup in one
-        # transaction (the rollup's boundary recomputes read post-delete
-        # state, so ordering matters).
-        query = "DELETE FROM detections WHERE id = ?"
+        # v6 interactive contract, held strictly (implementation re-review
+        # R1 + second re-review S1): the writer lock comes BEFORE the
+        # authoritative row read, its resolved/unresolved classification,
+        # every filesystem side effect, and the row deletes. Nothing can
+        # transition the row's ownership state — Stage 2 resolving a
+        # legacy row, a creator recording media, a same-name
+        # republication — between what this delete decides and what it
+        # does. (A file recreated on DISK after our unlink but before our
+        # commit cannot gain an ownership row — it becomes a nonce-named
+        # orphan reconciliation removes once the row is gone.)
         with self.get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(query, (detection_id,))
-            rows_deleted = cur.rowcount
-            if rows_deleted > 0:
-                db_species.apply_delete(cur, detection)
-            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM detections WHERE id = ?",
+                            (detection_id,))
+                row = cur.fetchone()
+                if row is None:
+                    conn.rollback()
+                    return None
+                resolved = row['media_bytes'] is not None
+                # include_filenames=False is LOAD-BEARING (implementation
+                # third re-review T1): the filenames branch performs a
+                # media lookup through a NESTED get_db_connection, whose
+                # exit rolls back this very transaction — silently
+                # dropping the writer lock for everything below. Nothing
+                # in the delete path needs the derived filenames.
+                detection = self._normalize_detection(row, include_filenames=False)
+                if conn.in_transaction is False:
+                    raise RuntimeError(
+                        'delete_detection lost its write transaction — '
+                        'a nested connection use rolled it back')
+                if resolved:
+                    cur.execute(
+                        "SELECT filename, kind, rank, bytes FROM detection_media "
+                        "WHERE detection_id = ?", (detection_id,))
+                    owned = [dict(r) for r in cur.fetchall()]
+                    removed = media_ownership.unlink_owned_files(owned)
+                else:
+                    removed = delete_detection_files(detection)['deleted_filenames']
+                cur.execute("DELETE FROM detections WHERE id = ?", (detection_id,))
+                rows_deleted = cur.rowcount
+                if rows_deleted > 0:
+                    cur.execute("DELETE FROM detection_media WHERE detection_id = ?",
+                                (detection_id,))
+                    db_species.apply_delete(cur, detection)
+                    db_rollups.apply_delete(cur, detection)
+                    db_rollups.bump_revision(cur)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         if rows_deleted > 0:
             logger.info("Detection deleted", extra={
                 'detection_id': detection_id,
                 'species': detection['common_name'],
-                'timestamp': detection['timestamp']
+                'timestamp': detection['timestamp'],
+                'files_deleted': removed,
             })
+            detection['files_deleted'] = removed
             return detection
 
         return None
@@ -1879,17 +2138,55 @@ class DatabaseManager:
     # Detection normalization helpers
     # -------------------------------------------------------------------------
 
-    def _normalize_detection(self, row, include_filenames=True):
+    def _canonical_media_map(self, detection_ids):
+        """{detection_id: {kind: filename}} for the rank-0 (canonical) media
+        of the given rows — one indexed query per page, never per row."""
+        ids = [i for i in detection_ids if i is not None]
+        if not ids:
+            return {}
+        placeholders = ','.join('?' * len(ids))
+        result = {}
+        with self.get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT detection_id, kind, filename FROM detection_media "
+                f"WHERE detection_id IN ({placeholders}) AND rank = 0", ids)
+            for row in cur.fetchall():
+                result.setdefault(row['detection_id'], {})[row['kind']] = row['filename']
+        return result
+
+    def _normalize_detections(self, rows, include_filenames=True):
+        """Normalize a page of rows, batch-prefetching recorded media names
+        for resolved rows so lists don't pay a per-row lookup."""
+        rows = [dict(r) for r in rows]
+        media_names = None
+        if include_filenames:
+            resolved_ids = [r['id'] for r in rows
+                            if r.get('media_bytes') is not None and 'id' in r]
+            media_names = self._canonical_media_map(resolved_ids)
+        return [self._normalize_detection(r, include_filenames, media_names=media_names)
+                for r in rows]
+
+    def _normalize_detection(self, row, include_filenames=True, media_names=None):
         """Convert a database row to a normalized detection dict.
 
         This centralizes the common pattern of:
         1. Converting sqlite3.Row to dict
         2. Parsing the extra JSON field
-        3. Optionally generating standardized filenames
+        3. Optionally attaching audio/spectrogram filenames
+
+        Filename contract (media-ownership design): a row that has been
+        resolved (``media_bytes`` not NULL) uses only its RECORDED canonical
+        names — a resolved row that owns no file of a kind presents None,
+        never a reconstructed name that may belong to another row. Unresolved
+        rows (NULL — pre-migration history awaiting the frontier, or queries
+        that didn't select media_bytes) keep the synthesized names.
 
         Args:
             row: sqlite3.Row object from query
-            include_filenames: If True, generate and attach audio/spectrogram filenames
+            include_filenames: If True, attach audio/spectrogram filenames
+            media_names: optional prefetched {id: {kind: filename}} map from
+                _canonical_media_map (avoids a per-row query in list paths)
 
         Returns:
             dict: Normalized detection with parsed extra and optional filenames
@@ -1897,24 +2194,39 @@ class DatabaseManager:
         detection = dict(row)
         # Strip private coordinates here so detection dicts are private-by-default
         # — an endpoint returning rows without the api-layer _localize_detection
-        # guard (e.g. /api/observations/latest) still can't leak the location.
+        # guard still can't leak the location.
         for field in PRIVATE_DETECTION_FIELDS:
             detection.pop(field, None)
+        # The nonce is the row's media identity, not payload data; media_bytes
+        # is internal accounting. Read before popping.
+        resolved = detection.pop('media_bytes', None) is not None
+        detection.pop('media_nonce', None)
         detection['extra'] = self._parse_extra(detection.get('extra'))
 
         if include_filenames:
-            # Label from extra is frozen at detection time, so filenames stay
-            # stable even if the source is renamed later
-            source_label = detection.get('extra', {}).get('source_label')
-            filenames = build_detection_filenames(
-                detection['common_name'],
-                detection['confidence'],
-                detection['timestamp'],
-                audio_extension='mp3',
-                audio_source=source_label or None
-            )
-            detection['audio_filename'] = filenames['audio_filename']
-            detection['spectrogram_filename'] = filenames['spectrogram_filename']
+            if resolved:
+                if media_names is not None:
+                    recorded = media_names.get(detection.get('id'), {})
+                else:
+                    recorded = self._canonical_media_map(
+                        [detection.get('id')]).get(detection.get('id'), {})
+                detection['audio_filename'] = recorded.get(
+                    media_ownership.KIND_AUDIO)
+                detection['spectrogram_filename'] = recorded.get(
+                    media_ownership.KIND_SPECTROGRAM)
+            else:
+                # Label from extra is frozen at detection time, so filenames
+                # stay stable even if the source is renamed later
+                source_label = detection.get('extra', {}).get('source_label')
+                filenames = build_detection_filenames(
+                    detection['common_name'],
+                    detection['confidence'],
+                    detection['timestamp'],
+                    audio_extension='mp3',
+                    audio_source=source_label or None
+                )
+                detection['audio_filename'] = filenames['audio_filename']
+                detection['spectrogram_filename'] = filenames['spectrogram_filename']
 
         return detection
 

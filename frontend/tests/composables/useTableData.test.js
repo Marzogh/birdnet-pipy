@@ -12,7 +12,8 @@ const mockApi = vi.hoisted(() => ({
 }))
 
 vi.mock('@/services/api', () => ({
-  default: mockApi
+  default: mockApi,
+  SLOW_QUERY_TIMEOUT: 45000
 }))
 
 // Mock useLogger
@@ -176,7 +177,8 @@ describe('useTableData', () => {
           per_page: 25,
           sort: 'timestamp',
           order: 'desc'
-        }
+        },
+        timeout: 45000
       })
 
       expect(detections.value).toEqual(mockResponse.data.detections)
@@ -206,7 +208,8 @@ describe('useTableData', () => {
           start_date: '2024-01-01',
           end_date: '2024-01-31',
           species: 'Blue Jay'
-        }
+        },
+        timeout: 45000
       })
     })
 
@@ -226,7 +229,8 @@ describe('useTableData', () => {
           sort: 'timestamp',
           order: 'desc',
           hour: 14
-        }
+        },
+        timeout: 45000
       })
 
       // hour 0 is falsy but valid — it must still be sent
@@ -239,7 +243,8 @@ describe('useTableData', () => {
           sort: 'timestamp',
           order: 'desc',
           hour: 0
-        }
+        },
+        timeout: 45000
       })
 
       // null means "any hour" — param omitted entirely
@@ -251,8 +256,68 @@ describe('useTableData', () => {
           per_page: 25,
           sort: 'timestamp',
           order: 'desc'
+        },
+        timeout: 45000
+      })
+    })
+
+    it('discards a stale response that resolves after a newer fetch', async () => {
+      let resolveSlow
+      const slowResponse = new Promise(resolve => {
+        resolveSlow = resolve
+      })
+      mockApi.get
+        .mockReturnValueOnce(slowResponse)
+        .mockResolvedValueOnce({
+          data: {
+            detections: [{ id: 2, common_name: 'Cardinal', confidence: 0.8 }],
+            pagination: { total_items: 1, total_pages: 1 }
+          }
+        })
+
+      const { fetchDetections, detections, isLoading } = useTableData()
+
+      const stale = fetchDetections() // request A, still in flight
+      await fetchDetections() // request B supersedes it
+
+      resolveSlow({
+        data: {
+          detections: [{ id: 1, common_name: 'Robin', confidence: 0.9 }],
+          pagination: { total_items: 1, total_pages: 1 }
         }
       })
+      await stale
+
+      // The late response must not overwrite the newer results or restart
+      // the spinner.
+      expect(detections.value).toEqual([{ id: 2, common_name: 'Cardinal', confidence: 0.8 }])
+      expect(isLoading.value).toBe(false)
+    })
+
+    it('a stale failure does not blank results from a newer fetch', async () => {
+      let rejectSlow
+      const slowResponse = new Promise((resolve, reject) => {
+        rejectSlow = reject
+      })
+      mockApi.get
+        .mockReturnValueOnce(slowResponse)
+        .mockResolvedValueOnce({
+          data: {
+            detections: [{ id: 2, common_name: 'Cardinal', confidence: 0.8 }],
+            pagination: { total_items: 1, total_pages: 1 }
+          }
+        })
+
+      const { fetchDetections, detections, error } = useTableData()
+
+      const stale = fetchDetections()
+      await fetchDetections()
+
+      rejectSlow(new Error('timeout of 45000ms exceeded'))
+      await stale
+
+      expect(detections.value).toEqual([{ id: 2, common_name: 'Cardinal', confidence: 0.8 }])
+      expect(error.value).toBe(null)
     })
 
     it('handles API errors', async () => {
@@ -324,7 +389,8 @@ describe('useTableData', () => {
 	          per_page: 25,
 	          sort: 'timestamp',
 	          order: 'desc'
-	        }
+	        },
+	        timeout: 45000
 	      })
 	      expect(mockApi.get).toHaveBeenNthCalledWith(2, '/detections', {
 	        params: {
@@ -332,7 +398,8 @@ describe('useTableData', () => {
 	          per_page: 25,
 	          sort: 'timestamp',
 	          order: 'desc'
-	        }
+	        },
+	        timeout: 45000
 	      })
 	      expect(detections.value).toEqual([{ id: 99, common_name: 'Robin', confidence: 0.9 }])
 	    })
@@ -353,7 +420,7 @@ describe('useTableData', () => {
       const result = await deleteDetection(1)
 
       expect(result).toBe(true)
-      expect(mockApi.delete).toHaveBeenCalledWith('/detections/1')
+      expect(mockApi.delete).toHaveBeenCalledWith('/detections/1', { timeout: 45000 })
       expect(mockApi.get).toHaveBeenCalled() // Should refresh after delete
     })
 
@@ -396,7 +463,113 @@ describe('useTableData', () => {
 	      expect(error.value).toBeNull()
 	      expect(actionError.value).toBe('Hmm, cannot reach the server')
 	    })
+
+    it('shows the retry advice from a maintenance 503', async () => {
+      mockApi.delete.mockRejectedValueOnce(httpError(503, {
+        error: 'Maintenance in progress, please retry shortly',
+        retryable: true
+      }))
+
+      const { deleteDetection, actionError } = useTableData()
+
+      expect(await deleteDetection(1)).toBe(false)
+      expect(actionError.value).toBe('Maintenance in progress, please retry shortly')
+    })
 	  })
+
+  describe('deleteSelected', () => {
+    const emptyPage = { data: { detections: [], pagination: { total_items: 0 } } }
+    const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i)
+    // The backend's 200 reply for a chunk it deleted in full
+    const deleteAll = (_url, { data }) => Promise.resolve({
+      data: { deleted: data.ids.length, failed: 0, deleted_ids: data.ids, errors: [] }
+    })
+
+    afterEach(() => {
+      mockApi.delete.mockReset()
+      mockApi.get.mockReset()
+    })
+
+    it('sends a large selection in chunks of at most 100 and refreshes once', async () => {
+      mockApi.delete.mockImplementation(deleteAll)
+      mockApi.get.mockResolvedValue(emptyPage)
+      const { deleteSelected, selectedIds, actionError } = useTableData()
+      selectedIds.value = new Set(range(1, 250))
+
+      const result = await deleteSelected()
+
+      const chunks = mockApi.delete.mock.calls.map(([url, config]) => {
+        expect(url).toBe('/detections/batch')
+        return config.data.ids
+      })
+      expect(chunks.map(chunk => chunk.length)).toEqual([100, 100, 50])
+      expect(chunks.flat()).toEqual(range(1, 250))
+      expect(result).toEqual({ success: true, deleted: 250, failed: 0 })
+      expect(selectedIds.value.size).toBe(0)
+      expect(actionError.value).toBeNull()
+      expect(mockApi.get).toHaveBeenCalledTimes(1)
+    })
+
+    it('reports ids the server could not delete', async () => {
+      mockApi.delete.mockResolvedValueOnce({
+        data: { deleted: 2, failed: 1, deleted_ids: [1, 2], errors: [{ id: 3, error: 'Not found' }] }
+      })
+      mockApi.get.mockResolvedValue(emptyPage)
+      const { deleteSelected, selectedIds, actionError } = useTableData()
+      selectedIds.value = new Set([1, 2, 3])
+
+      const result = await deleteSelected()
+
+      expect(result).toEqual({ success: true, deleted: 2, failed: 1 })
+      expect(actionError.value).toBe('Deleted 2, but 1 failed')
+    })
+
+    it('stops at maintenance and keeps only the undeleted rows selected', async () => {
+      mockApi.delete
+        .mockImplementationOnce(deleteAll)
+        .mockRejectedValueOnce(httpError(503, {
+          error: 'Maintenance in progress, please retry shortly',
+          retryable: true,
+          deleted: 30,
+          deleted_ids: range(101, 130)
+        }))
+      mockApi.get.mockResolvedValue(emptyPage)
+      const { deleteSelected, selectedIds, actionError } = useTableData()
+      selectedIds.value = new Set(range(1, 250))
+
+      const result = await deleteSelected()
+
+      expect(mockApi.delete).toHaveBeenCalledTimes(2)
+      expect(result).toEqual({ success: false, deleted: 130, failed: 120 })
+      expect([...selectedIds.value]).toEqual(range(131, 250))
+      expect(actionError.value).toBe(
+        'Deleted 130 of 250. Maintenance in progress, please retry shortly'
+      )
+      expect(mockApi.get).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ['a 401', httpError(401), 'Please log in to delete'],
+      ['a network failure', new Error('Network Error'), 'Hmm, cannot reach the server'],
+      // The server answered and said why: never "cannot reach the server"
+      ['a rejected request', httpError(400, { error: 'Maximum 100 items per batch' }),
+        'Maximum 100 items per batch'],
+      ['a server error', httpError(500, { error: 'Internal server error' }), 'Internal server error'],
+      // A proxy's HTML error page carries no usable reason
+      ['a proxy error page', httpError(502, '<html>Bad Gateway</html>'), 'Hmm, cannot reach the server']
+    ])('keeps the whole selection after %s on the first request', async (_, err, message) => {
+      mockApi.delete.mockRejectedValueOnce(err)
+      const { deleteSelected, selectedIds, actionError } = useTableData()
+      selectedIds.value = new Set([1, 2, 3])
+
+      const result = await deleteSelected()
+
+      expect(result).toEqual({ success: false, deleted: 0, failed: 3 })
+      expect(selectedIds.value.size).toBe(3)
+      expect(actionError.value).toBe(message)
+      expect(mockApi.get).not.toHaveBeenCalled()
+    })
+  })
 
   describe('pagination methods', () => {
     it('goToPage navigates to valid page', async () => {

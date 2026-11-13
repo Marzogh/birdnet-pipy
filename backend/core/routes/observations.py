@@ -24,7 +24,6 @@ from core.auth import get_request_tier, require_feature, require_scope
 from core.detection_presenter import (
     _localize_activity_items,
     _localize_activity_overview,
-    _localize_detection,
     _localize_detection_list,
     _localize_species_list,
     _localize_summary,
@@ -35,60 +34,6 @@ from core.settings_store import load_user_settings
 from core.timezone_service import local_now
 
 logger = get_logger(__name__)
-
-@api.route('/api/observations/latest', methods=['GET'])
-@require_scope('public:read')
-@log_api_request
-@handle_api_errors
-def get_latest_observation():
-    observation = _run_db(infra.db_manager.get_latest_detections, 1)
-    if observation:
-        settings = load_user_settings()
-        localized = _localize_detection(observation[0], settings=settings)
-        log_data_metrics('get_latest_observation', localized, {
-            'species': localized.get('common_name'),
-            'timestamp': localized.get('timestamp')
-        })
-        return jsonify(localized)
-    # Return 200 with null for empty database - frontend shows "No observations available yet."
-    return jsonify(None)
-
-@api.route('/api/observations/recent', methods=['GET'])
-@require_scope('public:read')
-@log_api_request
-@handle_api_errors
-def get_recent_observations():
-    unique = request.args.get('unique', 'false').lower() == 'true'
-    settings = load_user_settings()
-    observations = _localize_detection_list(
-        _run_db(infra.db_manager.get_latest_detections, 7, unique=unique),
-        settings=settings,
-    )
-    log_data_metrics('get_recent_observations', observations)
-    return jsonify(observations)
-
-@api.route('/api/observations/summary', methods=['GET'])
-@require_scope('public:read')
-@log_api_request
-@handle_api_errors
-def get_observation_summary():
-    now = local_now()
-    settings = load_user_settings()
-    stats = _run_db(
-        infra.db_manager.get_summary_stats_all_periods,
-        now.replace(hour=0, minute=0, second=0, microsecond=0),
-        now - timedelta(weeks=1),
-        now - timedelta(days=30),
-    )
-    summary = {
-        period: _localize_summary(stats[period], settings=settings)
-        for period in ('today', 'week', 'month', 'allTime')
-    }
-    log_data_metrics('get_observation_summary', summary, {
-        'today_count': summary.get('today', {}).get('totalObservations', 0),
-        'all_time_species': summary.get('allTime', {}).get('uniqueSpecies', 0)
-    })
-    return jsonify(summary)
 
 @api.route('/api/activity/hourly', methods=['GET'])
 @log_api_request
@@ -128,7 +73,17 @@ def get_activity_overview():
 # /api/dashboard/summary. TTL slightly above the poll interval so consecutive
 # polls hit the cache.
 _DASHBOARD_CACHE_TTL_SECONDS = 10
-_dashboard_cache_lock = threading.Lock()
+
+# Ceiling for the Activity Overview species lists. The client renders 10 or
+# 15 rows depending on viewport height and slices down, so this stays a fixed
+# server cap (rather than a per-client count parameter) to keep the payload
+# shared across the single-flight cache.
+_DASHBOARD_ACTIVITY_MAX_SPECIES = 15
+
+# Ceiling for the Recent Observations lists, same pattern: the client shows
+# 7 or 8 rows depending on viewport height and slices down.
+_DASHBOARD_RECENT_MAX = 8
+_dashboard_cache_lock = threading.Lock()  # hub-only: taken by route greenlets around job.result(), never inside builders
 _dashboard_cache: dict = {
     'payload': None,
     'expires_at': 0.0,
@@ -149,7 +104,7 @@ _SUMMARY_CACHE_TTL_SECONDS = {
 }
 # The TTL table defines the period set: adding a period means giving it a TTL.
 _SUMMARY_PERIODS = tuple(_SUMMARY_CACHE_TTL_SECONDS)
-_summary_cache_lock = threading.Lock()
+_summary_cache_lock = threading.Lock()  # hub-only: see _dashboard_cache_lock
 _summary_cache: dict = {
     period: {
         'payload': None,
@@ -172,7 +127,7 @@ _GALLERY_CACHE_TTL_SECONDS = 90
 _GALLERY_KEY_FREQUENT = 'sightings:frequent'
 _GALLERY_KEY_RARE = 'sightings:rare'
 _GALLERY_KEY_SPECIES = 'species:all'
-_gallery_cache_lock = threading.Lock()
+_gallery_cache_lock = threading.Lock()  # hub-only: see _dashboard_cache_lock
 _gallery_cache: dict = {
     key: {'payload': None, 'expires_at': 0.0, 'inflight': None, 'dirty': False}
     for key in (_GALLERY_KEY_FREQUENT, _GALLERY_KEY_RARE, _GALLERY_KEY_SPECIES)
@@ -306,6 +261,16 @@ def _serve_single_flight(entry, lock, ttl, builder, *args):
     return payload
 
 
+def _build_versioned_summary_payload(period):
+    """Builder for the summary single-flight cache: the payload wrapped
+    with the rollup revision read BEFORE the data query (conservative —
+    any transition during the build makes the stored revision older than
+    current, so the next hit rebuilds)."""
+    revision = infra.db_manager.get_rollup_revision()
+    return {'revision': revision,
+            'data': _build_summary_period_payload(period)}
+
+
 def _build_summary_period_payload(period, *, settings=None, now=None):
     now = now or local_now()
     settings = settings or load_user_settings()
@@ -317,10 +282,53 @@ def _build_summary_period_payload(period, *, settings=None, now=None):
 
 
 def _get_summary_period_payload(period):
-    return _serve_single_flight(
-        _summary_cache[period], _summary_cache_lock,
-        _SUMMARY_CACHE_TTL_SECONDS[period], _build_summary_period_payload, period,
-    )
+    entry = _summary_cache[period]
+    # Durable cross-process cache validation (rollup design): any rollup
+    # ready/dirty transition — in EITHER container — bumps rollup_revision
+    # in meta; a cached payload built under an older revision is stale no
+    # matter how much TTL remains. One indexed read per request; survives
+    # either process dying, unlike callback invalidation. The revision is
+    # captured INSIDE the builder job, BEFORE the data query, so a waiter
+    # joining an in-flight build can never stamp a pre-transition payload
+    # with a post-transition revision (implementation review finding 4) —
+    # a transition mid-build leaves the stored revision older, which
+    # invalidates in the safe direction.
+    # Bounded retry (implementation re-review R4): a waiter that observed
+    # revision N can join an in-flight job started under N-1 and receive
+    # pre-transition data. If the joined result's build revision is older
+    # than what this request observed, discard it and rebuild once — the
+    # second pass starts fresh at the current revision.
+    for _attempt in range(2):
+        try:
+            current_revision = _run_db(infra.db_manager.get_rollup_revision)
+        except Exception:
+            current_revision = None
+        if current_revision is not None:
+            with _summary_cache_lock:
+                cached = entry['payload']
+                if (cached is not None
+                        and cached.get('revision') != current_revision):
+                    entry['payload'] = None
+                    entry['expires_at'] = 0.0
+        wrapped = _serve_single_flight(
+            entry, _summary_cache_lock,
+            _SUMMARY_CACHE_TTL_SECONDS[period],
+            _build_versioned_summary_payload, period,
+        )
+        if (current_revision is None
+                or wrapped['revision'] >= current_revision):
+            return wrapped['data']
+        with _summary_cache_lock:
+            if entry['payload'] is wrapped:
+                entry['payload'] = None
+                entry['expires_at'] = 0.0
+    # Exhaustion is a non-returning state for stale data (second
+    # re-review S3): under sustained revision churn (batched imports),
+    # competing waiters can hand this request two consecutive
+    # pre-transition joins. Build directly, uncached — a fresh read of
+    # current state can never be older than any revision this request
+    # observed. The next request repopulates the cache.
+    return _run_db(_build_versioned_summary_payload, period)['data']
 
 
 def _build_sightings_payload(most_frequent):
@@ -346,8 +354,9 @@ def _build_dashboard_payload():
     today = now.strftime('%Y-%m-%d')
     settings = load_user_settings()
 
-    recent_all = infra.db_manager.get_latest_detections(7)
-    recent_unique = infra.db_manager.get_latest_detections(7, unique=True)
+    recent_all = infra.db_manager.get_latest_detections(_DASHBOARD_RECENT_MAX)
+    recent_unique = infra.db_manager.get_latest_detections(
+        _DASHBOARD_RECENT_MAX, unique=True)
     # Cached + shared across tiers -> always emit the anonymous-safe variant
     # (the dashboard never displays source_label, so owners lose nothing here).
     recent_all = _localize_detection_list(recent_all, settings=settings, public_only=True)
@@ -360,7 +369,8 @@ def _build_dashboard_payload():
 
     hourly_activity = infra.db_manager.get_hourly_activity(today)
     activity_overview = _localize_activity_overview(
-        infra.db_manager.get_activity_overview_both(today),
+        infra.db_manager.get_activity_overview_both(
+            today, num_species=_DASHBOARD_ACTIVITY_MAX_SPECIES),
         settings=settings,
     )
 

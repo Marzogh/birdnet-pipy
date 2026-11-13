@@ -4,11 +4,24 @@ import json
 import os
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
 from tests.api.conftest import insert_detection
+
+
+@pytest.fixture
+def set_frontier(monkeypatch):
+    """Pin the recordings gate: set_frontier(True) forces the exact branch,
+    False the transitional one — the single place tests name the patch
+    target."""
+    def _set(complete):
+        import core.routes.media as media_routes
+        monkeypatch.setattr(media_routes, 'resolution_complete',
+                            lambda db: complete)
+    return _set
 
 
 class TestSimpleAPI:
@@ -19,8 +32,7 @@ class TestSimpleAPI:
         assert True  # Simple sanity check
 
     def test_api_with_real_db(self, api_client, real_db_manager):
-        """Test API endpoints with REAL database integration."""
-        # Test 1: Latest observation with data
+        """Dashboard observations and summaries off a REAL database."""
         real_db_manager.insert_detection({
             'timestamp': '2024-01-15T10:30:45',
             'group_timestamp': '2024-01-15T10:30:45',
@@ -33,15 +45,6 @@ class TestSimpleAPI:
             'sensitivity': 0.75,
             'overlap': 0.25
         })
-
-        response = api_client.get('/api/observations/latest')
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data['common_name'] == 'American Robin'
-        assert data['confidence'] == pytest.approx(0.95, abs=0.01)
-
-        # Test 2: Recent observations
-        # Insert 2 more detections
         for i in range(2):
             real_db_manager.insert_detection({
                 'timestamp': f'2024-01-15T10:3{i+1}:00',
@@ -56,26 +59,25 @@ class TestSimpleAPI:
                 'overlap': 0.25
             })
 
-        response = api_client.get('/api/observations/recent')
+        response = api_client.get('/api/dashboard')
         assert response.status_code == 200
         data = response.get_json()
-        assert len(data) >= 3
+        latest = data['latestObservation']
+        assert latest['common_name'] == 'Blue Jay'
+        assert latest['confidence'] == pytest.approx(0.85, abs=0.01)
+        assert len(data['recentObservations']['all']) == 3
+        assert 'today' in data['summary']
 
-        # Test 3: Summary stats
-        response = api_client.get('/api/observations/summary')
-        assert response.status_code == 200
-        summary = response.get_json()
-        assert 'today' in summary
-        assert 'week' in summary
-        assert 'month' in summary
-        assert 'allTime' in summary
+        for period in ('today', 'week', 'month', 'allTime'):
+            response = api_client.get(f'/api/dashboard/summary?period={period}')
+            assert response.status_code == 200
+        assert response.get_json()['totalObservations'] == 3  # allTime
 
     def test_api_empty_database(self, api_client, real_db_manager):
-        """Test API endpoints return proper response when database is empty."""
-        # Test with empty database - returns 200 with null for better frontend UX
-        response = api_client.get('/api/observations/latest')
+        """An empty database is a normal dashboard, not an error."""
+        response = api_client.get('/api/dashboard')
         assert response.status_code == 200
-        assert response.get_json() is None
+        assert response.get_json()['latestObservation'] is None
 
     def test_activity_endpoints(self, api_client, real_db_manager):
         """Test activity-related endpoints with real database."""
@@ -167,7 +169,6 @@ class TestSimpleAPI:
         data = response.get_json()
         assert data['common_name'] == 'American Robin'
         # Verify we got expected bird detail fields
-        assert 'average_confidence' in data
         assert 'first_detected' in data or 'first_detection' in data
         assert 'last_detected' in data or 'last_detection' in data
 
@@ -231,17 +232,11 @@ class TestSimpleAPI:
             with open(test_file, 'wb') as f:
                 f.write(b'fake audio data')
 
-            # Create default file
-            default_file = os.path.join(tmpdir, 'default.mp3')
-            with open(default_file, 'wb') as f:
-                f.write(b'default audio')
-
             # Patch the paths (including auth config to prevent writing to backend/data/)
             with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
                  patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
                  patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
                  patch('core.routes.media.EXTRACTED_AUDIO_DIR', audio_dir), \
-                 patch('core.routes.media.DEFAULT_AUDIO_PATH', default_file), \
                  patch('core.db.DatabaseManager'):
 
                 from core.api import create_app
@@ -253,10 +248,11 @@ class TestSimpleAPI:
                 assert response.status_code == 200
                 assert response.data == b'fake audio data'
 
-                # Test non-existent file (should return default)
+                # A missing recording (storage cleanup) is a 404, so the
+                # player reports it instead of playing a placeholder clip
                 response = client.get('/api/audio/missing.mp3')
-                assert response.status_code == 200
-                assert response.data == b'default audio'
+                assert response.status_code == 404
+                assert 'not found' in response.get_json()['error'].lower()
 
     def test_sightings_endpoints(self, api_client, real_db_manager):
         """Test sightings-related endpoints with real database."""
@@ -368,44 +364,18 @@ class TestSimpleAPI:
                 response = client.get('/api/wikimedia_image')
                 assert response.status_code == 400
 
-    def test_settings_endpoints(self):
-        """Test settings management."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
-                 patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
-                 patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
-                 patch('core.db.DatabaseManager') as MockDB, \
-                 patch('core.routes.settings.load_user_settings') as mock_load, \
-                 patch('core.routes.settings.save_user_settings') as mock_save, \
-                 patch('core.update_service.write_flag') as mock_flag:
-
-                mock_db_instance = Mock()
-                MockDB.return_value = mock_db_instance
-
-                from core.api import create_app
-                app, _ = create_app()
-                client = app.test_client()
-
-                # Test GET settings
-                mock_settings = {
-                    'audio': {'samplerate': 48000},
-                    'ui': {'theme': 'dark'}
-                }
-                mock_load.return_value = mock_settings
-
-                response = client.get('/api/settings')
-                assert response.status_code == 200
-                assert response.get_json() == mock_settings
-
-                # Test PUT settings
-                new_settings = {'audio': {'samplerate': 44100}}
-                response = client.put('/api/settings',
-                                    data=json.dumps(new_settings),
-                                    content_type='application/json')
-                assert response.status_code == 200
-                assert 'Settings applied.' in response.get_json()['message']
-                mock_save.assert_called_once()
-                mock_flag.assert_not_called()
+    def test_settings_endpoints(self, api_client):
+        """Read and save a supported setting against the actual settings file."""
+        response = api_client.get('/api/settings')
+        assert response.status_code == 200
+        etag = response.headers['ETag']
+        response = api_client.put('/api/settings', json={'audio': {'overlap': 1.0}},
+                                  headers={'If-Match': etag})
+        assert response.status_code == 200
+        assert 'Settings saved.' in response.get_json()['message']
+        assert response.get_json()['settings']['audio']['overlap'] == 1.0
+        assert response.headers['ETag'] != etag
+        assert response.get_json()['changes']['full_restart_required'] is False
 
     def test_settings_url_validation(self):
         """Test URL validation for stream settings."""
@@ -726,6 +696,122 @@ class TestSimpleAPI:
                 assert response.status_code == 400
                 mock_save.assert_not_called()
 
+    def test_update_schedule_setting(self):
+        """Quiet hours instant-save endpoint: merge, validate, persist, no restart."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
+                 patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
+                 patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
+                 patch('core.db.DatabaseManager') as MockDB, \
+                 patch('core.settings_store.load_user_settings') as mock_load, \
+                 patch('core.settings_store.save_user_settings') as mock_save, \
+                 patch('core.update_service.write_flag') as mock_flag:
+
+                MockDB.return_value = Mock()
+
+                from core.api import create_app
+                app, _ = create_app()
+                client = app.test_client()
+
+                def put(payload):
+                    return client.put('/api/settings/schedule',
+                                      data=json.dumps(payload),
+                                      content_type='application/json')
+
+                # Full object on a file with no schedule section yet
+                mock_load.return_value = {'audio': {'samplerate': 48000}}
+                quiet = {'enabled': True, 'start': '21:00', 'end': '05:30'}
+                response = put({'quiet_hours': quiet})
+                assert response.status_code == 200
+                assert response.get_json()['quiet_hours'] == quiet
+                assert response.get_json()['success'] is True
+                mock_save.assert_called_once_with({
+                    'audio': {'samplerate': 48000},
+                    'schedule': {'quiet_hours': quiet},
+                })
+                mock_flag.assert_not_called()  # No restart needed
+
+                # Partial update keeps the stored window
+                mock_save.reset_mock()
+                mock_load.return_value = {'schedule': {'quiet_hours': dict(quiet, enabled=False)}}
+                response = put({'quiet_hours': {'enabled': True}})
+                assert response.status_code == 200
+                assert response.get_json()['quiet_hours'] == quiet
+                mock_save.assert_called_once()
+
+                # Partial update on a bare file falls back to defaults for the rest
+                mock_save.reset_mock()
+                mock_load.return_value = {}
+                response = put({'quiet_hours': {'enabled': True}})
+                assert response.status_code == 200
+                assert response.get_json()['quiet_hours'] == {
+                    'enabled': True, 'start': '22:00', 'end': '06:00',
+                }
+
+                # Rejected payloads write nothing
+                for bad in (
+                    {'quiet_hours': {'enabled': True, 'start': '25:00', 'end': '06:00'}},
+                    {'quiet_hours': {'enabled': True, 'start': '06:00', 'end': '06:00'}},
+                    {'quiet_hours': {'enabled': 'yes'}},
+                    {'quiet_hours': {'enabled': True, 'days': [1]}},
+                    {'quiet_hours': '22:00-06:00'},
+                    {},
+                ):
+                    mock_save.reset_mock()
+                    response = put(bad)
+                    assert response.status_code == 400, bad
+                    assert 'error' in response.get_json()
+                    mock_save.assert_not_called()
+
+    def test_settings_schedule_validation(self):
+        """The main PUT validates schedule.* on the merged result and hot-applies it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('core.auth.AUTH_CONFIG_DIR', tmpdir), \
+                 patch('core.auth.AUTH_CONFIG_FILE', os.path.join(tmpdir, 'auth.json')), \
+                 patch('core.auth.RESET_PASSWORD_FILE', os.path.join(tmpdir, 'RESET_PASSWORD')), \
+                 patch('core.db.DatabaseManager') as MockDB, \
+                 patch('core.routes.settings.load_user_settings') as mock_load, \
+                 patch('core.routes.settings.save_user_settings') as mock_save, \
+                 patch('core.update_service.write_flag') as mock_flag:
+
+                MockDB.return_value = Mock()
+
+                from core.api import create_app
+                app, _ = create_app()
+                client = app.test_client()
+
+                def put(payload):
+                    return client.put('/api/settings',
+                                      data=json.dumps(payload),
+                                      content_type='application/json')
+
+                mock_load.return_value = {
+                    'schedule': {'quiet_hours': {'enabled': False, 'start': '22:00', 'end': '06:00'}}
+                }
+
+                # Partial change merges over the stored window and needs no restart
+                response = put({'schedule': {'quiet_hours': {'enabled': True}}})
+                assert response.status_code == 200
+                data = response.get_json()
+                assert data['settings']['schedule']['quiet_hours'] == {
+                    'enabled': True, 'start': '22:00', 'end': '06:00',
+                }
+                assert data['changes']['full_restart_required'] is False
+                assert data['changes']['hot_reload_paths'] == ['schedule.quiet_hours.enabled']
+                mock_save.assert_called_once()
+                mock_flag.assert_not_called()
+
+                for bad in (
+                    {'schedule': {'quiet_hours': {'start': '22:00', 'end': '22:00'}}},
+                    {'schedule': {'quiet_hours': {'end': '6pm'}}},
+                    {'schedule': {'pause_until': '2026-08-25T06:00'}},
+                    {'schedule': 'never'},
+                ):
+                    mock_save.reset_mock()
+                    response = put(bad)
+                    assert response.status_code == 400, bad
+                    mock_save.assert_not_called()
+
     def test_bird_detail_endpoints(self):
         """Test bird detail endpoints."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -881,6 +967,74 @@ class TestSimpleAPI:
         # Only the record with BOTH files present survives the filter.
         assert len(data) == 1
         assert data[0]['audio_filename'] == recordings[0]['audio_filename']
+
+    @staticmethod
+    def _seed_owned_recording(real_db_manager):
+        """A resolved Veery owning both kinds in detection_media — no files
+        on disk unless the test writes them."""
+        detection_id = insert_detection(
+            real_db_manager, timestamp='2024-02-10T08:00:00',
+            common_name='Veery', scientific_name='Catharus fuscescens')
+        real_db_manager.record_detection_media(detection_id, [
+            {'filename': f'owned_{detection_id}.mp3', 'kind': 'audio',
+             'rank': 0, 'bytes': 10},
+            {'filename': f'owned_{detection_id}.webp', 'kind': 'spectrogram',
+             'rank': 0, 'bytes': 5},
+        ])
+        return detection_id
+
+    @pytest.mark.parametrize('complete', [True, False])
+    def test_recordings_drift_never_renders_dead_players(
+            self, api_client, real_db_manager, media_dirs, set_frontier,
+            complete):
+        """Stale ownership rows (a crash between unlink and ownership
+        removal, an out-of-band deletion, a restored backup) must shorten
+        the page, never serve a dead player — on either branch. The weekly
+        ownership audit heals the rows; the final-page stat filter covers
+        the window in between."""
+        set_frontier(complete)
+        self._seed_owned_recording(real_db_manager)  # no files on disk
+
+        response = api_client.get('/api/bird/Veery/recordings?sort=best')
+        assert response.status_code == 200
+        assert response.get_json() == []
+
+    def test_recordings_transitional_gap_is_bounded_by_the_gate(
+            self, api_client, real_db_manager, create_recording_files,
+            set_frontier):
+        """The accepted transition trade, pinned: unresolved (NULL) rows
+        with real files on disk serve via the legacy arm but are invisible
+        to the exact query — which is exactly why the frontier gate keeps
+        the exact arm off until no unresolved rows remain (and why the
+        weekly corrective rewind covers the downgraded-importer corner)."""
+        insert_detection(real_db_manager, common_name='Veery',
+                         scientific_name='Catharus fuscescens')
+        create_recording_files(real_db_manager, species_name='Veery')
+
+        set_frontier(False)
+        legacy = api_client.get('/api/bird/Veery/recordings').get_json()
+        assert len(legacy) == 1
+
+        set_frontier(True)
+        exact = api_client.get('/api/bird/Veery/recordings').get_json()
+        assert exact == []
+
+    @pytest.mark.parametrize('complete', [True, False])
+    def test_recordings_branches_agree_when_files_exist(
+            self, api_client, real_db_manager, media_dirs, set_frontier,
+            complete):
+        """Both branches are independently correct: a row whose owned files
+        are also on disk is served identically either way (a wrong or
+        flapping gate degrades performance, never results)."""
+        detection_id = self._seed_owned_recording(real_db_manager)
+        audio_dir, spectrogram_dir = media_dirs
+        Path(audio_dir, f'owned_{detection_id}.mp3').write_bytes(b'a' * 10)
+        Path(spectrogram_dir, f'owned_{detection_id}.webp').write_bytes(b's' * 5)
+
+        set_frontier(complete)
+        response = api_client.get('/api/bird/Veery/recordings')
+        assert response.status_code == 200
+        assert [r['id'] for r in response.get_json()] == [detection_id]
 
     def test_bird_recordings_overfetch_fills_page(self, api_client, real_db_manager, create_recording_files):
         """Over-fetch backfills the page from older records when the newest are
@@ -1463,6 +1617,45 @@ class TestSimpleAPI:
         assert len(data['hourlyActivity']) == 24
         assert data['activityOverview'] == {'most': [], 'least': []}
 
+    @staticmethod
+    def _seed_distinct_species(db_manager, count):
+        """Insert `count` same-day detections, each a distinct species."""
+        from datetime import timedelta
+
+        from core.timezone_service import local_now
+        base_time = local_now().replace(hour=10, minute=0, second=0,
+                                        microsecond=0)
+
+        for i in range(count):
+            insert_detection(
+                db_manager,
+                timestamp=(base_time + timedelta(minutes=i)).isoformat(),
+                common_name=f'Species {i}',
+                scientific_name=f'Genus species{i}',
+            )
+
+    def test_dashboard_activity_overview_caps_species(self, api_client, real_db_manager):
+        """activityOverview ships at most 15 species per order (the client
+        slices down to what fits its viewport)."""
+        self._seed_distinct_species(real_db_manager, 30)
+
+        response = api_client.get('/api/dashboard')
+        assert response.status_code == 200
+        overview = response.get_json()['activityOverview']
+        assert len(overview['most']) == 15
+        assert len(overview['least']) == 15
+
+    def test_dashboard_recent_observations_cap(self, api_client, real_db_manager):
+        """recentObservations ships at most 8 rows per mode (the client
+        slices down to what fits its viewport)."""
+        self._seed_distinct_species(real_db_manager, 15)
+
+        response = api_client.get('/api/dashboard')
+        assert response.status_code == 200
+        recent = response.get_json()['recentObservations']
+        assert len(recent['all']) == 8
+        assert len(recent['unique']) == 8
+
     def test_dashboard_summary_endpoint_returns_requested_period(self, api_client, real_db_manager):
         """Test lazy-loaded dashboard summary periods."""
         from datetime import timedelta
@@ -1516,7 +1709,7 @@ class TestSimpleAPI:
                                       data=json.dumps({'model': {'type': 'invalid_model'}}),
                                       content_type='application/json')
                 assert response.status_code == 400
-                assert 'Invalid model type' in response.get_json()['error']
+                assert 'Invalid model.type' in response.get_json()['error']
 
                 # Valid model types should be accepted
                 for model_type in ('birdnet', 'birdnet_v3'):

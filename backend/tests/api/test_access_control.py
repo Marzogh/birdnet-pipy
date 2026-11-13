@@ -18,6 +18,7 @@ from tests.api.conftest import (
     insert_detection,
     iso_ago,
     login_owner,
+    make_rows_legacy,
 )
 
 
@@ -39,7 +40,6 @@ class TestPublicAccessGating:
         with auth_enabled_app(real_db_manager) as (client, _):
             assert client.get('/api/species/all').status_code == 200
             assert client.get('/api/dashboard').status_code == 200
-            assert client.get('/api/observations/recent').status_code == 200
 
     def test_species_all_ok_with_detections_when_auth_enabled(self, real_db_manager):
         """Regression: the Species Catalog is built off the request thread (the
@@ -60,7 +60,6 @@ class TestPublicAccessGating:
         with auth_enabled_app(real_db_manager, access={'public_access': False}) as (client, _):
             assert client.get('/api/species/all').status_code == 401
             assert client.get('/api/dashboard').status_code == 401
-            assert client.get('/api/observations/recent').status_code == 401
             assert client.get('/api/bird/American%20Robin/recordings').status_code == 401
 
     def test_owner_reads_even_when_public_access_off(self, real_db_manager):
@@ -342,13 +341,15 @@ class TestObservationsContract:
 
     def _seed(self, db_manager, species='American Robin'):
         insert_detection(db_manager, timestamp=iso_ago(days_ago=1), common_name=species)
+        make_rows_legacy(db_manager)  # signed synthesized names = legacy path
 
     def test_latest_and_recent_include_media_signatures(self, real_db_manager):
         self._seed(real_db_manager)
         with auth_enabled_app(real_db_manager) as (client, _):
-            latest = client.get('/api/observations/latest').get_json()
+            dashboard = client.get('/api/dashboard').get_json()
+            latest = dashboard['latestObservation']
             assert latest and latest.get('audio_sig')
-            recent = client.get('/api/observations/recent').get_json()
+            recent = dashboard['recentObservations']['all']
             assert recent and recent[0].get('audio_sig')
 
 
@@ -377,6 +378,8 @@ class TestDefaultDenyBackstop:
             'auth_change_password', 'trigger_system_update', 'trigger_service_restart',
             'get_system_logs', 'get_recorder_status', 'migration_import', 'migration_validate',
             'upload_bird_image', 'delete_bird_image',
+            'export_count', 'start_export_job', 'current_export_job', 'get_export_job',
+            'discard_export_job', 'download_export_file',
         }
         leaked = sensitive & api_module._ANON_REACHABLE_ENDPOINTS
         assert not leaked, f'sensitive endpoints in anonymous allowlist: {leaked}'
@@ -452,6 +455,78 @@ class TestSystemInfoGating:
                 owner = client.get('/api/system/version').get_json()
                 assert owner['current_commit'] == 'deadbeef'
                 assert owner['current_branch'] == 'main'
+
+    def test_update_check_fingerprint_hidden_from_anonymous(self, real_db_manager):
+        """Same fingerprint rule as /api/system/version — stripping the commit
+        there is pointless if update-check hands it straight back on the same
+        anonymous page load. The result is cached across tiers, so the owner
+        must still get the FULL payload from a cache entry that an anonymous
+        request populated (clamp a copy, never the cached dict)."""
+        from core.routes import system as system_routes
+
+        vinfo = {'version': '9.9.9', 'commit': 'deadbeef', 'branch': 'main'}
+        comparison = ({
+            'ahead_by': 3, 'behind_by': 0, 'status': 'behind',
+            'commits': [{'hash': 'cafe123', 'message': 'fix: a thing',
+                         'date': '2026-01-01T00:00:00Z'}],
+            'target_commit': 'cafe123',
+        }, None)
+        fresh_cache = {'result': None, 'timestamp': 0, 'cache_key': None}
+
+        with auth_enabled_app(real_db_manager) as (client, _):
+            with patch.dict(system_routes._update_check_cache, fresh_cache), \
+                 patch('core.routes.system.is_home_assistant_mode', return_value=False), \
+                 patch('core.routes.system.load_version_info', return_value=vinfo), \
+                 patch('core.routes.system.get_channel_branch',
+                       return_value=('release', 'main')), \
+                 patch('core.routes.system.get_commits_comparison',
+                       return_value=comparison), \
+                 patch('core.routes.system.get_latest_remote_commit',
+                       return_value=({'sha': 'cafe123'}, None)), \
+                 patch('core.routes.system.fetch_update_notes', return_value={}), \
+                 patch('core.routes.system.should_show_update_note',
+                       return_value=False):
+                anon = client.get('/api/system/update-check').get_json()
+                # The logged-out badge still works...
+                assert anon['update_available'] is True
+                # ...without handing over the build fingerprint or patch-lag.
+                for field in ('current_commit', 'remote_commit', 'current_branch',
+                              'target_branch', 'channel', 'commits_behind',
+                              'preview_commits'):
+                    assert field not in anon, f'{field} leaked to anonymous caller'
+
+                login_owner(client)
+                owner = client.get('/api/system/update-check').get_json()
+                assert owner['current_commit'] == 'deadbeef'
+                assert owner['commits_behind'] == 3
+                assert owner['channel'] == 'release'
+                assert owner['preview_commits'][0]['hash'] == 'cafe123'
+
+    def test_update_check_error_hides_commit_from_anonymous(self, real_db_manager):
+        """GitHub errors include the compare URL, so their detail is owner-only."""
+        commit = '0123456789abcdef0123456789abcdef01234567'
+        vinfo = {'version': '9.9.9', 'commit': commit, 'branch': 'main'}
+        detail = (
+            '403 Client Error for '
+            f'https://api.github.com/repos/x/y/compare/{commit}...main'
+        )
+
+        with auth_enabled_app(real_db_manager) as (client, _):
+            with patch('core.routes.system.is_home_assistant_mode', return_value=False), \
+                 patch('core.routes.system.load_version_info', return_value=vinfo), \
+                 patch('core.routes.system.get_channel_branch',
+                       return_value=('release', 'main')), \
+                 patch('core.routes.system.get_commits_comparison',
+                       return_value=(None, detail)):
+                response = client.get('/api/system/update-check?force=true')
+                assert response.status_code == 500
+                assert response.get_json()['error'] == 'Failed to check for updates'
+                assert commit not in response.get_data(as_text=True)
+
+                login_owner(client)
+                owner_response = client.get('/api/system/update-check?force=true')
+                assert owner_response.status_code == 500
+                assert commit in owner_response.get_json()['error']
 
 
 class TestExtraMetadataStripping:

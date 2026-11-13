@@ -546,20 +546,6 @@ def migration_audio_status():
     return jsonify(progress), 200
 
 
-@api.route('/api/migration/audio/skip', methods=['POST'])
-@log_api_request
-@require_auth
-@handle_api_errors
-def migration_audio_skip():
-    """Skip the audio import stage.
-
-    Returns:
-        JSON with status: skipped
-    """
-    logger.info("Audio import stage skipped")
-    return jsonify({'status': 'skipped', 'message': 'Audio import skipped'}), 200
-
-
 # =============================================================================
 # Migration Stage 3: Spectrogram Generation Endpoints
 # =============================================================================
@@ -632,7 +618,8 @@ def migration_spectrogram_generate():
     def run_generation():
         try:
             generate_spectrograms_batch(scan_result['files_needing'], generation_id,
-                                        yield_control=_cooperative_yield)
+                                        yield_control=_cooperative_yield,
+                                        db_manager=infra.db_manager)
         finally:
             # Clear progress tracking after a delay
             def cleanup_progress():
@@ -684,17 +671,3 @@ def migration_spectrogram_status():
         }), 404
 
     return jsonify(progress), 200
-
-
-@api.route('/api/migration/spectrogram/skip', methods=['POST'])
-@log_api_request
-@require_auth
-@handle_api_errors
-def migration_spectrogram_skip():
-    """Skip the spectrogram generation stage.
-
-    Returns:
-        JSON with status: skipped
-    """
-    logger.info("Spectrogram generation stage skipped")
-    return jsonify({'status': 'skipped', 'message': 'Spectrogram generation skipped'}), 200

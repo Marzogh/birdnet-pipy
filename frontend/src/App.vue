@@ -59,44 +59,7 @@
             Login
           </button>
         </div>
-        <div class="flex flex-wrap gap-4">
-          <router-link
-            to="/"
-            class="hover:text-green-200"
-          >
-            Dashboard
-          </router-link>
-          <router-link
-            to="/gallery"
-            class="hover:text-green-200"
-          >
-            Gallery
-          </router-link>
-          <router-link
-            to="/live"
-            class="hover:text-green-200"
-          >
-            Live Feed
-          </router-link>
-          <router-link
-            to="/charts"
-            class="hover:text-green-200"
-          >
-            Charts
-          </router-link>
-          <router-link
-            to="/table"
-            class="hover:text-green-200"
-          >
-            Table
-          </router-link>
-          <router-link
-            to="/settings"
-            class="hover:text-green-200"
-          >
-            Settings
-          </router-link>
-        </div>
+        <NavLinks />
       </div>
     </nav>
 
@@ -108,39 +71,63 @@
       </router-view>
     </main>
 
-    <!-- Status FAB — recorder warning takes priority over update; hidden on
-         Settings and while a page-level scroll-to-top button occupies the corner -->
-    <router-link
-      v-if="recorderHealth.showRecorderWarning.value && statusFabAllowed"
-      to="/settings"
-      class="fixed bottom-4 right-4 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-full shadow-lg hidden md:flex items-center gap-2 z-50 transition-colors"
-      title="Audio recording issues detected"
-      @click="handleRecorderWarningClick"
-    >
-      <WarningIcon class="w-5 h-5" />
-      <span class="text-sm font-medium">Audio Recording Issues</span>
-    </router-link>
-    <router-link
-      v-else-if="systemUpdate.showUpdateIndicator.value && statusFabAllowed"
-      to="/settings"
-      class="fixed bottom-4 right-4 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-full shadow-lg hidden md:flex items-center gap-2 z-50 transition-colors"
-      title="System update available"
-    >
-      <svg
-        class="w-5 h-5"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
+    <!-- Status FAB — priority: recorder fault, then an intentional pause,
+         then an available update; hidden on Settings (which has its own
+         audio summary) and while a page-level scroll-to-top button occupies the
+         corner. STATUS_FAB_CLASS holds the shared geometry; each pill adds
+         only its colour. -->
+    <template v-if="statusFabAllowed">
+      <router-link
+        v-if="recorderHealth.showRecorderWarning.value"
+        to="/settings"
+        :class="[STATUS_FAB_CLASS, 'bg-amber-500 hover:bg-amber-600']"
+        title="Audio recording issues detected"
+        @click="handleRecorderWarningClick"
       >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M5 10l7-7 7 7M12 3v18"
+        <WarningIcon class="w-5 h-5" />
+        <span class="text-sm font-medium">Audio Recording Issues</span>
+      </router-link>
+      <!-- Paused on purpose (quiet hours, or no active source): informational,
+           not a fault — never dismissible, it clears itself when the station is
+           set to record again. -->
+      <router-link
+        v-else-if="recorderHealth.showPausedIndicator.value"
+        to="/settings"
+        :class="[STATUS_FAB_CLASS, 'bg-blue-600 hover:bg-blue-700']"
+        :title="recorderHealth.pausedTitle.value"
+      >
+        <MoonIcon
+          v-if="recorderHealth.pauseReason.value === PAUSE_REASONS.QUIET_HOURS"
+          class="w-5 h-5"
         />
-      </svg>
-      <span class="text-sm font-medium">Update Available</span>
-    </router-link>
+        <PauseIcon
+          v-else
+          class="w-5 h-5"
+        />
+        <span class="text-sm font-medium">{{ recorderHealth.pausedLabel.value }}</span>
+      </router-link>
+      <router-link
+        v-else-if="systemUpdate.showUpdateIndicator.value"
+        to="/settings"
+        :class="[STATUS_FAB_CLASS, 'bg-green-600 hover:bg-green-700']"
+        title="System update available"
+      >
+        <svg
+          class="w-5 h-5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M5 10l7-7 7 7M12 3v18"
+          />
+        </svg>
+        <span class="text-sm font-medium">Update Available</span>
+      </router-link>
+    </template>
 
     <!-- Setup Wizard -->
     <SetupWizard
@@ -158,6 +145,10 @@
       v-if="showWelcome"
       @done="showWelcome = false"
     />
+
+    <!-- Full-page explainer for visitors who load the app while a native
+         update has the backend down (self-gating via useUpdateOverlay) -->
+    <UpdateOverlay />
   </div>
 </template>
 
@@ -171,12 +162,23 @@ import { useAppStatus } from '@/composables/useAppStatus'
 import { useSystemUpdate } from '@/composables/useSystemUpdate'
 import { useRecorderHealth } from '@/composables/useRecorderHealth'
 import { useScrollToTop } from '@/composables/useScrollToTop'
+import { useUpdateOverlay } from '@/composables/useUpdateOverlay'
 import { DISPLAY_NAME } from './version'
 import SetupWizard from '@/components/SetupWizard.vue'
 import LoginModal from '@/components/LoginModal.vue'
 import WelcomeOverlay from '@/components/WelcomeOverlay.vue'
+import UpdateOverlay from '@/components/UpdateOverlay.vue'
+import NavLinks from '@/components/NavLinks.vue'
 import WarningIcon from '@/components/icons/WarningIcon.vue'
+import MoonIcon from '@/components/icons/MoonIcon.vue'
+import PauseIcon from '@/components/icons/PauseIcon.vue'
+import { PAUSE_REASONS } from '@/utils/recorderStates'
 import { WELCOME_PENDING_KEY } from '@/utils/storageKeys'
+
+// Shared geometry for the status FAB pills — each adds only its colour.
+const STATUS_FAB_CLASS =
+  'fixed bottom-4 right-4 px-4 py-2 text-white rounded-full shadow-lg ' +
+  'hidden md:flex items-center gap-2 z-50 transition-colors'
 
 export default {
   name: 'App',
@@ -184,7 +186,11 @@ export default {
     SetupWizard,
     LoginModal,
     WelcomeOverlay,
-    WarningIcon
+    UpdateOverlay,
+    NavLinks,
+    WarningIcon,
+    MoonIcon,
+    PauseIcon
   },
   setup() {
     const logger = useLogger('App')
@@ -196,6 +202,7 @@ export default {
     const systemUpdate = useSystemUpdate()
     const recorderHealth = useRecorderHealth()
     const scrollToTop = useScrollToTop()
+    const updateOverlay = useUpdateOverlay()
 
     // Whether the global status FABs may occupy the bottom-right corner: not on
     // Settings, and not while a page-level scroll-to-top button claims it.
@@ -243,7 +250,7 @@ export default {
     const checkLocationSetup = async () => {
       // useSettings owns the fetch and syncs unit / time-format prefs.
       const ok = await appSettings.ensureLoaded()
-      if (!ok) {
+      if (!ok || !appSettings.settings.value) {
         // A network error says nothing about whether location is configured.
         // Assume the common case (configured) so the dashboard starts
         // fetching — its data doesn't need settings and it shows its own
@@ -264,7 +271,7 @@ export default {
       const settings = appSettings.settings.value
       setStationName(settings?.display?.station_name)
       // Show setup modal if location has not been configured
-      if (!settings?.location?.configured) {
+      if (settings?.location?.configured === false) {
         logger.info('Location not configured, showing setup wizard')
         setLocationConfigured(false)
         showSetupWizard.value = true
@@ -292,6 +299,10 @@ export default {
       // Load settings (including unit preference) after login
       await checkLocationSetup()
       recorderHealth.checkStatus()
+      recorderHealth.connect()
+      // The mount-time check ran logged out, so it holds the public-tier
+      // result (no commits_behind); re-fetch the owner view
+      systemUpdate.checkForUpdates({ silent: true }).catch(() => {})
 
       // Redirect to stored destination if any
       const redirect = sessionStorage.getItem('authRedirect')
@@ -308,7 +319,17 @@ export default {
     }
 
     const handleLogout = async () => {
-      await auth.logout()
+      // A failed request leaves the session intact. Tearing down the socket or
+      // navigating away then would strand a still-authenticated user with no
+      // live status until they reload.
+      if (!await auth.logout()) return
+      // The server also evicts the socket from the owner room; dropping it here
+      // stops this tab reconnecting into a room it can no longer join.
+      recorderHealth.disconnect()
+      // A public Live Feed may remain mounted. Let it reconnect only now, after
+      // the logout response has cleared the cookie, so it rejoins as an
+      // anonymous listener instead of racing back into the owner room.
+      window.dispatchEvent(new Event('auth:logged-out'))
       // If on a protected page, redirect to dashboard (unless the feature is public)
       if (route.meta.requiresAuth) {
         const feature = route.meta.feature
@@ -335,6 +356,13 @@ export default {
 
       // Listen for auth required events from API interceptor
       window.addEventListener('auth:required', handleAuthRequired)
+      // Backend-unreachable events: the overlay checks whether a native
+      // update is actually running before showing anything
+      window.addEventListener('api:unreachable', updateOverlay.checkForActiveUpdate)
+      // ...and a visitor arriving mid-update gets it now, not after the first
+      // API call has taken seconds to fail. Not awaited: nothing below
+      // depends on it.
+      updateOverlay.checkForUpdateAtBoot()
 
       // Ensure auth status is loaded (shares the one-time load with the
       // router guard — see useAuth.ensureAuthLoaded)
@@ -355,11 +383,14 @@ export default {
       systemUpdate.checkForUpdates({ silent: true }).catch(() => {})
       if (!auth.needsLogin.value) {
         recorderHealth.checkStatus()
+        recorderHealth.connect()
       }
     })
 
     onUnmounted(() => {
+      recorderHealth.disconnect()
       window.removeEventListener('auth:required', handleAuthRequired)
+      window.removeEventListener('api:unreachable', updateOverlay.checkForActiveUpdate)
       cancelSettingsRetry()
     })
 
@@ -376,7 +407,9 @@ export default {
       stationName,
       systemUpdate,
       recorderHealth,
-      statusFabAllowed
+      statusFabAllowed,
+      PAUSE_REASONS,
+      STATUS_FAB_CLASS
     }
   }
 }

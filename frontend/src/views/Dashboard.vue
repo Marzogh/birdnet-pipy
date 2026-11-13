@@ -7,8 +7,10 @@
       v-if="locationConfigured !== false && !authGated"
       class="p-4 grid grid-cols-1 lg:grid-cols-3 gap-4"
     >
-      <!-- Activity Overview -->
-      <div class="bg-white rounded-lg shadow p-4 lg:col-span-3 h-[300px] lg:h-[375px]">
+      <!-- Activity Overview — the chart region's height tracks the viewport
+           tier and the visible row count (VIEWPORT_TIERS in the script,
+           .activity-chart-region in style.css). -->
+      <div class="bg-white rounded-lg shadow p-4 lg:col-span-3">
         <div class="flex items-center justify-between mb-2">
           <h2 class="text-lg font-semibold">
             Activity Overview
@@ -35,62 +37,38 @@
             </svg>
           </button>
         </div>
-        <CenteredMessage
-          v-if="!hasLoadedOnce"
-          variant="loading"
-          container-class="h-[calc(100%-2rem)]"
-        >
-          Fetching the latest data...
-        </CenteredMessage>
         <div
-          v-else-if="!isDataEmpty && !detailedBirdActivityError"
-          class="flex h-[calc(100%-2rem)]"
+          class="activity-chart-region"
+          :style="{ '--rows': activityRowsShown }"
         >
-          <div class="w-full lg:w-1/3 lg:pr-2 relative">
-            <canvas
-              ref="totalObservationsChart"
-              class="h-full"
-            />
-            <SpeciesAxisLinks
-              :ticks="speciesAxisLayout.ticks"
-              :axis-left="speciesAxisLayout.axisLeft"
-              :axis-width="speciesAxisLayout.axisWidth"
-              :row-height="speciesAxisLayout.rowHeight"
-            />
-          </div>
-          <div class="hidden lg:block lg:w-2/3 lg:pl-2 h-full">
-            <!-- Inner wrapper is the positioning context: it has no padding,
-                 so the absolute overlay's origin matches the canvas origin
-                 (the chart's pixel coords are canvas-relative). -->
-            <div class="h-full relative">
-              <canvas
-                ref="hourlyActivityHeatmap"
-                class="h-full"
-              />
-              <TimeAxisLinks
-                :ticks="timeAxisLayout.ticks"
-                :axis-top="timeAxisLayout.axisTop"
-                :axis-height="timeAxisLayout.axisHeight"
-                :col-width="timeAxisLayout.colWidth"
-                :date="timeAxisLayout.date"
-              />
-            </div>
-          </div>
+          <CenteredMessage
+            v-if="!hasLoadedOnce"
+            variant="loading"
+            container-class="h-full"
+          >
+            Fetching the latest data...
+          </CenteredMessage>
+          <ActivityOverviewCharts
+            v-else-if="!isDataEmpty && !detailedBirdActivityError"
+            ref="activityCharts"
+            :species-axis-layout="speciesAxisLayout"
+            :time-axis-layout="timeAxisLayout"
+          />
+          <CenteredMessage
+            v-else-if="detailedBirdActivityError"
+            variant="error"
+            container-class="h-full"
+          >
+            {{ detailedBirdActivityError }}
+          </CenteredMessage>
+          <CenteredMessage
+            v-else
+            variant="info"
+            container-class="h-full"
+          >
+            No bird activity recorded yet for today. Check back later!
+          </CenteredMessage>
         </div>
-        <CenteredMessage
-          v-else-if="detailedBirdActivityError"
-          variant="error"
-          container-class="h-[calc(100%-2rem)]"
-        >
-          {{ detailedBirdActivityError }}
-        </CenteredMessage>
-        <CenteredMessage
-          v-else
-          variant="info"
-          container-class="h-[calc(100%-2rem)]"
-        >
-          No bird activity recorded yet for today. Check back later!
-        </CenteredMessage>
       </div>
       <!-- Latest Observation -->
       <div class="bg-white rounded-lg shadow p-4 lg:col-span-2 flex flex-col lg:h-[220px]">
@@ -164,16 +142,15 @@
           </div>
           <!-- Call Player -->
           <div
-            ref="canvasContainer"
             class="w-full lg:flex-1 lg:h-full mt-3 lg:mt-0 flex items-center justify-center lg:pr-2"
           >
             <div class="w-full h-full relative flex items-center justify-center">
               <div
                 v-show="!latestObservationIsPlaying"
-                class="absolute inset-0 flex justify-center items-center z-10"
+                class="absolute inset-0 flex justify-center items-center gap-2 px-2 z-10"
               >
                 <button
-                  class="bg-black bg-opacity-50 hover:bg-opacity-70 text-white rounded-full flex items-center justify-center w-10 h-10 lg:w-14 lg:h-14 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  class="flex-shrink-0 bg-black bg-opacity-50 hover:bg-opacity-70 text-white rounded-full flex items-center justify-center w-10 h-10 lg:w-14 lg:h-14 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-300"
                   @click="playLatestObservation"
                 >
                   <font-awesome-icon
@@ -181,6 +158,13 @@
                     class="text-lg lg:text-2xl"
                   />
                 </button>
+                <p
+                  v-if="latestPlaybackError"
+                  role="alert"
+                  class="min-w-0 rounded bg-white/80 px-2 py-1 text-xs lg:text-sm text-red-700"
+                >
+                  {{ latestPlaybackError }}
+                </p>
               </div>
               <div
                 class="bg-gray-200 h-12 lg:h-[110px] w-full rounded-lg overflow-hidden flex items-center justify-center"
@@ -316,6 +300,11 @@
             </button>
           </div>
         </div>
+        <AlertBanner
+          :message="audioError || ''"
+          variant="error"
+          @dismiss="clearAudioError"
+        />
         <CenteredMessage
           v-if="!hasLoadedOnce"
           variant="loading"
@@ -324,11 +313,11 @@
           Fetching the latest data...
         </CenteredMessage>
         <ul
-          v-else-if="recentObservationsData.length && !recentObservationsError"
+          v-else-if="visibleRecentObservations.length && !recentObservationsError"
           class="space-y-2"
         >
           <li
-            v-for="observation in recentObservationsData"
+            v-for="observation in visibleRecentObservations"
             :key="observation.id"
             class="flex items-center justify-between"
           >
@@ -383,28 +372,36 @@
       </div>
 
 
-      <!-- Hourly Activity Chart -->
-      <div class="bg-white rounded-lg shadow p-4">
+      <!-- Hourly Activity Chart — the chart flex-fills the card, which the
+           grid row stretches level with the Recent Observations card at
+           either tier's row count (same follower-card pattern as the
+           species page's Distribution chart); the absolutely-positioned
+           canvas keeps sizing stable. min-h preserves the compact height
+           on mobile and short viewports. -->
+      <div class="bg-white rounded-lg shadow p-4 flex flex-col">
         <h2 class="text-lg font-semibold mb-2">
           Hourly Activity
         </h2>
         <CenteredMessage
           v-if="!hasLoadedOnce"
           variant="loading"
-          container-class="h-[220px]"
+          container-class="flex-1 min-h-[220px]"
         >
           Fetching the latest data...
         </CenteredMessage>
         <div
           v-else-if="!hourlyBirdActivityError"
-          class="relative h-[220px] w-full"
+          class="relative flex-1 min-h-[220px]"
         >
-          <canvas ref="hourlyActivityChart" />
+          <canvas
+            ref="hourlyActivityChart"
+            class="absolute inset-0 w-full h-full"
+          />
         </div>
         <CenteredMessage
           v-else
           variant="error"
-          container-class="h-[220px]"
+          container-class="flex-1 min-h-[220px]"
         >
           {{ hourlyBirdActivityError }}
         </CenteredMessage>
@@ -449,14 +446,16 @@ import { faPlay, faPause, faCircleInfo } from '@fortawesome/free-solid-svg-icons
 	import { useAppStatus } from '@/composables/useAppStatus';
 import { useAuth } from '@/composables/useAuth';
 import { useTimeFormat } from '@/composables/useTimeFormat';
+import { useTallViewport, ACTIVITY_ROWS } from '@/composables/useTallViewport';
 import SpectrogramModal from '@/components/SpectrogramModal.vue';
 import SpectrogramIcon from '@/components/icons/SpectrogramIcon.vue';
 import CenteredMessage from '@/components/CenteredMessage.vue';
-import SpeciesAxisLinks from '@/components/SpeciesAxisLinks.vue';
-import TimeAxisLinks from '@/components/TimeAxisLinks.vue';
+import AlertBanner from '@/components/AlertBanner.vue';
+import ActivityOverviewCharts from '@/components/ActivityOverviewCharts.vue';
 import DetectionModal from '@/components/DetectionModal.vue';
 import { getAudioUrl, getSpectrogramUrl } from '@/services/media'
 import { getDisplayCommonName } from '@/utils/birdNames'
+import { ERR_RECORDING_MISSING, playbackErrorMessage } from '@/utils/errorMessages'
 import { recordingPath } from '@/utils/detectionLinks'
 import { formatConfidence } from '@/utils/format'
 import { createScrollPacer } from '@/utils/scrollPacer'
@@ -472,8 +471,8 @@ export default {
         SpectrogramModal,
         SpectrogramIcon,
         CenteredMessage,
-        SpeciesAxisLinks,
-        TimeAxisLinks,
+        AlertBanner,
+        ActivityOverviewCharts,
         DetectionModal
     },
     setup() {
@@ -585,6 +584,35 @@ export default {
         const showLeastCommon = ref(false)
         const isActivityUpdating = ref(false)
 
+        // Rows shown per viewport tier (see useTallViewport for the tier
+        // itself). The tall counts match the server's dashboard caps
+        // (activityOverview 15, recentObservations 8 — the client slices
+        // down).
+        const VIEWPORT_TIERS = {
+            base: { activityRows: ACTIVITY_ROWS.base, recentRows: 7 },
+            tall: { activityRows: ACTIVITY_ROWS.tall, recentRows: 8 }
+        }
+        // On a tier flip the redraw comes from the client-side cache, no
+        // refetch.
+        const { isTallViewport } = useTallViewport()
+        watch(isTallViewport, () => {
+            if (isActive) redrawActivityCharts()
+        })
+        const viewportTier = computed(() => (
+            isTallViewport.value ? VIEWPORT_TIERS.tall : VIEWPORT_TIERS.base
+        ))
+        // Rows the chart region is sized for. On the tall tier it grows with
+        // the actual species count instead of jumping straight to the 15-row
+        // height, but never shrinks below the 10-row region.
+        const activityRowsShown = computed(() => Math.min(
+            Math.max(detailedBirdActivityData.value.length, VIEWPORT_TIERS.base.activityRows),
+            viewportTier.value.activityRows
+        ))
+
+        const visibleRecentObservations = computed(() => (
+            recentObservationsData.value.slice(0, viewportTier.value.recentRows)
+        ))
+
         // Recent observations filter: true = Unique (one per species, the
         // default), false = All. Only an explicit stored "false" opts into All.
         const showUniqueSpecies = ref(
@@ -605,18 +633,25 @@ export default {
         const detailObservation = ref(null)
         const hourlyActivityChart = ref(null)
 
-        const totalObservationsChart = ref(null)
-        const hourlyActivityHeatmap = ref(null)
+        // The Activity Overview canvases live in ActivityOverviewCharts; these
+        // read like the template refs they replace, so the chart helpers
+        // (which take a ref or an element) are called exactly as before.
+        const activityCharts = ref(null)
+        const totalObservationsChart = computed(() => activityCharts.value?.barCanvas ?? null)
+        const hourlyActivityHeatmap = computed(() => activityCharts.value?.heatmapCanvas ?? null)
 
         const latestObservationIsPlaying = ref(false)
         const initialLoad = ref(true)
         const spectrogramCanvas = ref(null)
+        const latestPlaybackError = ref(null)
 
         // Audio player composable for simple play/stop in Recent Observations list
         const {
             currentPlayingId,
             togglePlay: audioTogglePlay,
-            stopAudio
+            stopAudio,
+            error: audioError,
+            clearError: clearAudioError
         } = useAudioPlayer()
 
         const summaryPeriods = [
@@ -750,8 +785,7 @@ export default {
                 createHourlyChart(hourlyActivityChart, hourlyBirdActivityData.value, { animate: initialLoad.value });
             }
             if (!isDataEmpty.value) {
-                createTotalObsChart(totalObservationsChart, detailedBirdActivityData.value, { animate: initialLoad.value, title: null });
-                createHeatmap(hourlyActivityHeatmap, detailedBirdActivityData.value, { animate: initialLoad.value, title: null, date: getLocalDateString() });
+                await redrawActivityCharts(initialLoad.value)
             }
 
             // Initialize spectrogram canvas after DOM updates with new data
@@ -769,6 +803,9 @@ export default {
         });
 
         // Watch for location to become configured (after setup modal)
+        // A playback error is about one recording; a new detection clears it.
+        watch(() => latestObservationData.value?.id, () => { latestPlaybackError.value = null })
+
         watch(locationConfigured, async (configured) => {
             if (configured === true && !pollInterval) {
                 await startDashboard();
@@ -984,15 +1021,35 @@ export default {
             latestObservationIsPlaying.value = false;
         };
 
+        // A load error or rejected play() of the latest recording: stop the
+        // spectrogram and say why. Ignores elements already replaced (their
+        // src is cleared on the way out, which itself raises 'error') and a
+        // play() cut short by a pause, which is not a failure.
+        const failLatestPlayback = (element, playRejection) => {
+            if (element !== audioElement || playRejection?.name === 'AbortError') return;
+            console.warn('Latest observation playback failed:', playRejection || element.error);
+            latestPlaybackError.value = playbackErrorMessage(element.error, playRejection);
+            pauseLatestObservation();
+        };
+
         const playLatestObservation = () => {
             // Preserves position and rolling-max calibration vs. tearing down the audio element.
-            if (audioElement && audioElement.currentTime > 0 && !audioElement.ended) {
+            latestPlaybackError.value = null;
+            if (audioElement && audioElement.currentTime > 0 && !audioElement.ended && !audioElement.error) {
                 if (audioCtx?.state === 'suspended') audioCtx.resume();
-                audioElement.play().catch((err) => {
-                    console.warn('Failed to resume audio:', err);
-                });
+                const resumed = audioElement;
+                resumed.play().catch((err) => failLatestPlayback(resumed, err));
                 animationId = requestAnimationFrame(drawSpectrogram);
                 latestObservationIsPlaying.value = true;
+                return;
+            }
+
+            const latestAudioUrl = getAudioUrl(latestObservationData.value?.bird_song_file_name, latestObservationData.value?.audio_sig)
+            if (!latestAudioUrl) {
+                // Nothing to play (the recording's media is gone): say so and
+                // leave any earlier element alone, so its cleared source can't
+                // raise an error about a recording nobody asked for.
+                latestPlaybackError.value = ERR_RECORDING_MISSING;
                 return;
             }
 
@@ -1021,8 +1078,6 @@ export default {
             prevFrequencyDataArray.fill(-200);
             timeDomainDataArray = new Float32Array(audioAnalyser.fftSize);
             audioClockRunning = false;
-	            const latestAudioUrl = getAudioUrl(latestObservationData.value?.bird_song_file_name, latestObservationData.value?.audio_sig)
-	            if (!latestAudioUrl) return
 	            audioElement = new Audio(latestAudioUrl);
 	            audioElement.crossOrigin = "anonymous";
             source = audioCtx.createMediaElementSource(audioElement);
@@ -1035,20 +1090,19 @@ export default {
             audioElement.addEventListener('playing', () => { audioClockRunning = true; });
             audioElement.addEventListener('waiting', () => { audioClockRunning = false; });
             audioElement.addEventListener('pause', () => { audioClockRunning = false; });
+            const element = audioElement;
+            element.addEventListener('error', () => failLatestPlayback(element));
 
-	            audioElement.play().catch((err) => {
-	                console.warn('Failed to play audio:', err)
-	                latestObservationIsPlaying.value = false
-	            });
+            element.play().catch((err) => failLatestPlayback(element, err));
 	            animationId = requestAnimationFrame(drawSpectrogram);
 	            latestObservationIsPlaying.value = true;
 	        };
 
         const togglePlayBirdCall = (observation) => {
             if (!observation?.id) return
-            const audioUrl = getAudioUrl(observation?.bird_song_file_name, observation?.audio_sig)
-            if (!audioUrl) return
-            audioTogglePlay(observation.id, audioUrl)
+            // No file name (media removed by storage cleanup) gives an empty
+            // URL, which the player reports in the banner rather than ignoring
+            audioTogglePlay(observation.id, getAudioUrl(observation.bird_song_file_name, observation.audio_sig))
         };
 
         const formatTimestamp = (dateString) => {
@@ -1095,18 +1149,25 @@ export default {
             isActivityUpdating.value = true
             try {
                 setActivityOrder(currentOrder())
-                await createTotalObsChart(totalObservationsChart, detailedBirdActivityData.value, { animate: true, title: null })
-                await createHeatmap(hourlyActivityHeatmap, detailedBirdActivityData.value, { animate: true, title: null, date: getLocalDateString() })
+                await redrawActivityCharts(true)
             } finally {
                 isActivityUpdating.value = false
             }
         }
 
+        // Redraw the two Activity Overview canvases from the species list
+        // sliced to the current tier — both canvases always get the same
+        // list, which keeps the heatmap and axis-link overlays in lockstep.
+        const redrawActivityCharts = async (animate = false) => {
+            const rows = detailedBirdActivityData.value.slice(0, viewportTier.value.activityRows)
+            await createTotalObsChart(totalObservationsChart, rows, { animate, title: null })
+            await createHeatmap(hourlyActivityHeatmap, rows, { animate, title: null, date: getLocalDateString() })
+        }
+
         // Redraw charts function using composable methods
         const redrawCharts = async (animate = false) => {
             initialLoad.value = false;
-            await createTotalObsChart(totalObservationsChart, detailedBirdActivityData.value, { animate, title: null });
-            await createHeatmap(hourlyActivityHeatmap, detailedBirdActivityData.value, { animate, title: null, date: getLocalDateString() });
+            await redrawActivityCharts(animate)
             await createHourlyChart(hourlyActivityChart, hourlyBirdActivityData.value, { animate });
         };
 
@@ -1114,7 +1175,7 @@ export default {
             locationConfigured,
             authGated,
             latestObservationData,
-            recentObservationsData,
+            visibleRecentObservations,
             currentSummaryPeriod,
             summaryPeriods,
             currentPeriodSummary,
@@ -1136,15 +1197,16 @@ export default {
             formatConfidence,
             showSpectrogram,
             hourlyBirdActivityData,
-            totalObservationsChart,
+            activityCharts,
+            activityRowsShown,
             speciesAxisLayout,
             timeAxisLayout,
-            hourlyActivityHeatmap,
             isDataEmpty,
             latestObservationIsPlaying,
             spectrogramCanvas,
             playLatestObservation,
             pauseLatestObservation,
+            latestPlaybackError,
             detailedBirdActivityError,
             latestObservationError,
             summaryError,
@@ -1152,6 +1214,8 @@ export default {
             hourlyBirdActivityError,
             togglePlayBirdCall,
             currentPlayingId,
+            audioError,
+            clearAudioError,
             latestObservationimageUrl,
             showLeastCommon,
             toggleActivityOrder,

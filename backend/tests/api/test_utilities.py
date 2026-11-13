@@ -94,26 +94,36 @@ class TestSettingsManagement:
 
     def test_save_user_settings_atomic(self):
         """Test atomic save of user settings."""
-        from core.settings_store import save_user_settings
+        from core import settings_store
 
-        test_settings = {'test': 'data'}
+        test_settings = {'display': {'station_name': 'Test station'}}
 
-        with patch('os.makedirs') as mock_makedirs:
-            with patch('builtins.open', mock_open()) as mock_file:
-                with patch('os.rename') as mock_rename:
-                    save_user_settings(test_settings)
+        with patch.object(settings_store, 'atomic_write_private_json') as mock_write:
+            settings_store.save_user_settings(test_settings)
 
-                    # Should create directory
-                    mock_makedirs.assert_called_once()
+        mock_write.assert_called_once_with(settings_store.USER_SETTINGS_PATH, test_settings)
 
-                    # Should write to temp file
-                    mock_file.assert_called()
-                    written_path = mock_file.call_args[0][0]
-                    assert written_path.endswith('.tmp')
+    def test_every_settings_writer_uses_one_transaction_lock(self):
+        """Every endpoint that replaces user_settings.json must hold the
+        shared lock across its complete read/modify/write transaction."""
+        from core.routes import auth as auth_routes
+        from core.routes import settings as settings_routes
 
-                    # Should rename temp file to final
-                    mock_rename.assert_called_once()
-                    assert mock_rename.call_args[0][1].endswith('user_settings.json')
+        writers = (
+            settings_routes.update_channel_setting,
+            settings_routes.update_units_setting,
+            settings_routes.update_time_format_setting,
+            settings_routes.update_playback_setting,
+            settings_routes.update_schedule_setting,
+            settings_routes.update_notification_settings,
+            settings_routes.update_settings,
+            auth_routes.save_access_settings,
+        )
+
+        assert all(
+            getattr(writer, '_serializes_settings_write', False)
+            for writer in writers
+        )
 
 
 class TestFlagFileWriting:

@@ -3,6 +3,7 @@ import {
   useServiceRestart,
   captureRestartBaseline,
   isUpdateFailedError,
+  managedWaitActive,
   requestRestart
 } from '@/composables/useServiceRestart'
 
@@ -14,6 +15,13 @@ const mockApi = vi.hoisted(() => ({
 
 vi.mock('@/services/api', () => ({
   default: mockApi
+}))
+
+// The readiness poll has its own suite (serviceReadiness.test.js). Here it
+// defaults to services already up, so the wait proceeds straight to reload.
+const mockWaitForServicesReady = vi.hoisted(() => vi.fn())
+vi.mock('@/utils/serviceReadiness', () => ({
+  waitForServicesReady: mockWaitForServicesReady
 }))
 
 // Mock useLogger
@@ -56,6 +64,7 @@ describe('useServiceRestart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
+    mockWaitForServicesReady.mockResolvedValue(true)
 
     // Mock window.location.reload
     originalLocation = window.location
@@ -172,7 +181,7 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 0 // Skip post-connect delay in tests
+      autoReload: false
     })
 
     expect(isRestarting.value).toBe(true)
@@ -182,6 +191,61 @@ describe('useServiceRestart', () => {
     await promise
 
     expect(isRestarting.value).toBe(false)
+  })
+
+  it('keeps isRestarting true through the reload window when autoReload is on', async () => {
+    // Clearing it before the reload lands lets the Settings banner chain
+    // fall through to "System update available" for the final second.
+    mockApi.get.mockResolvedValue(RESTARTED_SERVER)
+
+    const { isRestarting, restartMessage, waitForRestart } = useServiceRestart()
+
+    const promise = waitForRestart({
+      baseline: BASELINE,
+      initialDelay: 100,
+      pollInterval: 100,
+      autoReload: true
+    })
+
+    await vi.advanceTimersByTimeAsync(200)
+    await promise
+
+    expect(restartMessage.value).toBe('Reloading...')
+    expect(isRestarting.value).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(window.location.reload).toHaveBeenCalled()
+    expect(isRestarting.value).toBe(true)
+  })
+
+  it('flags managedWaitActive for the wait lifetime (suppresses the update overlay)', async () => {
+    mockApi.get.mockResolvedValue(RESTARTED_SERVER)
+
+    const { waitForRestart, reset } = useServiceRestart()
+    expect(managedWaitActive.value).toBe(false)
+
+    const promise = waitForRestart({
+      baseline: BASELINE,
+      initialDelay: 100,
+      pollInterval: 100,
+      autoReload: false
+    })
+    expect(managedWaitActive.value).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(200)
+    await promise
+    expect(managedWaitActive.value).toBe(false)
+
+    // Cancellation clears it too
+    const second = waitForRestart({
+      baseline: BASELINE,
+      initialDelay: 100,
+      pollInterval: 100
+    })
+    expect(managedWaitActive.value).toBe(true)
+    reset()
+    await expect(second).resolves.toBe(false)
+    expect(managedWaitActive.value).toBe(false)
   })
 
   it('probes /system/version and polls until the new instance responds', async () => {
@@ -196,7 +260,6 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 0, // Skip post-connect delay in tests
       autoReload: false
     })
 
@@ -233,7 +296,6 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 0,
       autoReload: true
     })
     promise.then(() => { settled = true })
@@ -271,6 +333,122 @@ describe('useServiceRestart', () => {
     expect(window.location.reload).not.toHaveBeenCalled()
   })
 
+  describe('update progress stages (progressUrl)', () => {
+    let fetchMock
+
+    beforeEach(() => {
+      fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    const stageResponse = message => ({
+      ok: true,
+      json: () => Promise.resolve({ stage: 'pull', message })
+    })
+
+    it('replaces the generic banner subject with the fetched stage message', async () => {
+      mockApi.get.mockRejectedValue(new Error('down for update'))
+      fetchMock.mockResolvedValue(stageResponse('Downloading updated images (1 of 3)'))
+
+      const { restartMessage, waitForRestart, reset } = useServiceRestart()
+      const promise = waitForRestart({
+        expect: 'update',
+        baseline: BASELINE,
+        initialDelay: 100,
+        pollInterval: 1000,
+        message: 'System updating',
+        progressUrl: '/update-progress'
+      })
+
+      // The stage poll is primed at wait start (before any timer fires), so
+      // a real stage lands as soon as the fetch resolves.
+      expect(fetchMock).toHaveBeenCalledWith('/update-progress', { cache: 'no-store' })
+      expect(restartMessage.value).toBe('System updating...')
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(restartMessage.value).toBe('Downloading updated images (1 of 3)...')
+
+      reset()
+      await expect(promise).resolves.toBe(false)
+    })
+
+    it('keeps the generic subject when the endpoint is missing or the fetch fails', async () => {
+      // Older stacks and the first update shipping this feature have no
+      // /update-progress; the SPA 404-fallback serves index.html with 404.
+      mockApi.get.mockRejectedValue(new Error('down for update'))
+      fetchMock
+        .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) })
+        .mockRejectedValue(new TypeError('Failed to fetch'))
+
+      const { restartMessage, waitForRestart, reset } = useServiceRestart()
+      const promise = waitForRestart({
+        expect: 'update',
+        baseline: BASELINE,
+        initialDelay: 100,
+        pollInterval: 1000,
+        message: 'System updating',
+        progressUrl: '/update-progress'
+      })
+
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(restartMessage.value).toBe('System updating...')
+
+      reset()
+      await expect(promise).resolves.toBe(false)
+    })
+
+    it('never fetches stages when no progressUrl is given', async () => {
+      mockApi.get.mockRejectedValue(new Error('down for update'))
+
+      const { waitForRestart, reset } = useServiceRestart()
+      const promise = waitForRestart({
+        expect: 'update',
+        baseline: BASELINE,
+        initialDelay: 100,
+        pollInterval: 1000,
+        message: 'System updating'
+      })
+
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(fetchMock).not.toHaveBeenCalled()
+
+      reset()
+      await expect(promise).resolves.toBe(false)
+    })
+
+    it('ignores a stage that lands after the wait has settled', async () => {
+      // The stage fetch is async, so a slow response can resolve once the
+      // banner has moved on — it must not overwrite the completion message.
+      let resolveStage
+      fetchMock.mockImplementationOnce(() => new Promise((resolve) => {
+        resolveStage = resolve
+      }))
+      mockApi.get.mockResolvedValue(UPDATED_SERVER)
+
+      const { restartMessage, waitForRestart } = useServiceRestart()
+      const promise = waitForRestart({
+        expect: 'update',
+        baseline: BASELINE,
+        initialDelay: 100,
+        autoReload: false,
+        message: 'System updating',
+        progressUrl: '/update-progress'
+      })
+
+      await vi.advanceTimersByTimeAsync(200)
+      await promise
+      expect(restartMessage.value).toBe('Services ready!')
+
+      resolveStage(stageResponse('Building images locally'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(restartMessage.value).toBe('Services ready!')
+    })
+  })
+
   describe('expect: update', () => {
     it('completes only when the commit changes, not on mere reachability', async () => {
       mockApi.get
@@ -284,7 +462,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -311,7 +488,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
       promise.then(() => { settled = true })
@@ -334,7 +510,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -360,7 +535,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -386,7 +560,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: true,
         failureMessage: 'Update failed notice'
       })
@@ -416,7 +589,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: true
       })
       const outcome = promise.catch(error => error)
@@ -442,7 +614,6 @@ describe('useServiceRestart', () => {
         baseline: { ...BASELINE, updateStatus: 'failed' },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -471,7 +642,6 @@ describe('useServiceRestart', () => {
         baseline: { ...BASELINE, updateStatus: 'failed' },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
       const outcome = promise.catch(error => error)
@@ -504,7 +674,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE, // updateStatus: 'pending' — the verified read-back
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: true
       })
       const outcome = promise.catch(error => error)
@@ -532,7 +701,6 @@ describe('useServiceRestart', () => {
         baseline: { ...BASELINE, updateStatus: null },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -556,7 +724,6 @@ describe('useServiceRestart', () => {
         baseline: { ...BASELINE, updateStatus: null },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -613,7 +780,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -639,7 +805,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
       promise.then(() => { settled = true })
@@ -664,7 +829,6 @@ describe('useServiceRestart', () => {
         baseline: { bootId: 'boot-old' },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -685,7 +849,6 @@ describe('useServiceRestart', () => {
         baseline: { bootId: 'boot-old' },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -708,7 +871,6 @@ describe('useServiceRestart', () => {
         baseline: BASELINE,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
       promise.then(() => { settled = true })
@@ -737,7 +899,6 @@ describe('useServiceRestart', () => {
         baseline: { bootId: 'boot-old' },
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
       promise.then(() => { settled = true })
@@ -765,7 +926,6 @@ describe('useServiceRestart', () => {
         baseline: null,
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
       promise.then(() => { settled = true })
@@ -792,7 +952,6 @@ describe('useServiceRestart', () => {
         baseline: { commit: 'commit-old' }, // no bootId
         initialDelay: 100,
         pollInterval: 100,
-        postConnectDelay: 0,
         autoReload: false
       })
 
@@ -811,14 +970,11 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 100, // Small delay for testing
       autoReload: true
     })
 
     // Initial delay + poll
     await vi.advanceTimersByTimeAsync(200)
-    // Post-connect delay
-    await vi.advanceTimersByTimeAsync(100)
     // Reload delay (1 second)
     await vi.advanceTimersByTimeAsync(1000)
 
@@ -836,7 +992,6 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 0, // Skip post-connect delay in tests
       autoReload: false
     })
 
@@ -847,35 +1002,36 @@ describe('useServiceRestart', () => {
     expect(window.location.reload).not.toHaveBeenCalled()
   })
 
-  it('waits postConnectDelay before completing', async () => {
-    mockApi.get.mockResolvedValue(RESTARTED_SERVER)
+  it('holds the banner subject steady during an update, with no elapsed counter', async () => {
+    // The banner changes only when the host reports a new stage. A ticking
+    // counter made a normal wait read as slow; the spinner beside the
+    // message already says "still working".
+    let resolveProbe
+    mockApi.get.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveProbe = resolve
+    }))
 
     const { restartMessage, waitForRestart } = useServiceRestart()
-
     const promise = waitForRestart({
+      expect: 'update',
       baseline: BASELINE,
       initialDelay: 100,
-      pollInterval: 100,
-      postConnectDelay: 500,
-      autoReload: false
+      autoReload: false,
+      message: 'System updating'
     })
 
-    // Initial delay + poll
-    await vi.advanceTimersByTimeAsync(200)
+    await vi.advanceTimersByTimeAsync(100)
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(restartMessage.value).toBe('System updating...')
 
-    // Should show "waiting for services" message
-    expect(restartMessage.value).toContain('Waiting')
-
-    // After post-connect delay
-    await vi.advanceTimersByTimeAsync(500)
-
+    resolveProbe(UPDATED_SERVER)
+    await vi.advanceTimersByTimeAsync(0)
     await promise
 
-    // Should show ready message
-    expect(restartMessage.value).toContain('ready')
+    expect(restartMessage.value).toBe('Services ready!')
   })
 
-  it('updates elapsed progress in five-second increments while a probe is pending', async () => {
+  it('holds the banner subject steady during a restart', async () => {
     let resolveProbe
     mockApi.get.mockImplementationOnce(() => new Promise((resolve) => {
       resolveProbe = resolve
@@ -885,27 +1041,18 @@ describe('useServiceRestart', () => {
     const promise = waitForRestart({
       baseline: BASELINE,
       initialDelay: 100,
-      postConnectDelay: 0,
       autoReload: false,
-      message: 'System updating'
+      message: 'Restarting services'
     })
 
     await vi.advanceTimersByTimeAsync(100)
-    await vi.advanceTimersByTimeAsync(4900)
-    expect(restartMessage.value).toBe('System updating... (5s)')
-
-    await vi.advanceTimersByTimeAsync(5000)
-    expect(restartMessage.value).toBe('System updating... (10s)')
-
-    await vi.advanceTimersByTimeAsync(5000)
-    expect(restartMessage.value).toBe('System updating... (15s)')
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(restartMessage.value).toBe('Restarting services...')
 
     resolveProbe(RESTARTED_SERVER)
     await vi.advanceTimersByTimeAsync(0)
     await promise
 
-    expect(restartMessage.value).toBe('Services ready!')
-    await vi.advanceTimersByTimeAsync(5000)
     expect(restartMessage.value).toBe('Services ready!')
   })
 
@@ -968,7 +1115,6 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 0,
       autoReload: false
     })
 
@@ -991,7 +1137,7 @@ describe('useServiceRestart', () => {
     })
 
     await vi.advanceTimersByTimeAsync(5000)
-    expect(restartMessage.value).toBe('Restarting services... (5s)')
+    expect(restartMessage.value).toBe('Restarting services...')
     const callsBeforeReset = mockApi.get.mock.calls.length
 
     reset()
@@ -1016,7 +1162,6 @@ describe('useServiceRestart', () => {
     const promise = waitForRestart({
       baseline: BASELINE,
       initialDelay: 100,
-      postConnectDelay: 0,
       autoReload: true
     })
 
@@ -1031,28 +1176,6 @@ describe('useServiceRestart', () => {
     expect(window.location.reload).not.toHaveBeenCalled()
   })
 
-  it('reset() during the post-connect wait cancels completion and auto-reload', async () => {
-    mockApi.get.mockResolvedValue(RESTARTED_SERVER)
-
-    const { restartMessage, waitForRestart, reset } = useServiceRestart()
-    const promise = waitForRestart({
-      baseline: BASELINE,
-      initialDelay: 100,
-      postConnectDelay: 10000,
-      autoReload: true
-    })
-
-    await vi.advanceTimersByTimeAsync(100) // probe succeeds; post-connect wait begins
-    expect(restartMessage.value).toBe('Waiting for services to initialize...')
-
-    reset()
-    await expect(promise).resolves.toBe(false)
-
-    await vi.advanceTimersByTimeAsync(20000)
-    expect(restartMessage.value).toBe('')
-    expect(window.location.reload).not.toHaveBeenCalled()
-  })
-
   it('reset() after a completed wait does not cancel the pending auto-reload', async () => {
     mockApi.get.mockResolvedValue(RESTARTED_SERVER)
 
@@ -1061,18 +1184,87 @@ describe('useServiceRestart', () => {
       baseline: BASELINE,
       initialDelay: 100,
       pollInterval: 100,
-      postConnectDelay: 0,
       autoReload: true
     })
 
     await vi.advanceTimersByTimeAsync(100)
-    // A zero-ms advance won't fire the already-queued 0ms post-connect
-    // completion timer; nudge the clock forward to run it.
-    await vi.advanceTimersByTimeAsync(1)
     await expect(promise).resolves.toBe(true)
 
     reset()
     await vi.advanceTimersByTimeAsync(1000)
     expect(window.location.reload).toHaveBeenCalled()
+  })
+
+  describe('service readiness phase', () => {
+    // Resolve the readiness wait by hand to assert what happens before/after.
+    let settleReadiness
+    let readinessOptions
+
+    beforeEach(() => {
+      mockWaitForServicesReady.mockImplementation(options => {
+        readinessOptions = options
+        return new Promise(resolve => { settleReadiness = resolve })
+      })
+    })
+
+    const startWait = (waitForRestart, overrides = {}) => waitForRestart({
+      baseline: BASELINE,
+      initialDelay: 100,
+      pollInterval: 100,
+      autoReload: true,
+      ...overrides
+    })
+
+    it('reloads only once the services report ready', async () => {
+      mockApi.get.mockResolvedValue(RESTARTED_SERVER)
+      const { restartMessage, waitForRestart } = useServiceRestart()
+      let settled = false
+      const promise = startWait(waitForRestart)
+      promise.then(() => { settled = true })
+
+      await vi.advanceTimersByTimeAsync(100)
+      expect(mockWaitForServicesReady).toHaveBeenCalledTimes(1)
+      expect(restartMessage.value).toBe('Waiting for services to initialize...')
+
+      // No fixed timer any more: nothing happens until readiness settles
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(settled).toBe(false)
+      expect(window.location.reload).not.toHaveBeenCalled()
+
+      settleReadiness(true)
+      await expect(promise).resolves.toBe(true)
+      expect(restartMessage.value).toBe('Reloading...')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(window.location.reload).toHaveBeenCalled()
+    })
+
+    it('shows which service is still starting', async () => {
+      mockApi.get.mockResolvedValue(RESTARTED_SERVER)
+      const { restartMessage, waitForRestart } = useServiceRestart()
+      startWait(waitForRestart)
+
+      await vi.advanceTimersByTimeAsync(100)
+      readinessOptions.onProgress('Loading the detection model')
+      expect(restartMessage.value).toBe('Loading the detection model...')
+    })
+
+    it('reset() during the readiness wait aborts it and never reloads', async () => {
+      mockApi.get.mockResolvedValue(RESTARTED_SERVER)
+      const { restartMessage, waitForRestart, reset } = useServiceRestart()
+      const promise = startWait(waitForRestart)
+
+      await vi.advanceTimersByTimeAsync(100)
+      reset()
+      expect(readinessOptions.signal.aborted).toBe(true)
+      await expect(promise).resolves.toBe(false)
+
+      // The helper resolves false once aborted; that must not resurrect the
+      // banner or reload
+      settleReadiness(false)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(restartMessage.value).toBe('')
+      expect(managedWaitActive.value).toBe(false)
+      expect(window.location.reload).not.toHaveBeenCalled()
+    })
   })
 })

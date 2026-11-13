@@ -11,8 +11,6 @@ import pytest
 # JPEG magic bytes (smallest valid JPEG header)
 JPEG_HEADER = b'\xff\xd8\xff\xe0' + b'\x00' * 100
 PNG_HEADER = b'\x89PNG' + b'\x00' * 100
-GIF_HEADER = b'GIF89a' + b'\x00' * 100
-WEBP_HEADER = b'RIFF' + b'\x00\x00\x00\x00' + b'WEBP' + b'\x00' * 100
 
 
 class TestBirdImageUpload:
@@ -682,6 +680,49 @@ class TestWikimediaCandidates:
         assert results['leader'][1] is None and results['follower'][1] is None
         assert results['leader'][0] == results['follower'][0]
 
+    def test_distinct_species_lookups_capped_at_three_in_flight(self, candidates_client):
+        """The gallery loads several cards at once; upstream concurrency stays <= 3."""
+        import threading as _threading
+        import time as _time
+
+        from core import bird_image_service as api_module
+        api_module.image_cache.clear()
+        api_module._wikimedia_inflight.clear()
+
+        state = {'active': 0, 'peak': 0}
+        state_lock = _threading.Lock()
+        upstream = _fake_wikimedia_get(
+            search_results=[{'title': 'File:Bird.jpg'}],
+            imageinfo_pages={'1': {
+                'title': 'File:Bird.jpg',
+                'imageinfo': [_imageinfo('https://upload.wikimedia.org/Bird.jpg')],
+            }},
+        )
+
+        def fake_get(*args, **kwargs):
+            with state_lock:
+                state['active'] += 1
+                state['peak'] = max(state['peak'], state['active'])
+            _time.sleep(0.05)
+            with state_lock:
+                state['active'] -= 1
+            return upstream(*args, **kwargs)
+
+        results = {}
+        def worker(name):
+            results[name] = api_module.fetch_wikimedia_candidates(name, limit=1)
+
+        names = [f'Species {i}' for i in range(8)]
+        with patch('core.bird_image_service.requests.get', side_effect=fake_get):
+            threads = [_threading.Thread(target=worker, args=(n,)) for n in names]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        assert state['peak'] <= 3
+        assert all(results[n][1] is None and results[n][0] for n in names)
+
 
 class TestWikimediaChoiceSidecar:
     """Test GET|PUT|DELETE /api/bird/<name>/wikimedia_choice."""
@@ -696,12 +737,6 @@ class TestWikimediaChoiceSidecar:
             finally:
                 for p in patches:
                     p.stop()
-
-    def test_get_returns_404_when_no_sidecar(self, choice_client):
-        client, _ = choice_client
-        response = client.get('/api/bird/American Robin/wikimedia_choice')
-        assert response.status_code == 404
-        assert response.get_json()['hasChoice'] is False
 
     def test_put_creates_sidecar(self, choice_client):
         client, images_dir = choice_client

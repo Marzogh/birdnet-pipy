@@ -1,8 +1,21 @@
 import { ref, computed } from 'vue'
-import api from '@/services/api'
+import api, { SLOW_QUERY_TIMEOUT } from '@/services/api'
 import { useLogger } from './useLogger'
 import { normalizeHour } from '@/utils/inputHelpers'
 import { ERR_UNREACHABLE, fetchErrorMessage } from '@/utils/errorMessages'
+
+// DELETE /detections/batch accepts at most this many ids per request
+// (backend/core/routes/detections.py); larger selections go in chunks.
+const BATCH_DELETE_MAX = 100
+
+// Why a delete request failed, for display: the server's own error when it
+// sent one (a maintenance 503's retry advice, a rejected request, a 500).
+// Only no reply at all, or a proxy's error page, reads as unreachable.
+function deleteErrorMessage(err) {
+  if (err.response?.status === 401) return 'Please log in to delete'
+  const message = err.response?.data?.error
+  return typeof message === 'string' && message ? message : ERR_UNREACHABLE
+}
 
 /**
  * Composable for managing paginated detection table data.
@@ -57,10 +70,17 @@ export function useTableData() {
     detections.value.every(d => selectedIds.value.has(d.id))
   )
 
+  // Monotonic fetch id, same latest-wins pattern as useFetchBirdData: with
+  // the generous SLOW_QUERY_TIMEOUT, a response for an abandoned query
+  // (filter/page/sort changed mid-flight) can land after the newer one and
+  // must not overwrite its results.
+  let fetchVersion = 0
+
   /**
    * Fetch detections from API with current filters and pagination.
    */
   async function fetchDetections() {
+    const myVersion = ++fetchVersion
     isLoading.value = true
     error.value = null
 
@@ -80,7 +100,8 @@ export function useTableData() {
 
         logger.info('Fetching detections', params)
 
-        const response = await api.get('/detections', { params })
+        const response = await api.get('/detections', { params, timeout: SLOW_QUERY_TIMEOUT })
+        if (myVersion !== fetchVersion) return // superseded by a newer fetch
         logger.api('GET', '/detections', params, response)
 
         detections.value = Array.isArray(response.data?.detections)
@@ -107,12 +128,15 @@ export function useTableData() {
         break
       }
     } catch (err) {
+      if (myVersion !== fetchVersion) return // stale failure — newer fetch owns the UI
       logger.error('Failed to fetch detections', err)
       error.value = fetchErrorMessage(err)
       detections.value = []
       totalItems.value = 0
     } finally {
-      isLoading.value = false
+      if (myVersion === fetchVersion) {
+        isLoading.value = false
+      }
     }
   }
 
@@ -126,7 +150,10 @@ export function useTableData() {
     actionError.value = null
 
     try {
-      const response = await api.delete(`/detections/${id}`)
+      // Deletes wait out the same post-restart SQLite busy window as reads;
+      // aborting client-side at the 15s default reports a false failure for
+      // a delete that then lands server-side (retry shows a confusing 404).
+      const response = await api.delete(`/detections/${id}`, { timeout: SLOW_QUERY_TIMEOUT })
       logger.api('DELETE', `/detections/${id}`, null, response)
 
       if (response.data?.status === 'deleted') {
@@ -143,13 +170,9 @@ export function useTableData() {
     } catch (err) {
       logger.error('Failed to delete detection', err)
 
-      if (err.response?.status === 401) {
-        actionError.value = 'Please log in to delete'
-      } else if (err.response?.status === 404) {
-        actionError.value = 'Detection not found'
-      } else {
-        actionError.value = ERR_UNREACHABLE
-      }
+      actionError.value = err.response?.status === 404
+        ? 'Detection not found'
+        : deleteErrorMessage(err)
       return false
     }
   }
@@ -202,7 +225,9 @@ export function useTableData() {
   }
 
   /**
-   * Delete all selected detections.
+   * Delete all selected detections, in chunks the batch endpoint accepts.
+   * Stops at the first failed request: whatever was already processed leaves
+   * the selection and the table refreshes, so a retry covers only the rest.
    * @returns {Promise<{success: boolean, deleted: number, failed: number}>}
    */
   async function deleteSelected() {
@@ -210,37 +235,58 @@ export function useTableData() {
       return { success: false, deleted: 0, failed: 0 }
     }
 
-    logger.info('Batch deleting detections', { count: selectedIds.value.size })
+    const ids = Array.from(selectedIds.value)
+    logger.info('Batch deleting detections', { count: ids.length })
     actionError.value = null
 
-    try {
-      const ids = Array.from(selectedIds.value)
-      const response = await api.delete('/detections/batch', { data: { ids } })
-      logger.api('DELETE', '/detections/batch', { ids }, response)
+    let deleted = 0
+    let failed = 0
+    let requestError = null
+    const processed = []
 
-      const { deleted, failed } = response.data
+    for (let i = 0; i < ids.length; i += BATCH_DELETE_MAX) {
+      const chunk = ids.slice(i, i + BATCH_DELETE_MAX)
+      try {
+        // Same slow budget as single deletes — see deleteDetection.
+        const response = await api.delete('/detections/batch', { data: { ids: chunk }, timeout: SLOW_QUERY_TIMEOUT })
+        logger.api('DELETE', '/detections/batch', { ids: chunk }, response)
+        deleted += response.data.deleted
+        failed += response.data.failed
+        processed.push(...chunk)
+      } catch (err) {
+        logger.error('Failed to batch delete detections', err)
+        // A maintenance 503 still lists what this chunk deleted before stopping
+        const partial = err.response?.data?.deleted_ids ?? []
+        deleted += partial.length
+        processed.push(...partial)
+        requestError = err
+        break
+      }
+    }
 
-      if (deleted > 0) {
-        logger.info('Batch deletion successful', { deleted, failed })
-        clearSelection()
+    if (requestError) {
+      if (processed.length > 0) {
+        const remaining = new Set(selectedIds.value)
+        processed.forEach(id => remaining.delete(id))
+        selectedIds.value = remaining
         await fetchDetections()
       }
-
-      if (failed > 0) {
-        actionError.value = `Deleted ${deleted}, but ${failed} failed`
-      }
-
-      return { success: deleted > 0, deleted, failed }
-    } catch (err) {
-      logger.error('Failed to batch delete detections', err)
-
-      if (err.response?.status === 401) {
-        actionError.value = 'Please log in to delete'
-      } else {
-        actionError.value = ERR_UNREACHABLE
-      }
-      return { success: false, deleted: 0, failed: selectedIds.value.size }
+      const reason = deleteErrorMessage(requestError)
+      actionError.value = deleted > 0 ? `Deleted ${deleted} of ${ids.length}. ${reason}` : reason
+      return { success: false, deleted, failed: ids.length - deleted }
     }
+
+    if (deleted > 0) {
+      logger.info('Batch deletion successful', { deleted, failed })
+      clearSelection()
+      await fetchDetections()
+    }
+
+    if (failed > 0) {
+      actionError.value = `Deleted ${deleted}, but ${failed} failed`
+    }
+
+    return { success: deleted > 0, deleted, failed }
   }
 
   /**

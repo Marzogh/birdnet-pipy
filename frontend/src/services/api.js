@@ -13,13 +13,30 @@ import { API_BASE } from '@/services/baseUrl'
 const DEFAULT_TIMEOUT = 15000
 const LONG_TIMEOUT = 300000
 
+// Budget for heavy read queries (dashboard aggregation, table fetches).
+// Right after a stack restart the first reads can legitimately wait out
+// main's backlog writes and WAL recovery (SQLite busy handling holds
+// readers up to 30s); the 15s default turns that bounded wait into a
+// dead view.
+export const SLOW_QUERY_TIMEOUT = 45000
+
 // Auth endpoints manage their own 401 semantics (bad password, setup-not-complete).
 // The session-expired flow should only fire for non-auth endpoints.
 const isAuthEndpoint = (url) => typeof url === 'string' && url.includes('/auth/')
 
-const authErrorHandler = (error) => {
+// Backend-unreachable shapes: nginx proxying to a dead upstream (502/504) or
+// no response at all (network error, timeout). May mean a native update has
+// the stack down — the update overlay listens and decides (it requires a
+// fresh /update-progress stage, so ordinary outages don't trigger it).
+const isServerUnreachable = (error) =>
+  !error.response || error.response.status === 502 || error.response.status === 504
+
+const responseErrorHandler = (error) => {
   if (error.response?.status === 401 && !isAuthEndpoint(error.config?.url)) {
     window.dispatchEvent(new CustomEvent('auth:required'))
+  }
+  if (isServerUnreachable(error)) {
+    window.dispatchEvent(new CustomEvent('api:unreachable'))
   }
   return Promise.reject(error)
 }
@@ -30,7 +47,7 @@ function createApiInstance(timeout) {
     timeout,
     headers: { 'Content-Type': 'application/json' }
   })
-  instance.interceptors.response.use((response) => response, authErrorHandler)
+  instance.interceptors.response.use((response) => response, responseErrorHandler)
   return instance
 }
 
@@ -48,4 +65,3 @@ export function createLongRequest(timeout = LONG_TIMEOUT) {
 }
 
 export default api
-export { api }

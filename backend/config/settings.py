@@ -8,6 +8,7 @@ from config.constants import (
     MODEL_SAMPLE_RATES,
     ModelType,
 )
+from core.secure_file import atomic_write_private_json
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,14 @@ DEFAULT_SETTINGS = {
         # (Settings → "Normalize Recording"); off by default. See GH #54.
         "normalize": False
     },
+    "schedule": {
+        # Quiet hours: a daily station-local window during which recording
+        # (and therefore detection) is paused. start > end wraps past
+        # midnight. Re-evaluated live by the main container every recorder
+        # tick — no restart. Keep this section top-level: schedule.* is
+        # hot-applied by classify_setting_changes, audio.* is not.
+        "quiet_hours": {"enabled": False, "start": "22:00", "end": "06:00"}
+    },
     "storage": {
         "auto_cleanup_enabled": True,
         "trigger_percent": 85,
@@ -62,6 +71,11 @@ DEFAULT_SETTINGS = {
         "keep_per_species": 60,
         "keep_recent_per_species": 16,
         "check_interval_minutes": 30,
+        # Scheduled cleanup policies (media-ownership design, pillar 1;
+        # 0 = disabled). Protections always win: every policy deletes only
+        # rows outside the keep_per_species / keep_recent_per_species sets.
+        "retention_days": 0,       # delete media older than N days, daily
+        "media_budget_gb": 0,      # keep total media at or under N GB, daily
         "media_target": "internal"
     },
     "updates": {
@@ -127,9 +141,9 @@ def _apply_model_aware_defaults(settings, user_data):
 def _write_user_settings_file(settings):
     """Persist a settings dict back to the user settings file (best effort)."""
     try:
-        os.makedirs(os.path.dirname(USER_SETTINGS_PATH), exist_ok=True)
-        with open(USER_SETTINGS_PATH, 'w') as f:
-            json.dump(settings, f, indent=2)
+        # Migrations run in every process and can recreate this file, so use
+        # the same private atomic writer as normal settings saves.
+        atomic_write_private_json(USER_SETTINGS_PATH, settings)
     except Exception as e:
         logger.warning(f"Failed to write settings during migration: {e}")
 
@@ -142,7 +156,7 @@ def _write_user_settings_file(settings):
 _SUPERSEDED_MIN_DBFS = (-120, -90)
 
 
-def _migrate_spectrogram_floor(settings, user_data):
+def _migrate_spectrogram_floor(settings, user_data, *, persist=True):
     """Reset a stale persisted spectrogram floor to the current default.
 
     Rewrites only the single min_dbfs key in the user file (not the full default
@@ -157,10 +171,11 @@ def _migrate_spectrogram_floor(settings, user_data):
     saved['min_dbfs'] = current_default
     logger.info("Reset stale spectrogram floor to current default",
                 extra={'min_dbfs': current_default})
-    _write_user_settings_file(user_data)
+    if persist:
+        _write_user_settings_file(user_data)
 
 
-def _migrate_audio_sources(settings):
+def _migrate_audio_sources(settings, *, persist=True):
     """Migrate old audio format (recording_mode/rtsp_url/rtsp_urls) to sources array.
 
     Detects old-format keys and converts them to the sources array format.
@@ -174,15 +189,8 @@ def _migrate_audio_sources(settings):
     has_old_keys = any(k in audio for k in old_keys)
 
     if not has_old_keys:
-        # Already migrated or fresh install — just ensure next_source_id
-        if 'sources' in audio and 'next_source_id' not in audio:
-            existing_ids = []
-            for s in audio['sources']:
-                try:
-                    existing_ids.append(int(s['id'].split('_', 1)[1]))
-                except (KeyError, IndexError, ValueError):
-                    pass
-            audio['next_source_id'] = max(existing_ids, default=-1) + 1
+        # Already migrated or fresh install (load_user_settings derives a
+        # missing next_source_id from the saved file itself)
         return
 
     sources = []
@@ -243,23 +251,40 @@ def _migrate_audio_sources(settings):
                 extra={'source_count': len(sources)})
 
     # Write migrated settings back to disk
-    _write_user_settings_file(settings)
+    if persist:
+        _write_user_settings_file(settings)
 
 
-def load_user_settings():
-    """Load user settings from JSON file, merged with defaults."""
+class SettingsUnreadable(ValueError):
+    """The saved settings file cannot be used at all; the message says why."""
+
+
+def load_user_settings(*, strict=False, persist_migrations=True):
+    """Load user settings from JSON file, merged with defaults.
+
+    A readable document always loads into one that passes every current
+    rule: values a rule no longer allows are repaired in place (and logged),
+    so a file an older version wrote never stops the station. Only shape
+    errors and unreadable files fail; with strict=False (the import-time
+    constants) those fall back to defaults, with strict=True they raise
+    SettingsUnreadable for the runtime readers to handle.
+    """
     defaults = get_default_settings()
 
     if os.path.exists(USER_SETTINGS_PATH):
         try:
             with open(USER_SETTINGS_PATH) as f:
                 user_data = json.load(f)
+                if not isinstance(user_data, dict):
+                    raise ValueError('Settings must be a JSON object')
                 for key in defaults:
                     if key in user_data:
                         if isinstance(defaults[key], dict):
                             if isinstance(user_data[key], dict):
                                 defaults[key].update(user_data[key])
                             else:
+                                if strict:
+                                    raise ValueError(f'{key} must be a JSON object')
                                 print(f"Settings: ignoring non-dict value for '{key}' (expected dict)")
                         else:
                             if isinstance(user_data[key], type(defaults[key])):
@@ -271,20 +296,46 @@ def load_user_settings():
 
                 # Reset a stale spectrogram floor before the audio migration so
                 # the audio migration's full write (if any) carries the fix too.
-                _migrate_spectrogram_floor(defaults, user_data)
+                _migrate_spectrogram_floor(defaults, user_data, persist=persist_migrations)
 
                 # Migrate old audio format to sources array
-                _migrate_audio_sources(defaults)
+                _migrate_audio_sources(defaults, persist=persist_migrations)
 
+                # Old documents may omit the ID allocator and nested defaults.
+                audio = defaults['audio']
+                source_ids = [int(s['id'].split('_')[1]) for s in audio.get('sources', [])
+                              if isinstance(s, dict) and isinstance(s.get('id'), str)
+                              and s['id'].startswith('source_') and s['id'][7:].isascii()
+                              and s['id'][7:].isdigit()]
+                if 'next_source_id' not in user_data.get('audio', {}):
+                    audio['next_source_id'] = max(source_ids, default=-1) + 1
+                for section, values in DEFAULT_SETTINGS.items():
+                    if isinstance(values, dict):
+                        defaults[section] = {k: v for k, v in defaults[section].items() if k in values}
+                schedule = defaults.get('schedule', {})
+                quiet = schedule.get('quiet_hours')
+                if isinstance(quiet, dict):
+                    schedule['quiet_hours'] = {**DEFAULT_SETTINGS['schedule']['quiet_hours'], **quiet}
+                from core.settings_validation import (
+                    repair_settings,
+                    validate_settings_shape,
+                )
+                error = validate_settings_shape(defaults)
+                if error:
+                    raise ValueError(error)
+                for repair in repair_settings(defaults):
+                    logger.warning(f"Settings: {repair}; using a valid value until the next save")
                 return defaults
         except Exception as e:
+            if strict:
+                raise SettingsUnreadable(f"Saved settings could not be read: {e}") from e
             print(f"Error loading user settings: {e}, using defaults")
 
     return defaults
 
 
 # Load settings on module import
-user_settings = load_user_settings()
+user_settings = load_user_settings(persist_migrations=False)
 
 # ── Services ──────────────────────────────────────────────────────────────────
 
@@ -323,7 +374,6 @@ LOCATION_FILTER_CACHE_SIZE = _get_positive_int_env('BIRDNET_LOCATION_CACHE_SIZE'
 # ── Audio ─────────────────────────────────────────────────────────────────────
 
 RECORDING_LENGTH = user_settings['audio']['recording_length']
-OVERLAP = user_settings['audio']['overlap']
 ANALYSIS_CHUNK_LENGTH = user_settings['audio']['recording_chunk_length']
 
 # Sample rate is determined by model, not user-configurable
@@ -332,13 +382,6 @@ try:
 except ValueError:
     SAMPLE_RATE = MODEL_SAMPLE_RATES[ModelType.BIRDNET]
 
-# ── Detection ─────────────────────────────────────────────────────────────────
-
-SENSITIVITY = user_settings['detection']['sensitivity']
-CUTOFF = user_settings['detection']['cutoff']
-ALLOWED_SPECIES = user_settings['species_filter']['allowed_species']
-BLOCKED_SPECIES = user_settings['species_filter']['blocked_species']
-
 # ── Location ──────────────────────────────────────────────────────────────────
 
 LAT = user_settings['location']['latitude']
@@ -346,41 +389,12 @@ LON = user_settings['location']['longitude']
 LOCATION_CONFIGURED = user_settings['location']['configured']
 TIMEZONE = user_settings['location']['timezone']
 
-
-def _is_valid_timezone(tz):
-    if not tz:
-        return False
-    try:
-        from zoneinfo import ZoneInfo
-        ZoneInfo(tz)
-        return True
-    except Exception:
-        return False
-
-
-LOCATION_READY = LOCATION_CONFIGURED and _is_valid_timezone(TIMEZONE)
-
 # ── BirdWeather ───────────────────────────────────────────────────────────────
 
 BIRDWEATHER_ID = user_settings['birdweather']['id']
 
-# ── Notifications ────────────────────────────────────────────────────────────
-
-NOTIFICATIONS_APPRISE_URLS = user_settings['notifications']['apprise_urls']
-NOTIFICATIONS_EVERY_DETECTION = user_settings['notifications']['every_detection']
-NOTIFICATIONS_RATE_LIMIT_SECONDS = user_settings['notifications']['rate_limit_seconds']
-NOTIFICATIONS_FIRST_OF_DAY = user_settings['notifications']['first_of_day']
-NOTIFICATIONS_RARE_SPECIES = user_settings['notifications']['rare_species']
-NOTIFICATIONS_RARE_THRESHOLD = user_settings['notifications']['rare_threshold']
-NOTIFICATIONS_RARE_WINDOW_DAYS = user_settings['notifications']['rare_window_days']
-NOTIFICATIONS_AUDIO_STATUS = user_settings['notifications']['audio_status']
-
 # ── Spectrogram ───────────────────────────────────────────────────────────────
 
-SPECTROGRAM_MAX_FREQ_IN_KHZ = user_settings['spectrogram']['max_freq_khz']
-SPECTROGRAM_MIN_FREQ_IN_KHZ = user_settings['spectrogram']['min_freq_khz']
-SPECTROGRAM_MAX_DBFS = user_settings['spectrogram']['max_dbfs']
-SPECTROGRAM_MIN_DBFS = user_settings['spectrogram']['min_dbfs']
 SPECTROGRAM_FONT_PATH = f'{BASE_DIR}/assets/Inter-Regular.ttf'
 
 # ── Storage ───────────────────────────────────────────────────────────────────
@@ -389,7 +403,6 @@ RECORDING_DIR = f'{BASE_DIR}/data/audio/recordings'
 EXTRACTED_AUDIO_DIR = f'{BASE_DIR}/data/audio/extracted_songs'
 SPECTROGRAM_DIR = f'{BASE_DIR}/data/spectrograms'
 CUSTOM_BIRD_IMAGES_DIR = f'{BASE_DIR}/data/bird_images'
-DEFAULT_AUDIO_PATH = f'{BASE_DIR}/assets/default_audio.mp3'
 DEFAULT_IMAGE_PATH = f'{BASE_DIR}/assets/default_spectrogram.webp'
 DATABASE_PATH = f'{BASE_DIR}/data/db/birds.db'
 LOGS_DIR = f'{BASE_DIR}/data/logs'

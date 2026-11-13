@@ -10,16 +10,29 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-import core.birdweather_service as bw_mod
-
 
 @pytest.fixture(autouse=True)
-def set_timezone():
+def set_timezone(monkeypatch):
     """Pin timezone to UTC for deterministic tests."""
-    with patch.object(bw_mod, 'get_timezone', return_value=ZoneInfo('UTC')), \
-         patch.object(bw_mod, 'local_now',
+    import core.birdweather_service as live
+    services = []
+    original_init = live.BirdWeatherService.__init__
+
+    def initialize(service, *args, **kwargs):
+        original_init(service, *args, **kwargs)
+        services.append(service)
+
+    monkeypatch.setattr(live.BirdWeatherService, '__init__', initialize)
+    monkeypatch.setattr(live, 'get_runtime_settings', lambda: {
+        'birdweather': {'id': live.BIRDWEATHER_ID},
+        'location': {'latitude': live.LAT, 'longitude': live.LON},
+    })
+    with patch.object(live, 'get_timezone', return_value=ZoneInfo('UTC')), \
+         patch.object(live, 'local_now',
                       return_value=datetime(2026, 1, 1, 12, 0, 0)):
         yield
+        for service in services:
+            service.stop()
 
 
 class TestBirdWeatherService:
@@ -306,6 +319,26 @@ class TestBirdWeatherService:
             assert payload['soundscapeStartTime'] == 0
             assert payload['soundscapeEndTime'] == 3.0
 
+    def test_disable_during_soundscape_upload_skips_detection_and_removes_clip(self, monkeypatch, tmp_path):
+        import core.birdweather_service as live
+        saved = {'birdweather': {'id': 'station'}}
+        monkeypatch.setattr(live, 'get_runtime_settings', lambda: saved)
+        monkeypatch.setattr(live.BirdWeatherService, '_worker_loop', lambda self: None)
+        service = live.BirdWeatherService('station')
+        clip = tmp_path / 'upload.flac'
+        clip.write_bytes(b'audio')
+
+        def upload(*args):
+            saved['birdweather']['id'] = None
+            return 'soundscape-id'
+
+        monkeypatch.setattr(service, '_upload_soundscape', upload)
+        detection_upload = MagicMock()
+        monkeypatch.setattr(service, '_upload_detection', detection_upload)
+        service._do_publish(self._create_test_detection(), str(clip), 3.0)
+        detection_upload.assert_not_called()
+        assert not clip.exists()
+
 
 class TestBirdWeatherServiceSingleton:
     """Test the get_birdweather_service singleton function."""
@@ -388,6 +421,31 @@ class TestBirdWeatherServiceWorker:
         import core.birdweather_service as bws
         bws._birdweather_service = None
 
+    def test_stop_wakes_the_idle_worker_instead_of_waiting_out_its_poll(self):
+        """A station change restarts the service on the main thread, so stop()
+        must not sit out the worker's 1s queue poll."""
+        from core.birdweather_service import BirdWeatherService
+        with patch('core.birdweather_service.BIRDWEATHER_ID', 'test-station-123'):
+            service = BirdWeatherService('test-station-123')
+            time.sleep(0.05)  # let the worker enter its queue poll
+
+            started = time.monotonic()
+            service.stop()
+
+            assert not service._worker.is_alive()
+            assert time.monotonic() - started < 0.5
+
+    def test_stop_after_the_worker_exited_skips_the_unconsumed_wake_up(self):
+        from core.birdweather_service import BirdWeatherService
+        # The worker exits on its own when the configured station differs
+        service = BirdWeatherService('another-station')
+        service._worker.join(timeout=2)
+
+        service.stop()  # queues a wake-up nothing will consume
+        service.stop()  # drains it along with any real items
+
+        assert not service._worker.is_alive()
+
     def test_worker_processes_queue_items(self):
         """Test that worker thread processes queued items."""
         with patch('core.birdweather_service.BIRDWEATHER_ID', 'test-station-123'), \
@@ -466,6 +524,7 @@ class TestBirdWeatherServiceWorker:
     def test_queue_full_drops_upload(self):
         """Test that uploads are dropped when queue is full."""
         with patch('core.birdweather_service.BIRDWEATHER_ID', 'test-station-123'), \
+             patch('core.birdweather_service.BirdWeatherService._worker_loop', lambda self: self._stop_event.wait()), \
              patch('core.birdweather_service.subprocess.run') as mock_run, \
              patch('core.birdweather_service.BIRDWEATHER_QUEUE_MAXSIZE', 1), \
              patch('os.path.exists', return_value=True), \

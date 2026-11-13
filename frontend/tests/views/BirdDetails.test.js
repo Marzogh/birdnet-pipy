@@ -78,9 +78,7 @@ const mockBirdDetails = {
   total_visits: 50,
   first_detected: '2024-01-01T10:00:00',
   last_detected: '2024-01-15T14:30:00',
-  average_confidence: 0.85,
-  peak_activity_time: '06:00',
-  seasonality: 'Year-round'
+  peak_activity_time: '06:00'
 }
 
 const mockImageData = {
@@ -541,6 +539,19 @@ describe('BirdDetails Chart Resize', () => {
     window.innerWidth = 1024
     window.innerHeight = 768
     vi.restoreAllMocks()
+  })
+
+  it('destroys its chart when the page is left', async () => {
+    const wrapper = mountComponent()
+    await flushPromises()
+
+    const chart = chartMockState.instances.at(-1)
+    expect(chart.destroyed).toBe(false)
+
+    // Must happen while the canvas ref is still set (onBeforeUnmount): by
+    // onUnmounted Vue has cleared it and the instance would be left registered.
+    wrapper.unmount()
+    expect(chart.destroy).toHaveBeenCalledTimes(1)
   })
 
   it('updates tick density in place on resize without refetching or rebuilding the chart', async () => {

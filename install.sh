@@ -77,6 +77,9 @@ UPDATE_MODE=false
 TARGET_BRANCH=""  # Target branch for install/update (default: main for install, current for update)
 NO_REBOOT=false   # Skip reboot prompt (for testing)
 SKIP_BUILD=false  # Skip Docker image build (for testing)
+WEB_PORT=""       # Host port for the web interface (--port; empty = keep existing .env value or default 80)
+INSTALL_USER=""   # Account to install for (--user; lets automation run as root without sudo)
+UNATTENDED=false  # No one at the keyboard (--unattended, e.g. an image's first-boot service)
 
 # ============================================================================
 # Logging Functions
@@ -110,17 +113,36 @@ check_root() {
         exit 1
     fi
 
-    # Check if running as direct root (not via sudo)
-    if [ "$EUID" -eq 0 ] && [ -z "$SUDO_USER" ]; then
+    # Direct root (not via sudo) can't tell whose install this is, unless
+    # --user names the account (automation such as a first-boot service)
+    if [ -z "$SUDO_USER" ] && [ -z "$INSTALL_USER" ]; then
         print_error "Please run this script with sudo, not as direct root"
         print_info "Example: sudo ./install.sh"
+        print_info "Automation running as root: pass --user NAME"
+        exit 1
+    fi
+}
+
+# --user must name an existing regular account: the service runs as it and
+# the pre-built images expect its UID, so neither root nor a typo can stand in
+validate_install_user() {
+    [ -n "$INSTALL_USER" ] || return 0
+
+    if ! id -u "$INSTALL_USER" &> /dev/null; then
+        print_error "--user: no account named '$INSTALL_USER'"
+        exit 1
+    fi
+    if [ "$(id -u "$INSTALL_USER")" -eq 0 ]; then
+        print_error "--user must be a regular account, not root"
         exit 1
     fi
 }
 
 # Get the actual user (not root when using sudo)
 get_actual_user() {
-    if [ -n "$SUDO_USER" ]; then
+    if [ -n "$INSTALL_USER" ]; then
+        echo "$INSTALL_USER"
+    elif [ -n "$SUDO_USER" ]; then
         echo "$SUDO_USER"
     else
         echo "$USER"
@@ -193,7 +215,12 @@ show_usage() {
     echo "Options:"
     echo "  --update             Update existing installation (git sync + build + config)"
     echo "  --branch BRANCH      Target branch (default: main for install, current for update)"
+    echo "  --port PORT          Host port for the web interface (default: 80, remembered across updates)"
     echo "  --no-reboot          Skip automatic reboot after installation (for testing)"
+    echo "  --unattended         For automation with no one at the keyboard (e.g. a"
+    echo "                       first-boot service): never prompts or reboots"
+    echo "  --user NAME          Install for this account; lets automation run as root"
+    echo "                       without sudo"
     echo "  --skip-build         Skip Docker image build (for testing)"
     echo "  --help               Show this help message"
     echo ""
@@ -203,6 +230,9 @@ show_usage() {
     echo ""
     echo "  # Install from staging branch (latest features)"
     echo "  curl -fsSL https://raw.githubusercontent.com/Suncuss/BirdNET-PiPy/main/install.sh | sudo bash -s -- --branch staging"
+    echo ""
+    echo "  # Install with the web interface on port 8080 (port 80 already taken)"
+    echo "  curl -fsSL https://raw.githubusercontent.com/Suncuss/BirdNET-PiPy/main/install.sh | sudo bash -s -- --port 8080"
     echo ""
     echo "  # Update existing installation"
     echo "  sudo ./install.sh --update"
@@ -587,6 +617,45 @@ set_env_var() {
     echo "${key}=${value}" >> "$env_file"
 }
 
+# Validate a --port value: an integer in 1-65535 that doesn't collide with
+# the loopback ports the backend services already publish (see docker-compose.yml).
+validate_web_port() {
+    local port="$1"
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        print_error "Invalid --port value '$port' (expected a number between 1 and 65535)"
+        return 1
+    fi
+    case "$port" in
+        5001|5002|8888)
+            print_error "Port $port is already used internally by BirdNET-PiPy services"
+            return 1
+            ;;
+    esac
+}
+
+# Record the web port in .env so docker-compose publishes the frontend there.
+# .env is untracked, so the choice survives updates (git reset doesn't touch it).
+persist_web_port() {
+    local port="$1"
+    # Warn-only: the port may be held by a service that won't be there after
+    # reboot — or by our own still-running frontend during an update.
+    if command -v ss >/dev/null 2>&1 \
+        && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+        print_warning "Port $port appears to be in use; if another service owns it, the web interface will fail to start"
+    fi
+    set_env_var "BIRDNET_WEB_PORT" "$port"
+    print_status "Web interface port set to $port"
+}
+
+# Effective web port: this run's --port, else the persisted .env value, else 80.
+effective_web_port() {
+    local port="$WEB_PORT"
+    if [ -z "$port" ] && [ -f "$PROJECT_ROOT/.env" ]; then
+        port=$(grep -E '^BIRDNET_WEB_PORT=' "$PROJECT_ROOT/.env" | tail -1 | cut -d= -f2 || true)
+    fi
+    echo "${port:-80}"
+}
+
 # Free disk space before an update fetch/build without removing runnable images.
 # This is update-only on purpose: installs can start clean, while updates need to
 # preserve existing images for failure recovery if the new pull/build does not finish.
@@ -619,7 +688,8 @@ prune_docker_before_update() {
 }
 
 # Try to pull pre-built images from GHCR, fall back to local build.
-# Skips pull for non-ARM64, non-release branches, and non-1000 UID systems.
+# Skips pull for unsupported architectures, non-release branches, and
+# non-1000 UID systems.
 pull_or_build() {
     # -C: fresh installs call this without cd-ing into the repo first, so don't
     # rely on the caller's working directory for git context.
@@ -643,10 +713,14 @@ pull_or_build() {
         return $?
     fi
 
-    # Pre-built images are ARM64 only (Raspberry Pi target)
+    # Pre-built images cover ARM64 (Raspberry Pi) and AMD64 via multi-arch
+    # manifests; anything else (e.g. 32-bit armv7l) builds locally. Older
+    # commits published ARM64-only tags — pulling one of those on AMD64
+    # fails with "no matching manifest" and falls back to a local build
+    # through the normal pull-failure path.
     local arch
     arch=$(uname -m)
-    if [ "$can_pull" = true ] && [ "$arch" != "aarch64" ]; then
+    if [ "$can_pull" = true ] && [ "$arch" != "aarch64" ] && [ "$arch" != "x86_64" ]; then
         print_status "Architecture $arch has no pre-built images, building locally..."
         can_pull=false
     fi
@@ -663,8 +737,8 @@ pull_or_build() {
     fi
 
     # Check if the image build workflow completed for this commit. Captured here
-    # (not at the top) so the skip-build / non-ARM / non-1000-UID fast paths above
-    # don't run an unused git call that set -e could trip on.
+    # (not at the top) so the skip-build / unsupported-arch / non-1000-UID fast
+    # paths above don't run an unused git call that set -e could trip on.
     local commit
     commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
     local api_response
@@ -686,7 +760,11 @@ pull_or_build() {
         local pull_ok=true
         local max_retries=3
         local attempt
+        local pull_index=0
         for img in "${pull_images[@]}"; do
+            pull_index=$((pull_index + 1))
+            # Counters only, not image names: /update-progress is public
+            write_update_progress "pull" "Pulling the latest images from GHCR ($pull_index of ${#pull_images[@]})"
             for attempt in $(seq 1 $max_retries); do
                 if sudo -u "$ACTUAL_USER" docker pull "$img"; then
                     break
@@ -729,6 +807,7 @@ build_application() {
 
     print_status "Building BirdNET-PiPy application..."
     print_status "Building as user $ACTUAL_USER (UID:$ACTUAL_UID, GID:$ACTUAL_GID)..."
+    write_update_progress "build" "Building images locally"
 
     cd "$PROJECT_ROOT"
     chmod +x build.sh
@@ -761,6 +840,16 @@ refresh_version_info() {
     return 0
 }
 
+# Owner-only mode on the config files: they hold RTSP camera credentials,
+# Apprise notification URLs and the station coordinates. New writes get 0600
+# from the app itself; this repairs installs that predate that. Deliberately
+# separate from fix_data_permissions so the update path can call it without
+# also running a recursive chown over a data/ directory that can reach tens of
+# gigabytes.
+fix_config_permissions() {
+    chmod 600 "$PROJECT_ROOT"/data/config/*.json 2>/dev/null || true
+}
+
 # Fix existing data folder permissions
 fix_data_permissions() {
     print_status "Setting up data directory permissions..."
@@ -769,6 +858,8 @@ fix_data_permissions() {
     mkdir -p "$PROJECT_ROOT/data/flags"
 
     chown -R "$ACTUAL_USER:$ACTUAL_USER" "$PROJECT_ROOT/data"
+    fix_config_permissions
+
     print_status "Data permissions fixed for user $ACTUAL_USER"
 }
 
@@ -783,11 +874,16 @@ create_service_file() {
 Description=BirdNET-PiPy Bird Detection Service
 Documentation=https://github.com/Suncuss/BirdNET-PiPy
 After=docker.service network.target
-Requires=docker.service
+# Wants (not Requires): ghost-container recovery in birdnet-service.sh stops
+# and restarts the Docker daemon, and a Requires= dependency would make that
+# stop propagate back and kill the service mid-recovery (deadlocking until
+# systemd's stop timeout).
+Wants=docker.service
 
-# Rate limiting: max 5 restarts in 5 minutes to prevent infinite loops
-StartLimitBurst=5
-StartLimitIntervalSec=300
+# Never stop retrying: this is an appliance, and a start failure that
+# outlasts a burst limit (slow daemon, transient corruption) must not leave
+# the station dead until someone reboots it. RestartSec paces the retries.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -800,7 +896,7 @@ StandardError=journal
 # Auto-restart on any exit (crash recovery + update support)
 # After a successful update, the service exits and systemd restarts it with new code
 Restart=always
-RestartSec=10
+RestartSec=30
 
 # Graceful shutdown (90s for slow systems like Pi Zero)
 TimeoutStopSec=90
@@ -858,6 +954,15 @@ $ACTUAL_USER ALL=(ALL) NOPASSWD: $(_bin rm) -f /run/pulse/pid
 # Enable swap (optional, only if /swapfile-birdnet-pipy exists)
 $ACTUAL_USER ALL=(ALL) NOPASSWD: $(_bin swapon) /swapfile-birdnet-pipy
 
+# Ghost-container surgery, used at most once per boot: stops Docker, removes
+# corrupted container records, starts it again (see docker-ghost-heal.sh and
+# recover_ghost_containers in birdnet-service.sh)
+$ACTUAL_USER ALL=(ALL) NOPASSWD: $PROJECT_ROOT/deployment/docker-ghost-heal.sh *
+
+# Start a stopped Docker daemon (recovery from an interrupted ghost heal;
+# see ensure_docker_running in birdnet-service.sh)
+$ACTUAL_USER ALL=(ALL) NOPASSWD: $(_bin systemctl) start docker.socket docker.service
+
 # System update via install.sh --update (with optional --branch)
 $ACTUAL_USER ALL=(ALL) NOPASSWD: $PROJECT_ROOT/install.sh --update
 $ACTUAL_USER ALL=(ALL) NOPASSWD: $PROJECT_ROOT/install.sh --update --branch *
@@ -889,24 +994,48 @@ EOF
 
 # Record update pipeline state (in_progress/success/failed) for the frontend:
 # /api/system/version surfaces it so the restart poll can distinguish a failed
-# update (old code restarted) from one still in progress. Best-effort — a
-# status write must never fail the update. Remove-then-recreate because the
-# existing file may be owned by the API container user while we run as root
-# (and vice versa); only the directory needs to be writable.
+# update (old code restarted) from one still in progress.
 write_update_status() {
+    write_flag_file "update-status" "$1"
+}
+
+# Shared flag-file plumbing: ensure the flags dir exists (kept writable by the
+# API container user, which also writes flags here), then remove-then-recreate
+# — the existing file may be owned by the API container user while we run as
+# root (and vice versa); only the directory needs to be writable. Best-effort:
+# a flag write must never fail the update. $1 = flag name, $2 = content.
+write_flag_file() {
     local flags_dir="$PROJECT_ROOT/data/flags"
     if [ ! -d "$flags_dir" ]; then
         mkdir -p "$flags_dir" 2>/dev/null || true
-        # Keep the dir writable by the API container user, which also writes flags here
         chown "$ACTUAL_USER:$ACTUAL_USER" "$flags_dir" 2>/dev/null || true
     fi
-    rm -f "$flags_dir/update-status" 2>/dev/null || true
-    echo "$1" > "$flags_dir/update-status" 2>/dev/null || true
+    rm -f "$flags_dir/$1" 2>/dev/null || true
+    echo "$2" > "$flags_dir/$1" 2>/dev/null || true
+}
+
+# Record a coarse stage for the frontend's update banner. During a native
+# update the frontend nginx container is kept running (see perform_update) and
+# serves data/flags/update-progress at /update-progress, so the SPA can show
+# real stages ("Pulling the latest images from GHCR (2 of 3)") instead of one static
+# message for the whole outage. Served UNAUTHENTICATED — callers must
+# pass only fixed public-safe strings and counters, never branch names, paths,
+# or command output. No-op outside update mode: fresh installs share
+# pull_or_build/build_application but have nothing serving the file.
+# The banner shows `message`; the boot-time overlay (useUpdateOverlay) also
+# checks `timestamp` so a leftover file can't pose as a live update. `stage`
+# is on-disk debugging only. $1 = stage id, $2 = human-readable message.
+write_update_progress() {
+    [ "$UPDATE_MODE" = true ] || return 0
+    write_flag_file "update-progress" \
+        "$(printf '{"stage":"%s","message":"%s","timestamp":"%s"}' \
+            "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
 }
 
 # Helper function to restart containers on failure during update
 restart_containers_on_failure() {
     write_update_status "failed"
+    write_update_progress "failed" "Update failed, restarting the previous version"
     print_status "Restarting containers with current code..."
     cd "$PROJECT_ROOT"
     docker compose up -d || true
@@ -923,6 +1052,12 @@ perform_update() {
     cd "$PROJECT_ROOT"
     local update_warnings=false
 
+    # Apply a requested port change before any containers are (re)created —
+    # including the failure path's fallback docker compose up
+    if [ -n "$WEB_PORT" ]; then
+        persist_web_port "$WEB_PORT"
+    fi
+
     # Determine target branch: explicit > current > main
     local target_branch="${TARGET_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
     if [ "$target_branch" = "HEAD" ]; then
@@ -931,17 +1066,33 @@ perform_update() {
     print_status "Target branch: $target_branch"
 
     write_update_status "in_progress"
+    write_update_progress "stopping" "Stopping services"
 
-    # Step 1: Stop containers so Docker artifacts are unused and can be pruned safely
-    print_status "Stopping containers..."
-    docker compose down || true
+    # Step 1: Stop containers so Docker artifacts are unused and can be pruned
+    # safely — except the frontend: nginx (a few MB) keeps serving the
+    # already-loaded SPA and /update-progress through the long pull/build
+    # phase, and is recreated with the new image by the post-update service
+    # restart. The service list comes from the CURRENT compose file — the same
+    # one these containers were created from (git sync happens later). If the
+    # selective stop can't run, fall back to the old full teardown: a dark
+    # site during the update is the pre-progress-banner baseline, while a
+    # backend container left running through git reset would not be safe.
+    print_status "Stopping containers (keeping frontend up for update progress)..."
+    local stop_services
+    stop_services=$(docker compose config --services 2>/dev/null | grep -vx frontend || true)
+    # An empty list (config failed) makes rm target all services — the full
+    # teardown that case wants anyway.
+    # shellcheck disable=SC2086  # word-splitting the service list is intended
+    docker compose rm -sf $stop_services || docker compose down || true
 
     # Step 2: Reclaim Docker disk space before any git/pull/build work
+    write_update_progress "cleanup" "Cleaning up disk space"
     prune_docker_before_update
 
     # Step 3: Fetch target branch with explicit refspec
     # This ensures origin/$target_branch is created even in shallow/single-branch clones
     print_status "Fetching latest code..."
+    write_update_progress "fetch" "Fetching the latest code from GitHub"
     if ! git fetch origin "+refs/heads/$target_branch:refs/remotes/origin/$target_branch" 2>&1; then
         print_error "Git fetch failed - branch '$target_branch' may not exist on remote"
         restart_containers_on_failure
@@ -971,6 +1122,7 @@ perform_update() {
         fi
 
         print_status "Refreshing system configurations..."
+        write_update_progress "configure" "Refreshing system configuration"
         configure_pulseaudio
         create_service_file
         install_service
@@ -978,6 +1130,7 @@ perform_update() {
         # Same-commit outcome: the frontend's update poll can't see a commit
         # change here, so the explicit success status is its completion signal
         write_update_status "success"
+        write_update_progress "restarting" "Restarting services"
         print_status "Restarting containers..."
         docker compose up -d || true
         print_status "Update complete (no code changes)"
@@ -996,6 +1149,8 @@ perform_update() {
 
     # Step 5: Sync to target branch (checkout + reset)
     print_status "Syncing to origin/$target_branch..."
+    # No stage write here: checkout+reset takes seconds, so the banner keeps
+    # the fetch stage's message until the pull/build stage replaces it.
 
     # Check if local branch exists
     if git show-ref --verify --quiet "refs/heads/$target_branch"; then
@@ -1033,18 +1188,21 @@ perform_update() {
         exit 1
     fi
 
-    # The update itself has landed: new images are built/pulled (and in the
-    # local-build path build.sh has already deployed them). Written BEFORE the
-    # config refresh below so an unguarded set -e death in Step 7 cannot get
-    # stamped 'failed' by the service wrapper while the new code is serving.
+    # The update itself has landed: the repo is synced and the new images are
+    # pulled/built (deployment happens at the post-update service restart).
+    # Written BEFORE the config refresh below so an unguarded set -e death in
+    # Step 7 cannot get stamped 'failed' by the service wrapper after the
+    # update work already succeeded.
     write_update_status "success"
 
     # Step 7: Update system configurations (root operations)
     print_status "Updating system configurations..."
+    write_update_progress "configure" "Updating system configuration"
     configure_pulseaudio
     create_service_file
     install_service
     setup_sudoers
+    fix_config_permissions
 
     # Step 8: Success - exit for systemd restart
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1054,6 +1212,9 @@ perform_update() {
     fi
     print_status "Exiting to restart service with updated code..."
     print_status "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # Last stage the old frontend can serve: the service restart takes it down
+    # and birdnet-service.sh clears the progress file once the new stack is up.
+    write_update_progress "restarting" "Restarting services with the new version"
 
     exit 0
 }
@@ -1151,13 +1312,23 @@ show_completion_message() {
     hostname=$(hostname)
     local ip_addr
     ip_addr=$(hostname -I | awk '{print $1}')
-    echo "  http://${hostname}.local"
-    [ -n "$ip_addr" ] && echo "  http://${ip_addr}"
+    # Non-default web port (this run's --port or a persisted earlier choice)
+    # must appear in the URLs
+    local port_suffix=""
+    local web_port
+    web_port=$(effective_web_port)
+    [ "$web_port" != "80" ] && port_suffix=":${web_port}"
+    echo "  http://${hostname}.local${port_suffix}"
+    [ -n "$ip_addr" ] && echo "  http://${ip_addr}${port_suffix}"
     echo ""
 }
 
 # Reboot system after installation
 prompt_reboot() {
+    if [ "$UNATTENDED" = true ]; then
+        print_status "Reboot skipped (--unattended: the caller decides when to reboot)"
+        return 0
+    fi
     if [ "$NO_REBOOT" = true ]; then
         print_status "Reboot skipped (--no-reboot flag)"
         return 0
@@ -1187,6 +1358,13 @@ main() {
                 TARGET_BRANCH="$2"
                 shift 2
                 ;;
+            --port)
+                if ! validate_web_port "${2:-}"; then
+                    exit 1
+                fi
+                WEB_PORT="$2"
+                shift 2
+                ;;
             --help)
                 show_usage
                 exit 0
@@ -1194,6 +1372,18 @@ main() {
             --no-reboot)
                 NO_REBOOT=true
                 shift
+                ;;
+            --unattended)
+                UNATTENDED=true
+                shift
+                ;;
+            --user)
+                if [ -z "${2:-}" ]; then
+                    print_error "--user requires an account name"
+                    exit 1
+                fi
+                INSTALL_USER="$2"
+                shift 2
                 ;;
             --skip-build)
                 SKIP_BUILD=true
@@ -1207,9 +1397,16 @@ main() {
         esac
     done
 
+    # Nothing may wait on a prompt no one will answer (apt/debconf, git credentials)
+    if [ "$UNATTENDED" = true ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        export GIT_TERMINAL_PROMPT=0
+    fi
+
     # Platform and permission checks
     detect_platform
     check_root
+    validate_install_user
 
     # Compute actual user details once (used by all functions below)
     init_user_vars
@@ -1238,7 +1435,10 @@ main() {
         # Save arguments to pass through (array preserves quoting)
         ARGS=()
         [ -n "$TARGET_BRANCH" ] && ARGS+=(--branch "$TARGET_BRANCH")
+        [ -n "$WEB_PORT" ] && ARGS+=(--port "$WEB_PORT")
         [ "$NO_REBOOT" = true ] && ARGS+=(--no-reboot)
+        [ "$UNATTENDED" = true ] && ARGS+=(--unattended)
+        [ -n "$INSTALL_USER" ] && ARGS+=(--user "$INSTALL_USER")
         [ "$SKIP_BUILD" = true ] && ARGS+=(--skip-build)
         reexec_from_clone "${ARGS[@]}"
         # Script exits here (exec replaces process)
@@ -1247,6 +1447,11 @@ main() {
     # Stage 2: Local installation (from cloned repo)
     print_status "Running in local mode (installing from: $PROJECT_ROOT)"
     echo ""
+
+    # Record the requested web port before anything builds or starts containers
+    if [ -n "$WEB_PORT" ]; then
+        persist_web_port "$WEB_PORT"
+    fi
 
     # Docker setup
     if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then

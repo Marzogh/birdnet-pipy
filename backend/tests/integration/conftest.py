@@ -6,8 +6,8 @@ from global state and external services.
 """
 import os
 import tempfile
-from queue import Queue
-from unittest.mock import Mock, patch
+import wave
+from unittest.mock import Mock
 
 import pytest
 
@@ -19,27 +19,6 @@ def temp_recording_dir():
     """Create a temporary directory for test recordings."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield tmpdir
-
-
-@pytest.fixture
-def mock_config_settings(temp_recording_dir):
-    """Mock configuration settings for testing."""
-    extracted_dir = os.path.join(temp_recording_dir, 'extracted')
-    spectrogram_dir = os.path.join(temp_recording_dir, 'spectrograms')
-    os.makedirs(extracted_dir, exist_ok=True)
-    os.makedirs(spectrogram_dir, exist_ok=True)
-
-    settings = {
-        'RECORDING_DIR': temp_recording_dir,
-        'RECORDING_LENGTH': 9,
-        'EXTRACTED_AUDIO_DIR': extracted_dir,
-        'SPECTROGRAM_DIR': spectrogram_dir,
-        'BIRDNET_SERVER_ENDPOINT': 'http://birdnet:5001/api/analyze_audio_file',
-        'ANALYSIS_CHUNK_LENGTH': 3,
-        'API_PORT': 5002,
-        'SAMPLE_RATE': 48000
-    }
-    return settings
 
 
 @pytest.fixture
@@ -78,8 +57,9 @@ def create_test_wav_file(temp_recording_dir):
 
     def _create_file(filename, size_bytes):
         file_path = os.path.join(temp_recording_dir, filename)
-        with open(file_path, 'wb') as f:
-            f.write(b'\x00' * size_bytes)
+        with wave.open(file_path, 'wb') as f:
+            f.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
+            f.writeframes(b'\x00' * size_bytes)
         created_files.append(file_path)
         return file_path
 
@@ -92,12 +72,6 @@ def create_test_wav_file(temp_recording_dir):
                 os.remove(f)
             except OSError:
                 pass
-
-
-@pytest.fixture
-def fresh_file_queue():
-    """Provide a fresh empty queue for each test."""
-    return Queue()
 
 
 @pytest.fixture
@@ -119,23 +93,6 @@ def mock_detection_with_metadata():
         'sensitivity': 0.75,
         'overlap': 0.25
     }
-
-
-@pytest.fixture
-def mock_utils_functions():
-    """Pre-configured mocks for all utils functions."""
-    with patch('core.main.select_audio_chunks') as mock_select, \
-         patch('core.main.extract_audio_segment') as mock_extract, \
-         patch('core.main.generate_spectrogram') as mock_spec:
-
-        # Returns (start_chunk, end_chunk) inclusive - represents 3 chunks (0, 1, 2)
-        mock_select.return_value = (0, 2)
-
-        yield {
-            'select_audio_chunks': mock_select,
-            'extract_audio_segment': mock_extract,
-            'generate_spectrogram': mock_spec
-        }
 
 
 @pytest.fixture
@@ -193,8 +150,9 @@ def create_valid_wav_file(temp_recording_dir):
         # 48000 Hz * 2 bytes (16-bit) * duration
         size_bytes = 48000 * 2 * duration_seconds
         file_path = os.path.join(temp_recording_dir, filename)
-        with open(file_path, 'wb') as f:
-            f.write(b'\x00' * size_bytes)
+        with wave.open(file_path, 'wb') as f:
+            f.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
+            f.writeframes(b'\x00' * size_bytes)
         return file_path
 
     return _create_file
@@ -312,18 +270,3 @@ def mock_recorder():
     recorder.stop.return_value = None
     recorder.restart.return_value = None
     return recorder
-
-
-@pytest.fixture
-def mock_threads():
-    """Mock thread objects for shutdown testing."""
-    recording_thread = Mock()
-    processing_thread = Mock()
-    recording_thread.is_alive.return_value = False
-    processing_thread.is_alive.return_value = False
-    recording_thread.join.return_value = None
-    processing_thread.join.return_value = None
-    return {
-        'recording': recording_thread,
-        'processing': processing_thread
-    }

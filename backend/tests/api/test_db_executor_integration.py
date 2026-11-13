@@ -88,9 +88,9 @@ class FailingExecutor:
 
 class _TimingOutJob:
     def result(self, timeout=None):
-        # Mirrors what _GeventJob.result() must do when AsyncResult.get()
-        # raises gevent.Timeout — translate to a TimeoutError so the
-        # `except Exception` blocks downstream actually fire.
+        # Mirrors _LaneJob.result() hitting its deadline — it raises
+        # TimeoutError (never gevent.Timeout) so the `except Exception`
+        # blocks downstream actually fire.
         raise TimeoutError("simulated db job timeout")
 
 
@@ -178,7 +178,9 @@ def test_dashboard_summary_is_submitted_to_executor(
         response = api_client.get('/api/dashboard/summary?period=week')
 
         assert response.status_code == 200
-        assert ('submit', '_build_summary_period_payload') in recorder.calls
+        # builder renamed: the versioned wrapper carries the rollup
+        # revision captured inside the job (implementation review fix 4)
+        assert ('submit', '_build_versioned_summary_payload') in recorder.calls
     finally:
         obs_module.invalidate_dashboard_cache()
 
@@ -391,7 +393,7 @@ def test_failed_compute_clears_inflight(api_client, monkeypatch):
 def test_db_job_timeout_clears_inflight_and_returns_500(api_client, monkeypatch):
     """gevent.Timeout used to slip past `except Exception`, leaving the
     dashboard inflight slot pointing at a dead job until the next
-    invalidation. _GeventJob.result() now translates it to TimeoutError;
+    invalidation. _LaneJob.result() raises TimeoutError instead;
     confirm the dashboard handler treats that like any other failure."""
     from core.routes import observations as obs_module
 
@@ -476,7 +478,12 @@ def test_broadcast_detection_expires_dashboard_and_today_only(
         import core.api_infra as api_infra
         monkeypatch.setattr(api_infra, 'db_executor', recorder)
         assert api_client.get('/api/dashboard/summary?period=week').status_code == 200
-        assert recorder.calls == []
+        # Warm hit: no summary recompute. The single get_rollup_revision
+        # read is the designed cross-process cache validation (a rollup
+        # revision bump in EITHER container must invalidate cached
+        # payloads regardless of remaining TTL).
+        assert [c for c in recorder.calls
+                if c[1] != 'get_rollup_revision'] == []
         assert api_client.get('/api/dashboard').status_code == 200
         assert ('submit', '_build_dashboard_payload') in recorder.calls
     finally:

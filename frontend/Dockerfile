@@ -1,6 +1,8 @@
 # Multi-stage build - builds frontend inside Docker
 # Stage 1: Build the Vue.js application
-FROM node:24-alpine AS builder
+# Pin multi-platform indexes so upstream rebuilds happen only when deliberately
+# updated, while preserving native AMD64 and ARM64 builds.
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS builder
 
 WORKDIR /app
 
@@ -18,7 +20,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Serve with nginx
-FROM nginx:stable-alpine
+FROM nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
