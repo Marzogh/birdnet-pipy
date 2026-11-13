@@ -104,6 +104,15 @@ BirdNET-PiPy can store recordings, extracted clips, and spectrograms in one
 explicitly configured host directory. The database and application settings
 remain in `./data`.
 
+Use **ext4** for an external drive on the Raspberry Pi. The current media
+writer requires hard links to publish completed clips safely; **FAT32 and
+exFAT do not support this and are not suitable**. Other filesystems have not
+been validated for this feature. The drive must be mounted read/write and
+writable by the BirdNET-PiPy service user. BirdNET-PiPy does not format drives.
+
+See the [filesystem feature comparison](https://learn.microsoft.com/en-us/windows/win32/fileio/filesystem-functionality-comparison)
+for FAT32/exFAT hard-link limitations.
+
 1. Mount the drive on the host and create a directory that the BirdNET-PiPy
    service user can write to:
 
@@ -141,6 +150,12 @@ it also restores the progress display if the page is refreshed.
 
 The move checks free space and verifies copies before saving the new location
 and removing originals. The database and settings file stay in `./data`.
+
+Space-based automatic cleanup removes media only from the filesystem that
+needs space. Media on other drives and the existing per-species protections
+are preserved. Age-based retention and media-budget settings keep their
+existing behavior.
+
 A media move alone does not require a container restart. Other saved changes
 that need one continue through the normal restart flow.
 
