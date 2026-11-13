@@ -7,7 +7,8 @@ from config.settings import BASE_DIR
 
 SNAPSHOT_PATH = os.path.join(BASE_DIR, 'data/flags/storage-devices.json')
 MAX_AGE_SECONDS = 60
-_SYSTEM_MOUNTS = {'/', '/boot', '/boot/firmware'}
+_SYSTEM_MOUNTS = {'/', '/boot', '/boot/firmware', '/boot/efi', '[SWAP]'}
+_PROTECTED_ROLES = ('application', 'database', 'settings')
 
 
 def _nodes(device):
@@ -16,7 +17,40 @@ def _nodes(device):
         yield from _nodes(child)
 
 
-def describe_devices(blockdevices):
+def preparation_eligibility(nodes, protected_filesystems):
+    """Assess the current inventory only; this does not authorize an action."""
+    mounts = {mount for node in nodes for mount in (node.get('mountpoints') or []) if mount}
+    identities = {node['maj:min'] for node in nodes if node.get('maj:min')}
+    protected_filesystems = protected_filesystems or {}
+    roles = [role for role in _PROTECTED_ROLES
+             if identities.intersection(protected_filesystems.get(role, set()))]
+    if _SYSTEM_MOUNTS.intersection(mounts):
+        return False, 'System drive'
+    if roles:
+        return False, 'Contains BirdNET ' + ' and '.join(roles)
+    if any(node.get('ro') in (True, 1, '1') for node in nodes):
+        return False, 'Read-only drive'
+    if int(nodes[0].get('size') or 0) <= 0:
+        return False, 'No media detected'
+    if (not all(node.get('maj:min') for node in nodes)
+            or not all(protected_filesystems.get(role) for role in _PROTECTED_ROLES)):
+        return None, 'Eligibility unknown'
+    return True, 'Eligible for preparation'
+
+
+def _protected_filesystems(snapshot):
+    result = {}
+    for role in _PROTECTED_ROLES:
+        reports = snapshot.get('protected', {}).get(role, [])
+        if not reports or any(not report or not report.get('filesystems') for report in reports):
+            continue
+        identities = [entry.get('maj:min') for report in reports for entry in report['filesystems']]
+        if all(identities):
+            result[role] = set(identities)
+    return result
+
+
+def describe_devices(blockdevices, protected_filesystems=None):
     """Select USB disks and NVMe/SATA/SAS SSDs, retaining mount metadata."""
     drives = []
     for disk in blockdevices:
@@ -30,6 +64,7 @@ def describe_devices(blockdevices):
         mounts = sorted({mount for node in nodes for mount in (node.get('mountpoints') or []) if mount})
         filesystems = sorted({node['fstype'] for node in nodes if node.get('fstype')})
         path = disk.get('path') or '/dev/' + disk['name']
+        eligible, eligibility_reason = preparation_eligibility(nodes, protected_filesystems)
         drives.append({
             'path': path,
             'name': (disk.get('model') or disk.get('label') or disk['name']).strip(),
@@ -40,6 +75,8 @@ def describe_devices(blockdevices):
             'mounted': bool(mounts),
             'system_drive': bool(_SYSTEM_MOUNTS.intersection(mounts)),
             'read_only': disk.get('ro') in (True, 1, '1'),
+            'preparation_eligible': eligible,
+            'eligibility_reason': eligibility_reason,
         })
     return sorted(drives, key=lambda drive: drive['path'])
 
@@ -53,7 +90,8 @@ def get_storage_devices():
             return {'state': 'unavailable', 'devices': [],
                     'message': 'Drive discovery is not updating.'}
         return {'state': 'available', 'updated_at': updated_at,
-                'devices': describe_devices(payload['blockdevices'])}
+                'devices': describe_devices(
+                    payload.get('inventory', payload)['blockdevices'], _protected_filesystems(payload))}
     except FileNotFoundError:
         return {'state': 'unavailable', 'devices': [],
                 'message': 'Drive discovery is not available on this installation.'}

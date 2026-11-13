@@ -421,7 +421,13 @@
                   {{ drive.name }} · {{ formatDriveSize(drive.size_bytes) }}
                 </dt>
                 <dd class="text-xs text-gray-500">
-                  {{ drive.path }} · {{ drive.connection }} · {{ drive.filesystems.join(', ') || 'Unknown format' }} · {{ drive.mounted ? 'Mounted' : 'Not mounted' }}<span v-if="drive.system_drive"> · System drive</span><span v-if="drive.read_only"> · Read-only</span>
+                  {{ drive.path }} · {{ drive.connection }} · {{ drive.filesystems.join(', ') || 'Unknown format' }} · {{ drive.mounted ? 'Mounted' : 'Not mounted' }}<span v-if="!drive.eligibility_reason && drive.system_drive"> · System drive</span><span v-if="!drive.eligibility_reason && drive.read_only"> · Read-only</span>
+                </dd>
+                <dd
+                  v-if="drive.eligibility_reason"
+                  class="text-xs text-gray-600"
+                >
+                  {{ drive.eligibility_reason }}
                 </dd>
               </div>
             </dl>

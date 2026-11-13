@@ -441,7 +441,8 @@ describe('Settings', () => {
         ? Promise.resolve({ data: { state: 'available', devices: [{
             path: '/dev/sda', name: 'USB SSD', size_bytes: 500000000000,
             connection: 'USB', filesystems: ['exfat'], mounted: false,
-            system_drive: false, read_only: false
+            system_drive: false, read_only: false,
+            preparation_eligible: false, eligibility_reason: 'Contains BirdNET database'
           }] } })
         : defaultGetResponse(url))
       const wrapper = mountSettings()
@@ -453,6 +454,7 @@ describe('Settings', () => {
       await flushPromises()
       expect(details.text()).toContain('USB SSD · 500 GB')
       expect(details.text()).toContain('/dev/sda · USB · exfat · Not mounted')
+      expect(details.text()).toContain('Contains BirdNET database')
       expect(details.findAll('button')).toHaveLength(0)
       expect(mockApi.put).not.toHaveBeenCalled()
       expect(mockApi.post).not.toHaveBeenCalled()

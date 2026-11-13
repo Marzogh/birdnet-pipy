@@ -103,7 +103,16 @@ cd ~/BirdNET-PiPy && sudo ./install.sh --update --branch staging
 **Settings → Storage → Connected drives** lists USB drives and SSDs detected
 by the Linux host, including model, capacity, filesystem and mount status.
 The list is read-only: discovering a drive does not mount it, format it or
-make it a media storage location. System drives are labelled in the list.
+make it a media storage location. It labels whether each drive is eligible
+for preparation. System/boot/swap drives, read-only drives, and drives holding
+BirdNET's application, database or settings are excluded. If the protected
+storage or drive identity cannot be confirmed, it shows **Eligibility unknown**.
+
+Protected storage is identified from the running API container's mount mappings
+and the host filesystem identities, including separate database/settings mounts.
+Only mount metadata is inspected; container environment variables are not read.
+The label describes the current inventory and does not authorize formatting.
+Any future formatting action must recheck eligibility against current devices.
 
 The existing `birdnet-pipy` host service refreshes this inventory every
 15 seconds using `lsblk`. The app receives a metadata snapshot through its
