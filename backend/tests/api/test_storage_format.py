@@ -77,3 +77,15 @@ def test_preview_does_not_start_a_job(api_client, formatter):
     jobs, payload = formatter
     assert api_client.post('/api/system/storage/format-dry-run', json=payload).status_code == 200
     assert not jobs.format_pending()
+
+
+def test_completion_includes_current_media_choices(api_client, formatter, monkeypatch):
+    jobs, _ = formatter
+    current = {'targets': [{'id': '/managed-media/synthetic', 'label': 'BIRDSTORE synthetic'}]}
+    monkeypatch.setattr('core.routes.system.get_media_storage_status', lambda: current)
+    (jobs.FLAGS / 'storage-format-status.json').write_text(json.dumps({
+        'state': 'complete', 'id': 'synthetic-job', 'message': 'Drive formatted and mounted.',
+    }))
+    response = api_client.get('/api/system/storage/format-status')
+    assert response.status_code == 200
+    assert response.json['media_storage'] == current

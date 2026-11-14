@@ -38,7 +38,8 @@ describe('Format drive confirmation', () => {
       path: '/dev/sda', device_id: 'synthetic-device', confirmation: 'BIRDSTORE'
     })
     expect(wrapper.emitted('started')[0][0]).toEqual({ id: 'synthetic-job', state: 'queued' })
-    expect(wrapper.text()).toContain('No restart needed.')
+    expect(wrapper.text()).toContain('Formatting drive')
+    expect(wrapper.find('progress').exists()).toBe(true)
   })
 
   it('shows a rejected request without reporting a started job', async () => {
@@ -55,5 +56,43 @@ describe('Format drive confirmation', () => {
     const wrapper = mountDialog()
     await wrapper.get('dialog').trigger('cancel')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+})
+
+
+describe('Format drive progress', () => {
+  it('keeps drive identity and progress visible through mounting and completion', async () => {
+    const wrapper = mountDialog()
+    await wrapper.get('input').setValue('BIRDSTORE')
+    await wrapper.findAll('button').find(button => button.text() === 'Erase and format').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('dialog').attributes('open')).toBeDefined()
+    expect(wrapper.text()).toContain('BIRDSTORE · 500 GB')
+    expect(wrapper.text()).toContain('/dev/sda')
+    expect(wrapper.get('progress').attributes('value')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('Erase and format')
+    await wrapper.setProps({ progress: { id: 'synthetic-job', state: 'mounting', message: 'Mounting formatted drive…' } })
+    expect(wrapper.get('[role="status"]').text()).toContain('Mounting formatted drive…')
+    expect(wrapper.find('progress').exists()).toBe(true)
+    await wrapper.setProps({ progress: { id: 'synthetic-job', state: 'complete', message: 'Drive formatted and mounted. Select it under Media storage.' } })
+    expect(wrapper.text()).toContain('Drive ready')
+    expect(wrapper.text()).toContain('Select it under Media storage.')
+    expect(wrapper.find('progress').exists()).toBe(false)
+    expect(wrapper.emitted('close')).toBeUndefined()
+    await wrapper.findAll('button').find(button => button.text() === 'Done').trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('keeps a job failure visible and does not offer to erase again', async () => {
+    const wrapper = mountDialog()
+    await wrapper.get('input').setValue('BIRDSTORE')
+    await wrapper.findAll('button').find(button => button.text() === 'Erase and format').trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ progress: { id: 'synthetic-job', state: 'failed', message: 'Drive formatted, but mounting failed.' } })
+    expect(wrapper.text()).toContain('Formatting failed')
+    expect(wrapper.get('[role="alert"]').text()).toContain('Drive formatted, but mounting failed.')
+    expect(wrapper.text()).not.toContain('Erase and format')
+    expect(wrapper.find('progress').exists()).toBe(false)
+    expect(wrapper.emitted('close')).toBeUndefined()
   })
 })

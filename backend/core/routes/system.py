@@ -9,6 +9,8 @@ import os
 import time
 
 import requests
+from flask import jsonify, request
+
 from core import api_infra as infra
 from core.api_infra import _run_db, api
 from core.api_utils import handle_api_errors
@@ -35,7 +37,6 @@ from core.update_service import (
     should_show_update_note,
     write_flag,
 )
-from flask import jsonify, request
 
 logger = get_logger(__name__)
 
@@ -79,7 +80,10 @@ def get_connected_storage():
 @handle_api_errors
 def get_drive_format_status():
     from core.storage_format import format_status
-    return jsonify(format_status())
+    status = format_status()
+    if status['state'] == 'complete':
+        status['media_storage'] = get_media_storage_status()
+    return jsonify(status)
 
 
 @api.route('/api/system/storage/format', methods=['POST'])

@@ -1748,6 +1748,7 @@
       v-if="selectedFormatDrive"
       :drive="selectedFormatDrive"
       :size-label="formatDriveSize(selectedFormatDrive.size_bytes)"
+      :progress="formatProgress"
       @close="selectedFormatDrive = null"
       @started="formatStarted"
     />
@@ -1900,6 +1901,7 @@ export default {
     // Storage state
     const storage = ref(null)
     const mediaStorageStatus = ref(null)
+    let mediaTargetsRequest = 0
     const driveDiscovery = ref(null)
     const selectedFormatDrive = ref(null)
     const formatProgress = ref(null)
@@ -1910,13 +1912,21 @@ export default {
         const { data } = await api.get('/system/storage/format-status')
         if (viewStopped) return
         const wasActive = formatActive.value
+        if (data.state === 'complete') {
+          if (data.media_storage) {
+            // A pre-format request must not replace the mounted drive list.
+            mediaTargetsRequest += 1
+            mediaStorageStatus.value = data.media_storage
+          } else {
+            await loadMediaTargets()
+          }
+        }
         formatProgress.value = data
         if (['complete', 'failed'].includes(data.state)) {
           clearInterval(formatTimer)
           formatTimer = null
           if (wasActive) showStatus(data.state === 'complete' ? 'success' : 'error', data.message)
           loadConnectedDrives()
-          if (data.state === 'complete') loadMediaTargets()
         } else if (formatActive.value && !formatTimer) {
           formatTimer = setInterval(pollFormat, 2000)
         }
@@ -1925,7 +1935,6 @@ export default {
       }
     }
     const formatStarted = (job) => {
-      selectedFormatDrive.value = null
       formatProgress.value = job
       clearInterval(formatTimer)
       formatTimer = setInterval(pollFormat, 2000)
@@ -2323,9 +2332,10 @@ export default {
 
     // Load storage info
     const loadMediaTargets = async () => {
+      const requestId = ++mediaTargetsRequest
       try {
         const { data } = await api.get('/system/media-targets')
-        mediaStorageStatus.value = data
+        if (!viewStopped && requestId === mediaTargetsRequest) mediaStorageStatus.value = data
       } catch (error) {
         console.error('Error loading media targets:', error)
       }

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Improved drive formatting feedback with a persistent progress dialog and an automatically refreshed media storage dropdown after completion.
+
 - Changed drive formatting to start only for a confirmed request and exit when finished, removing idle helper launches and heartbeat writes.
 
 - Fixed missing drive-formatting support after updating an existing installation. Host setup is completed automatically before containers start.

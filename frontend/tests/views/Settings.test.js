@@ -519,6 +519,61 @@ describe('Settings', () => {
       vi.useRealTimers()
     })
 
+    it('keeps the formatting dialog open until the user dismisses the result', async () => {
+      vi.useFakeTimers()
+      let status = { state: 'idle' }
+      mockApi.get.mockImplementation(url => url === '/system/storage/format-status'
+        ? Promise.resolve({ data: status }) : defaultGetResponse(url))
+      mockApi.post.mockResolvedValue({ data: { id: 'modal-job', state: 'queued', message: 'Waiting for formatting…' } })
+      const wrapper = mountSettings()
+      document.body.appendChild(wrapper.element)
+      await flushPromises()
+      wrapper.vm.openFormatConfirmation({ name: 'BIRDSTORE', path: '/dev/sda', device_id: 'synthetic', size_bytes: 500000000000, preparation_eligible: true })
+      await flushPromises()
+      await wrapper.get('dialog input').setValue('BIRDSTORE')
+      await wrapper.get('dialog').findAll('button').find(button => button.text() === 'Erase and format').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('dialog').text()).toContain('Formatting drive')
+      expect(wrapper.get('dialog progress').exists()).toBe(true)
+      status = { id: 'modal-job', state: 'complete', message: 'Drive formatted and mounted.', media_storage: {
+        targets: [{ id: '/managed-media/ssd', label: 'BIRDSTORE SSD', available: true }]
+      } }
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushPromises()
+      expect(wrapper.get('dialog').text()).toContain('Drive ready')
+      expect(wrapper.get('#mediaStorageTarget').text()).toContain('BIRDSTORE SSD')
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(wrapper.get('dialog').text()).toContain('Drive formatted and mounted.')
+      await wrapper.get('dialog').findAll('button').find(button => button.text() === 'Done').trigger('click')
+      expect(wrapper.find('dialog').exists()).toBe(false)
+      vi.useRealTimers()
+    })
+
+    it('keeps freshly mounted media choices when an older request finishes late', async () => {
+      vi.useFakeTimers()
+      const staleResponses = []
+      let status = { state: 'idle' }
+      mockApi.get.mockImplementation(url => {
+        if (url === '/system/media-targets') return new Promise(resolve => staleResponses.push(resolve))
+        if (url === '/system/storage/format-status') return Promise.resolve({ data: status })
+        return defaultGetResponse(url)
+      })
+      const wrapper = mountSettings()
+      await flushPromises()
+      expect(staleResponses.length).toBeGreaterThan(0)
+      wrapper.vm.formatStarted({ id: 'fresh-job', state: 'queued' })
+      status = { id: 'fresh-job', state: 'complete', message: 'Drive formatted and mounted.', media_storage: {
+        targets: [{ id: '/managed-media/ssd', label: 'BIRDSTORE SSD', available: true }]
+      } }
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushPromises()
+      expect(wrapper.get('#mediaStorageTarget').text()).toContain('BIRDSTORE SSD')
+      staleResponses.forEach(resolve => resolve({ data: { targets: [] } }))
+      await flushPromises()
+      expect(wrapper.get('#mediaStorageTarget').text()).toContain('BIRDSTORE SSD')
+      vi.useRealTimers()
+    })
+
     it('loads and displays available media storage targets', async () => {
       let moveQueued = false
       const movedSettings = createMockSettings()
