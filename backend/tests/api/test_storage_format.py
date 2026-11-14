@@ -17,6 +17,7 @@ def formatter(api_client, tmp_path, monkeypatch):
     monkeypatch.setattr(discovery, 'get_storage_devices', lambda: {'state': 'available', 'devices': [
         {'path': '/dev/sda', 'device_id': 'synthetic', 'name': 'BIRDSTORE', 'size_bytes': 500000000000,
          'preparation_eligible': True}]})
+    (tmp_path / 'storage-format-available').touch()
     (tmp_path / 'storage-format-status.json').write_text(json.dumps(
         {'state': 'idle', 'ready': True, 'updated_at': time.time()}))
     return jobs, {'path': '/dev/sda', 'device_id': 'synthetic', 'confirmation': 'BIRDSTORE'}
@@ -46,6 +47,33 @@ def test_auth_disabled_installation_cannot_format(api_client, formatter, monkeyp
 def test_unavailable_helper_or_wrong_confirmation_cannot_queue(api_client, formatter):
     jobs, payload = formatter
     assert api_client.post('/api/system/storage/format', json=dict(payload, confirmation='wrong')).status_code == 400
-    (jobs.FLAGS / 'storage-format-status.json').unlink()
+    (jobs.FLAGS / 'storage-format-available').unlink()
     assert api_client.post('/api/system/storage/format', json=payload).status_code == 503
+    assert not jobs.format_pending()
+
+
+def test_availability_does_not_expire_or_write_heartbeats(api_client, formatter):
+    jobs, _ = formatter
+    status = jobs.FLAGS / 'storage-format-status.json'
+    status.write_text(json.dumps({'state': 'complete', 'updated_at': 0, 'id': 'old-job'}))
+    before = status.stat().st_mtime_ns
+    for _ in range(3):
+        result = api_client.get('/api/system/storage/format-status')
+        assert result.status_code == 200
+        assert result.json['ready'] is True
+        assert result.json['state'] == 'complete'
+    assert status.stat().st_mtime_ns == before
+
+
+def test_first_request_is_queued_before_helper_writes_progress(api_client, formatter):
+    jobs, payload = formatter
+    (jobs.FLAGS / 'storage-format-status.json').unlink()
+    response = api_client.post('/api/system/storage/format', json=payload)
+    assert response.status_code == 202
+    assert api_client.get('/api/system/storage/format-status').json['state'] == 'queued'
+
+
+def test_preview_does_not_start_a_job(api_client, formatter):
+    jobs, payload = formatter
+    assert api_client.post('/api/system/storage/format-dry-run', json=payload).status_code == 200
     assert not jobs.format_pending()

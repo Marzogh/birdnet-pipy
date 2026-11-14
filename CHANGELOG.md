@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed drive formatting to start only for a confirmed request and exit when finished, removing idle helper launches and heartbeat writes.
+
 - Fixed missing drive-formatting support after updating an existing installation. Host setup is completed automatically before containers start.
 
 - Added a species summary API for detection counts and first/last timestamps over a date range or all history, respecting station public visibility.

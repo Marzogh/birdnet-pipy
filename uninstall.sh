@@ -203,6 +203,10 @@ remove_service() {
 remove_sudoers() {
     print_status "Removing host drive formatter and mount service..."
     systemctl disable --now birdnet-media-mounts.service || true
+    systemctl disable --now birdnet-storage-format.path || true
+    systemctl stop birdnet-storage-format.service || true
+    rm -f /etc/systemd/system/birdnet-storage-format.path /etc/systemd/system/birdnet-storage-format.service
+    rm -f "$SCRIPT_DIR/data/flags/storage-format-available"
     rm -f /etc/systemd/system/birdnet-media-mounts.service
     systemctl daemon-reload
     rm -f /usr/local/libexec/birdnet-pipy/storage_mounts.py

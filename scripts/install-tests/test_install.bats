@@ -708,11 +708,36 @@ for name in (\"api\", \"main\", \"model-server\"):
     assert mount[\"bind\"][\"propagation\"] == \"rslave\"
 '"
     [ "$status" -eq 0 ]
-    run sudo -u testuser sudo -n /usr/local/libexec/birdnet-pipy/storage-format.py
+    assert_service_enabled birdnet-storage-format.path
+    assert_file_exists "$PROJECT_DIR/data/flags/storage-format-available"
+    # No helper has run just to advertise availability.
+    [ "$(systemctl show birdnet-storage-format.service -p ExecMainStartTimestampMonotonic --value)" = 0 ]
+    # Publish an expired synthetic request atomically. It must fail before any
+    # disk commands, while exercising the real file event and one-shot service.
+    run sudo -u testuser python3 -c "
+import json, os
+from pathlib import Path
+flags = Path('$PROJECT_DIR/data/flags')
+temporary = flags / '.synthetic-format-request'
+temporary.write_text(json.dumps({'id': 'integration-expired', 'created_at': 0}))
+os.rename(temporary, flags / 'storage-format-request.json')
+"
     [ "$status" -eq 0 ]
-    run python3 -c "import json; assert json.load(open('$PROJECT_DIR/data/flags/storage-format-status.json'))['ready']"
+    for attempt in {1..30}; do
+        if [ -f "$PROJECT_DIR/data/flags/storage-format-status.json" ] && [ ! -e "$PROJECT_DIR/data/flags/storage-format-request.json" ]; then break; fi
+        sleep 1
+    done
+    run python3 -c "import json; p=json.load(open('$PROJECT_DIR/data/flags/storage-format-status.json')); assert p['state']=='failed'; assert 'expired' in p['message']"
     [ "$status" -eq 0 ]
     [ ! -e "$PROJECT_DIR/data/flags/storage-format-request.json" ]
+    local stamp started
+    stamp=$(stat -c '%Y' "$PROJECT_DIR/data/flags/storage-format-status.json")
+    started=$(systemctl show birdnet-storage-format.service -p ExecMainStartTimestampMonotonic --value)
+    [ "$started" != 0 ]
+    sleep 6
+    [ "$(stat -c '%Y' "$PROJECT_DIR/data/flags/storage-format-status.json")" = "$stamp" ]
+    [ "$(systemctl show birdnet-storage-format.service -p ExecMainStartTimestampMonotonic --value)" = "$started" ]
+    [ "$(systemctl show birdnet-storage-format.service -p ActiveState --value)" = inactive ]
     run sudo -u testuser env TEST_PROJECT="$PROJECT_DIR" bash -c '
         source <(sed "/^main$/d" "$TEST_PROJECT/deployment/birdnet-service.sh")
         PROJECT_ROOT="$TEST_PROJECT"
@@ -732,6 +757,11 @@ for name in (\"api\", \"main\", \"model-server\"):
     run sudo SUDO_USER=testuser bash "$PROJECT_DIR/install.sh" --no-reboot --skip-build --port 8080
     echo "Install output: $output"
     [ "$status" -eq 0 ]
+    assert_service_enabled birdnet-storage-format.path
+    run systemctl is-active birdnet-storage-format.path
+    [ "$status" -eq 0 ]
+    assert_file_exists "$PROJECT_DIR/data/flags/storage-format-available"
+    [ "$(systemctl show birdnet-storage-format.service -p ActiveState --value)" = inactive ]
 }
 
 @test "integration: git is installed" {
@@ -878,4 +908,30 @@ for name in (\"api\", \"main\", \"model-server\"):
     echo "Update output: $output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"has no pre-built images, building locally"* ]]
+}
+
+@test "integration: uninstall removes the storage format watcher and availability" {
+    # Independent fixture so this cleanup check can run on its own.
+    install -d -o testuser -g testuser "$PROJECT_DIR/data/flags"
+    touch "$PROJECT_DIR/data/flags/storage-format-available"
+    cp "$PROJECT_DIR/deployment/birdnet-storage-format.service" /etc/systemd/system/
+    sed "s|@REQUEST_PATH@|$PROJECT_DIR/data/flags/storage-format-request.json|" \
+        "$PROJECT_DIR/deployment/birdnet-storage-format.path" > /etc/systemd/system/birdnet-storage-format.path
+    systemctl daemon-reload
+    systemctl enable --now birdnet-storage-format.path
+    assert_file_exists "$PROJECT_DIR/data/flags/storage-format-available"
+    mkdir -p /var/lib/birdnet-pipy
+    printf '["synthetic-preserved-registry"]\n' > /var/lib/birdnet-pipy/media-mounts.json
+    uninstall_storage_from_project() {
+        # The library loader uses /dev/fd; the real invocation uses the repo.
+        SCRIPT_DIR="$PROJECT_DIR"
+        remove_sudoers
+    }
+    run run_uninstall_function uninstall_storage_from_project
+    echo "Uninstall output: $output"
+    [ "$status" -eq 0 ]
+    [ ! -e /etc/systemd/system/birdnet-storage-format.path ]
+    [ ! -e /etc/systemd/system/birdnet-storage-format.service ]
+    [ ! -e "$PROJECT_DIR/data/flags/storage-format-available" ]
+    assert_file_contains /var/lib/birdnet-pipy/media-mounts.json synthetic-preserved-registry
 }

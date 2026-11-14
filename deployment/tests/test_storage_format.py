@@ -137,14 +137,28 @@ class FormattingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             flags = Path(directory)
             journal = flags / 'journal.json'
-            journal.write_text(json.dumps({'id': 'same-job', 'state': 'formatting', 'message': 'Creating ext4'}))
+            journal.write_text(json.dumps({'state': 'formatting', 'id': 'same', 'message': 'Formatting'}))
             request = flags / 'storage-format-request.json'
-            request.write_text(json.dumps(dict(self.request, id='same-job', created_at=time.time())))
-            with patch.object(formatter, 'JOURNAL', journal), patch.object(formatter, 'format_drive') as execute:
-                formatter.serve({'flags': directory, 'project': '/synthetic', 'uid': flags.stat().st_uid})
-                execute.assert_not_called()
-            self.assertEqual(json.loads((flags / 'storage-format-status.json').read_text())['state'], 'failed')
+            request.write_text(json.dumps({'id': 'same', 'created_at': time.time()}))
+            with patch.object(formatter, 'JOURNAL', journal), patch.object(formatter, 'format_drive') as perform:
+                formatter.serve({'flags': str(flags), 'uid': flags.stat().st_uid})
+            perform.assert_not_called()
+            status = json.loads((flags / 'storage-format-status.json').read_text())
+            self.assertEqual(status['state'], 'failed')
+            self.assertIn('interrupted', status['message'])
             self.assertFalse(request.exists())
+
+    def test_no_request_means_no_status_or_heartbeat_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            flags = Path(directory)
+            journal = flags / 'journal.json'
+            journal.write_text(json.dumps({'state': 'complete', 'id': 'previous'}))
+            before = journal.stat().st_mtime_ns
+            with patch.object(formatter, 'JOURNAL', journal), patch.object(formatter, 'format_drive') as perform:
+                formatter.serve({'flags': str(flags), 'uid': flags.stat().st_uid})
+            perform.assert_not_called()
+            self.assertEqual(journal.stat().st_mtime_ns, before)
+            self.assertFalse((flags / 'storage-format-status.json').exists())
 
 
 if __name__ == '__main__':

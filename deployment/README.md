@@ -127,13 +127,22 @@ the new location and moving existing media remain separate choices.
 
 `install.sh` installs the helper and its pure eligibility rules into
 `/usr/local/libexec/birdnet-pipy`, owned by root, with fixed installation metadata
-in `/etc/birdnet-pipy/storage-format.json`. Sudo permits only the installed helper
-with no command-line arguments. The host service consumes confirmed requests from
-`data/flags/storage-format-request.json`; progress is published to
+in `/etc/birdnet-pipy/storage-format.json`. The installer registers
+`birdnet-storage-format.path`, which waits for a filesystem event on
+`data/flags/storage-format-request.json`. Only the confirmed formatting action
+creates this file. The event starts `birdnet-storage-format.service`, a root-owned
+one-shot job that runs the fixed helper without arguments and exits afterward.
+There is no periodic formatter launch or heartbeat. Progress is published to
 `data/flags/storage-format-status.json` and shown in the existing Settings banner.
 A root-owned journal in `/var/lib/birdnet-pipy` prevents replay after interruption.
 API writes, including restarts and media transfers, are blocked while a request
 is pending.
+
+The installer writes `data/flags/storage-format-available` once after enabling
+the watcher. The API reads this installation capability separately from job
+progress, so availability and completed results do not expire when idle.
+Uninstall disables the watcher and removes the capability marker. Opening the
+confirmation dialog or its dry-run preview never starts the helper.
 
 The service checks host integration before creating containers. This covers the
 first upgrade from an older installer, whose already-loaded shell functions do

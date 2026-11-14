@@ -104,7 +104,8 @@ class InstallerWiringTests(unittest.TestCase):
             project = root / 'project'
             (project / 'deployment').mkdir(parents=True)
             (project / 'backend/core').mkdir(parents=True)
-            for name in ('storage-format.py', 'birdnet-media-mounts.service'):
+            for name in ('storage-format.py', 'birdnet-media-mounts.service',
+                         'birdnet-storage-format.service', 'birdnet-storage-format.path'):
                 (project / 'deployment' / name).write_text('synthetic fixture\n')
             (project / 'backend/core/storage_devices.py').write_text('synthetic policy\n')
             (project / 'deployment/storage_mounts.py').write_text(
@@ -121,10 +122,11 @@ class InstallerWiringTests(unittest.TestCase):
             stub = root / 'install-stub.py'
             stub.write_text("""import os, pathlib, shutil, sys
 args = sys.argv[1:]
-assert args[:4] == ['-d', '-o', 'root', '-g'] or args[:3] == ['-o', 'root', '-g']
+assert args[0] in ('-d', '-o')
 for flag in ('-o', '-g'):
     index = args.index(flag)
-    assert args[index + 1] == 'root'
+    expected = ('1000' if flag == '-o' else '1001') if args[-1].endswith('/data/flags') else 'root'
+    assert args[index + 1] == expected
     del args[index:index + 2]
 index = args.index('-m'); mode = int(args[index + 1], 8); del args[index:index + 2]
 if args[0] == '-d':
@@ -147,7 +149,9 @@ else:
             self.assertEqual((config['uid'], config['gid']), (1000, 1001))
             self.assertEqual((helper_dir / 'storage_mounts.py').stat().st_mode & 0o777, 0o755)
             self.assertIn('enable birdnet-media-mounts.service', (root / 'events').read_text())
-            self.assertTrue((root / 'events').read_text().endswith('prepared\n'))
+            self.assertIn('prepared\n', (root / 'events').read_text())
+            self.assertIn('enable --now birdnet-storage-format.path', (root / 'events').read_text())
+            self.assertTrue((project / 'data/flags/storage-format-available').exists())
             self.assertIn('BIRDNET_MANAGED_MEDIA_PROPAGATION=rslave', (project / '.env').read_text())
         unit = (ROOT / 'deployment/birdnet-media-mounts.service').read_text()
         self.assertIn('Before=docker.service', unit)

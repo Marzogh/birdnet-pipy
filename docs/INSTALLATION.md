@@ -158,6 +158,8 @@ application restart is needed.
 The normal installer and updater install the formatting helper automatically.
 On the first restart after an update from an older installer, PiPy completes any
 missing host setup before starting containers. No separate helper command is needed.
+The formatter runs only after **Erase and format** is confirmed, then exits when
+finished. It does not run or write status heartbeats while idle.
 Formatting progress appears
 in the existing Settings progress banner. Keep the drive connected until the
 operation finishes. An interrupted job is reported as failed and is never replayed

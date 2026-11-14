@@ -93,6 +93,8 @@ class HostUpgradeTests(unittest.TestCase):
         for name in ('libexec', 'units', 'config'):
             (self.root / name).mkdir()
         (self.project / 'backend/core').mkdir(parents=True)
+        (self.project / 'data/flags').mkdir(parents=True)
+        (self.project / 'data/flags/storage-format-available').touch()
         for name in ('storage-format.py', 'storage_mounts.py'):
             (self.project / 'deployment' / name).write_text('# synthetic helper\n')
             shutil.copyfile(self.project / 'deployment' / name, self.root / 'libexec' / name)
@@ -101,6 +103,12 @@ class HostUpgradeTests(unittest.TestCase):
         shutil.copyfile(self.project / 'backend/core/storage_devices.py', self.root / 'libexec/storage_devices.py')
         (self.project / 'deployment/birdnet-media-mounts.service').write_text('# synthetic unit\n')
         shutil.copyfile(self.project / 'deployment/birdnet-media-mounts.service', self.root / 'units/birdnet-media-mounts.service')
+        (self.project / 'deployment/birdnet-storage-format.service').write_text('# synthetic formatter unit\n')
+        shutil.copyfile(self.project / 'deployment/birdnet-storage-format.service', self.root / 'units/birdnet-storage-format.service')
+        template = '[Path]\nPathExists=@REQUEST_PATH@\n'
+        (self.project / 'deployment/birdnet-storage-format.path').write_text(template)
+        (self.root / 'units/birdnet-storage-format.path').write_text(template.replace(
+            '@REQUEST_PATH@', str(self.project / 'data/flags/storage-format-request.json')))
         (self.root / 'config/storage-format.json').write_text(json.dumps({
             'project': str(self.project), 'flags': str(self.project / 'data/flags'),
             'uid': os.getuid(), 'gid': os.getgid(),
@@ -119,7 +127,8 @@ class HostUpgradeTests(unittest.TestCase):
         self.prepare_current_setup()
         for relative in ('libexec/storage-format.py', 'libexec/storage_mounts.py',
                          'libexec/storage_devices.py', 'units/birdnet-media-mounts.service',
-                         'config/storage-format.json', 'project/.env'):
+                         'config/storage-format.json', 'project/.env',
+                         'units/birdnet-storage-format.service', 'units/birdnet-storage-format.path'):
             with self.subTest(file=relative):
                 path = self.root / relative
                 saved = path.read_bytes()

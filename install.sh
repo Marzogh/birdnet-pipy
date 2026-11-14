@@ -949,6 +949,18 @@ PYCONFIG
     chown root:root /etc/birdnet-pipy/storage-format.json
     chmod 644 /etc/birdnet-pipy/storage-format.json
     install -o root -g root -m 644 "$PROJECT_ROOT/deployment/birdnet-media-mounts.service" /etc/systemd/system/birdnet-media-mounts.service
+    install -o root -g root -m 644 "$PROJECT_ROOT/deployment/birdnet-storage-format.service" /etc/systemd/system/birdnet-storage-format.service
+    python3 - "$PROJECT_ROOT" <<'PYPATH'
+import os, sys
+from pathlib import Path
+project = Path(os.path.realpath(sys.argv[1]))
+request = str(project / 'data/flags/storage-format-request.json').replace('%', '%%')
+unit = (project / 'deployment/birdnet-storage-format.path').read_text()
+Path('/etc/systemd/system/birdnet-storage-format.path').write_text(
+    unit.replace('@REQUEST_PATH@', request))
+PYPATH
+    chown root:root /etc/systemd/system/birdnet-storage-format.path
+    chmod 644 /etc/systemd/system/birdnet-storage-format.path
     systemctl daemon-reload
     systemctl enable birdnet-media-mounts.service
     # Prepare propagation before creating containers. Missing saved drives do
@@ -957,6 +969,10 @@ PYCONFIG
     set_env_var "BIRDNET_MANAGED_MEDIA_PATH" "/var/lib/birdnet-pipy/media"
     set_env_var "BIRDNET_MANAGED_MEDIA_PROPAGATION" "rslave"
     chown "$ACTUAL_UID:$ACTUAL_GID" "$PROJECT_ROOT/.env"
+    install -d -o "$ACTUAL_UID" -g "$ACTUAL_GID" -m 755 "$PROJECT_ROOT/data/flags"
+    systemctl enable --now birdnet-storage-format.path
+    # Static availability, written once during setup, not a heartbeat.
+    install -o root -g root -m 644 /dev/null "$PROJECT_ROOT/data/flags/storage-format-available"
     print_status "Host drive formatter and media mount helper installed"
 }
 
@@ -972,9 +988,7 @@ setup_sudoers() {
 # Allows the service user to manage PulseAudio without password prompts
 # Created by install.sh - remove with: sudo rm $SUDOERS_FILE
 
-# Root-owned formatter, without command-line arguments. It accepts only a
-# fixed request file and independently verifies the selected drive.
-$ACTUAL_USER ALL=(root) NOPASSWD: /usr/local/libexec/birdnet-pipy/storage-format.py ""
+# Restore already-prepared media mounts without arbitrary mount arguments.
 $ACTUAL_USER ALL=(root) NOPASSWD: /usr/local/libexec/birdnet-pipy/storage_mounts.py ""
 
 # PulseAudio management

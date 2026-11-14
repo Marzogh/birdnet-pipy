@@ -534,14 +534,6 @@ monitor_flags() {
     local discovery_count=0
     local discovery_state=unknown
     while true; do
-        # The fixed root-owned helper rechecks live storage and consumes one
-        # confirmed request. It runs synchronously, so no restart/update can
-        # interrupt it through this monitor. An idle call refreshes readiness.
-        if [ -x /usr/local/libexec/birdnet-pipy/storage-format.py ]; then
-            if ! sudo -n /usr/local/libexec/birdnet-pipy/storage-format.py; then
-                log_warning "Storage formatter unavailable; see service log for details"
-            fi
-        fi
         # Check update flag first (higher priority)
         if [ -f "$UPDATE_FLAG_FILE" ]; then
             perform_system_update
@@ -576,6 +568,7 @@ host_storage_setup_current() {
     cmp -s "$PROJECT_ROOT/deployment/storage_mounts.py" "$installed/storage_mounts.py" || return 1
     cmp -s "$PROJECT_ROOT/backend/core/storage_devices.py" "$installed/storage_devices.py" || return 1
     cmp -s "$PROJECT_ROOT/deployment/birdnet-media-mounts.service" /etc/systemd/system/birdnet-media-mounts.service || return 1
+    cmp -s "$PROJECT_ROOT/deployment/birdnet-storage-format.service" /etc/systemd/system/birdnet-storage-format.service || return 1
     [ -x "$installed/storage-format.py" ] && [ -x "$installed/storage_mounts.py" ] || return 1
     grep -qx 'BIRDNET_MANAGED_MEDIA_PATH=/var/lib/birdnet-pipy/media' "$PROJECT_ROOT/.env" || return 1
     grep -qx 'BIRDNET_MANAGED_MEDIA_PROPAGATION=rslave' "$PROJECT_ROOT/.env" || return 1
@@ -587,12 +580,18 @@ try:
     expected = {'project': os.path.realpath(sys.argv[1]),
                 'flags': os.path.realpath(sys.argv[1]) + '/data/flags',
                 'uid': os.getuid(), 'gid': os.getgid()}
-    sys.exit(0 if config == expected else 1)
+    with open(os.path.join(sys.argv[1], 'deployment/birdnet-storage-format.path')) as stream:
+        template = stream.read()
+    request = os.path.join(expected['flags'], 'storage-format-request.json').replace('%', '%%')
+    with open('/etc/systemd/system/birdnet-storage-format.path') as stream:
+        installed = stream.read()
+    sys.exit(0 if config == expected and installed == template.replace('@REQUEST_PATH@', request) else 1)
 except (OSError, ValueError):
     sys.exit(1)
 PYCONFIG
     systemctl is-enabled --quiet birdnet-media-mounts.service || return 1
-    sudo -n -l "$installed/storage-format.py" >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet birdnet-storage-format.path || return 1
+    [ -f "$PROJECT_ROOT/data/flags/storage-format-available" ] || return 1
     sudo -n -l "$installed/storage_mounts.py" >/dev/null 2>&1 || return 1
 }
 
@@ -600,16 +599,19 @@ ensure_host_storage_setup() {
     if host_storage_setup_current; then
         return 0
     fi
+    rm -f "$PROJECT_ROOT/data/flags/storage-format-available"
     log_info "Installing host storage integration for this release..."
     local branch
     branch=$(git -C "$PROJECT_ROOT" branch --show-current)
     # The branch is required by stock sudoers; this mode never fetches it.
     branch="${branch:-main}"
     if ! sudo -n "$PROJECT_ROOT/install.sh" --update --branch "$branch" --configure-host; then
+        rm -f "$PROJECT_ROOT/data/flags/storage-format-available"
         log_error "Host storage setup failed; see /var/log/birdnet-pipy-install.log"
         return 1
     fi
     if ! host_storage_setup_current; then
+        rm -f "$PROJECT_ROOT/data/flags/storage-format-available"
         log_error "Host storage setup is incomplete; formatting remains unavailable"
         return 1
     fi

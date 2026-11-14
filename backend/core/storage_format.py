@@ -16,19 +16,22 @@ def format_pending():
 
 
 def format_status():
+    ready = (FLAGS / 'storage-format-available').is_file()
     try:
         payload = json.loads((FLAGS / 'storage-format-status.json').read_text())
-        payload['ready'] = bool(payload.get('ready') and time.time() - payload['updated_at'] < 30)
-        try:
-            pending = json.loads((FLAGS / 'storage-format-request.json').read_text())
-            if payload.get('id') != pending['id']:
-                payload.update(id=pending['id'], state='queued', message='Waiting for the host to format the drive…')
-        except FileNotFoundError:
-            pass
-        return payload
+        if not isinstance(payload, dict):
+            raise ValueError('Invalid formatting status')
+    except (OSError, ValueError, TypeError):
+        payload = {'state': 'idle' if ready else 'unavailable',
+                   'message': '' if ready else 'Drive formatting requires the updated host installer.'}
+    payload['ready'] = ready
+    try:
+        pending = json.loads((FLAGS / 'storage-format-request.json').read_text())
+        if payload.get('id') != pending['id']:
+            payload.update(id=pending['id'], state='queued', message='Waiting for the host to format the drive…')
     except (OSError, ValueError, KeyError, TypeError):
-        return {'state': 'unavailable', 'ready': False,
-                'message': 'Drive formatting requires the updated host installer.'}
+        pass
+    return payload
 
 
 def queue_format(payload):

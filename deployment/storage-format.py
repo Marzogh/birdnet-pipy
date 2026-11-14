@@ -147,7 +147,7 @@ def serve(config):
     previous = json.loads(JOURNAL.read_text()) if JOURNAL.exists() else {'state': 'idle'}
 
     def progress(state, message, job_id=None):
-        payload = {'state': state, 'message': message, 'id': job_id, 'updated_at': time.time(), 'ready': True}
+        payload = {'state': state, 'message': message, 'id': job_id, 'updated_at': time.time()}
         atomic_json(JOURNAL, payload)
         atomic_json(status_path, payload)
         print(f'Storage formatting: {message}', flush=True)
@@ -155,10 +155,6 @@ def serve(config):
     try:
         fd = os.open(request_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        if previous['state'] not in ('idle', 'complete', 'failed'):
-            previous.update(state='failed', message='Formatting was interrupted. Check the drive before retrying.')
-        previous.update(updated_at=time.time(), ready=True)
-        atomic_json(status_path, previous)
         return
     try:
         with os.fdopen(fd) as stream:
