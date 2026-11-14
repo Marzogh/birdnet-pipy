@@ -11,6 +11,7 @@ from pathlib import Path
 CONFIG = Path('/etc/birdnet-pipy/storage-format.json')
 MEDIA_ROOT = Path('/var/lib/birdnet-pipy/media')
 REGISTRY = Path('/var/lib/birdnet-pipy/media-mounts.json')
+MOUNTINFO = Path('/proc/self/mountinfo')
 _UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z')
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
 
@@ -37,12 +38,29 @@ def atomic_json(path, payload):
             os.unlink(temporary)
 
 
+def is_mountpoint(path):
+    """Read kernel mount points, including bind mounts on the same filesystem.
+
+    os.path.ismount cannot reliably detect those binds. Read failures propagate:
+    an unreadable mount table is not evidence that a new mount is needed.
+    """
+    target = os.path.realpath(path)
+    with MOUNTINFO.open(encoding='utf-8', errors='surrogateescape') as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) >= 5:
+                mountpoint = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), fields[4])
+                if mountpoint == target:
+                    return True
+    return False
+
+
 def prepare_root(command=run):
     """Share only this dedicated mount tree, never the host's root mount."""
     MEDIA_ROOT.mkdir(mode=0o755, parents=True, exist_ok=True)
     if MEDIA_ROOT.is_symlink():
         raise RuntimeError('The managed media folder must not be a symbolic link.')
-    if not os.path.ismount(MEDIA_ROOT):
+    if not is_mountpoint(MEDIA_ROOT):
         command(['mount', '--bind', str(MEDIA_ROOT), str(MEDIA_ROOT)])
     propagation = command(['findmnt', '--noheadings', '--raw', '--mountpoint', str(MEDIA_ROOT),
                            '--output', 'PROPAGATION']).strip()
@@ -57,7 +75,7 @@ def mount_uuid(uuid, uid, gid, command=run):
     target.mkdir(mode=0o755, exist_ok=True)
     if target.is_symlink():
         raise RuntimeError('The drive mount folder must not be a symbolic link.')
-    if not os.path.ismount(target):
+    if not is_mountpoint(target):
         command(['mount', '-t', 'ext4', '-o', 'nosuid,nodev', 'UUID=' + uuid, str(target)])
     # Pin the mounted directory before giving the service user write access.
     fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

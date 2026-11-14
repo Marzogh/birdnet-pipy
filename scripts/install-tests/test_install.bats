@@ -664,6 +664,50 @@ print('override: frontend publishes 8080')
 # Integration Tests (full installation flow)
 # ============================================================================
 
+@test "integration: repeated media setup preserves one bind and existing child mounts" {
+    # Real kernel mounts, but only a temporary directory and an empty tmpfs.
+    # No block devices, formatting commands, application data or containers.
+    run python3 - "$PROJECT_DIR" <<'PYMOUNT'
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location('mounts', Path(sys.argv[1]) / 'deployment/storage_mounts.py')
+mounts = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mounts)
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory) / 'media'
+    mounts.MEDIA_ROOT = root
+    mounts.prepare_root()
+    assert not os.path.ismount(root), 'Fixture must exercise a same-filesystem bind mount'
+    child = root / 'synthetic-child'
+    child.mkdir()
+    subprocess.run(['mount', '-t', 'tmpfs', '-o', 'size=1m', 'tmpfs', str(child)], check=True)
+    sentinel = child / 'preserved.txt'
+    sentinel.write_text('existing media remains visible')
+
+    def entries():
+        return [line for line in Path('/proc/self/mountinfo').read_text().splitlines()
+                if line.split()[4] == str(root) or line.split()[4].startswith(str(root) + '/')]
+
+    before = entries()
+    assert len(before) == 2, before
+    for attempt in range(5):
+        mounts.prepare_root()
+        assert entries() == before, 'Repeated setup added mount layers'
+        assert sentinel.read_text() == 'existing media remains visible'
+        print(f'Repeated setup {attempt + 1}/5: mount IDs and child contents preserved', flush=True)
+    subprocess.run(['umount', str(child)], check=True)
+    subprocess.run(['umount', str(root)], check=True)
+PYMOUNT
+    echo "Mount regression output: $output"
+    [ "$status" -eq 0 ]
+}
+
 @test "integration: host storage upgrade works with stock update permissions" {
     # First restart after a stock updater fetched the new release: the new
     # checkout/images exist, but the helper and its sudo permissions do not.

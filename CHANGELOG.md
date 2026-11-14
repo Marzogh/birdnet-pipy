@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed repeated media setup stacking duplicate mounts and hiding mounted drives. Existing bind mounts are now detected from the kernel mount table.
+
 - Improved drive formatting feedback with a persistent progress dialog and an automatically refreshed media storage dropdown after completion.
 
 - Changed drive formatting to start only for a confirmed request and exit when finished, removing idle helper launches and heartbeat writes.

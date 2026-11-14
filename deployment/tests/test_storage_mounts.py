@@ -19,12 +19,15 @@ class MountTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name) / 'media'
+        self.root = Path(self.temporary.name).resolve() / 'media'
         self.registry = Path(self.temporary.name) / 'mounts.json'
+        self.mountinfo = Path(self.temporary.name) / 'mountinfo'
+        self.mountinfo.write_text('')
         self.mounted = set()
         self.shared = False
         self.commands = []
-        for attribute, value in [('MEDIA_ROOT', self.root), ('REGISTRY', self.registry)]:
+        for attribute, value in [('MEDIA_ROOT', self.root), ('REGISTRY', self.registry),
+                                 ('MOUNTINFO', self.mountinfo)]:
             patcher = patch.object(mounts, attribute, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -32,7 +35,8 @@ class MountTests(unittest.TestCase):
             patcher = patch.object(mounts.os, attribute)
             patcher.start()
             self.addCleanup(patcher.stop)
-        patcher = patch.object(mounts.os.path, 'ismount', lambda path: str(path) in self.mounted)
+        # Reproduce the original failure: ismount misses same-filesystem binds.
+        patcher = patch.object(mounts.os.path, 'ismount', return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -48,6 +52,9 @@ class MountTests(unittest.TestCase):
             self.mounted.add(args[-1])
         elif args[0] == 'findmnt':
             return ('shared' if self.shared else 'private') if args[-1] == 'PROPAGATION' else UUID
+        self.mountinfo.write_text(''.join(
+            f'{index} 0 0:1 / {path} rw - ext4 synthetic rw\n'
+            for index, path in enumerate(sorted(self.mounted), 1)))
         return ''
 
     def test_new_drive_is_mounted_saved_and_given_service_user_access(self):
@@ -91,6 +98,25 @@ class MountTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'UUID'):
             mounts.mount_uuid('../../elsewhere', 1000, 1001, self.command)
         self.assertEqual(self.commands, [])
+
+    def test_unreadable_mount_table_never_creates_a_mount(self):
+        self.mountinfo.unlink()
+        with self.assertRaises(OSError):
+            mounts.prepare_root(self.command)
+        self.assertEqual(self.commands, [])
+
+
+class MountTableTests(unittest.TestCase):
+    def test_kernel_mount_lookup_decodes_escapes_and_matches_exact_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            table = Path(directory) / 'mountinfo'
+            target = Path(directory).resolve() / 'media with spaces'
+            escaped = str(target).replace(' ', r'\040')
+            table.write_text(f'42 1 0:1 / {escaped} rw shared:1 - ext4 synthetic rw\n')
+            with patch.object(mounts, 'MOUNTINFO', table):
+                self.assertTrue(mounts.is_mountpoint(target))
+                self.assertFalse(mounts.is_mountpoint(target / 'not-mounted'))
+                self.assertFalse(mounts.is_mountpoint(target.parent))
 
 
 class InstallerWiringTests(unittest.TestCase):
