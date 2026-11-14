@@ -74,6 +74,7 @@ NC='\033[0m' # No Color
 
 # Command-line options
 UPDATE_MODE=false
+CONFIGURE_HOST_ONLY=false  # Internal startup handoff after an older updater fetches this release
 TARGET_BRANCH=""  # Target branch for install/update (default: main for install, current for update)
 NO_REBOOT=false   # Skip reboot prompt (for testing)
 SKIP_BUILD=false  # Skip Docker image build (for testing)
@@ -1398,6 +1399,10 @@ main() {
                 UPDATE_MODE=true
                 shift
                 ;;
+            --configure-host)
+                CONFIGURE_HOST_ONLY=true
+                shift
+                ;;
             --branch)
                 TARGET_BRANCH="$2"
                 shift 2
@@ -1454,6 +1459,20 @@ main() {
 
     # Compute actual user details once (used by all functions below)
     init_user_vars
+
+    # An old updater keeps its old shell functions after git sync. The new
+    # service invokes this same host setup on restart, before containers start.
+    # --update --branch keeps the call compatible with existing sudoers rules.
+    if [ "$CONFIGURE_HOST_ONLY" = true ]; then
+        if [ "$UPDATE_MODE" != true ] || [ "$IS_LOCAL_INSTALL" != true ]; then
+            print_error "--configure-host requires --update from an existing installation"
+            exit 1
+        fi
+        print_status "Configuring host integration for the installed release..."
+        setup_sudoers
+        print_status "Host integration configured; no images fetched or built"
+        exit 0
+    fi
 
     # Handle update mode early (before any installation steps)
     if [ "$UPDATE_MODE" = true ]; then

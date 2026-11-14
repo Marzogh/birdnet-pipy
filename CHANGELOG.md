@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed missing drive-formatting support after updating an existing installation. Host setup is completed automatically before containers start.
+
 - Added a species summary API for detection counts and first/last timestamps over a date range or all history, respecting station public visibility.
 
 ## [0.8.12] - 2026-11-03

@@ -155,8 +155,10 @@ Password protection must be enabled and you must be signed in. System drives and
 drives used by BirdNET or Docker cannot be formatted. Recording continues and no
 application restart is needed.
 
-Formatting requires the host helper installed by `install.sh`, including when
-updating. A container-only update does not install it. Formatting progress appears
+The normal installer and updater install the formatting helper automatically.
+On the first restart after an update from an older installer, PiPy completes any
+missing host setup before starting containers. No separate helper command is needed.
+Formatting progress appears
 in the existing Settings progress banner. Keep the drive connected until the
 operation finishes. An interrupted job is reported as failed and is never replayed
 automatically.

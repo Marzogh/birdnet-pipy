@@ -133,7 +133,17 @@ with no command-line arguments. The host service consumes confirmed requests fro
 `data/flags/storage-format-status.json` and shown in the existing Settings banner.
 A root-owned journal in `/var/lib/birdnet-pipy` prevents replay after interruption.
 API writes, including restarts and media transfers, are blocked while a request
-is pending. A container-only update does not install these helpers or their mounts.
+is pending.
+
+The service checks host integration before creating containers. This covers the
+first upgrade from an older installer, whose already-loaded shell functions do
+not know about the new helpers. If setup is missing or outdated, the service runs
+`install.sh --update --branch <current-branch> --configure-host` using the existing
+update permission. This internal mode runs the same `setup_sudoers` stage as a
+normal install/update, including helper installation and mount preparation. It
+does not fetch code, download images, build images or format drives. Current
+installations skip it. Setup failures are logged and recording startup continues;
+formatting remains unavailable. Starting Compose alone bypasses this host service.
 
 The root-owned `storage_mounts.py` helper mounts prepared filesystems by UUID below
 `/var/lib/birdnet-pipy/media`. A UUID registry in

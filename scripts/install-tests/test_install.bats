@@ -664,6 +664,64 @@ print('override: frontend publishes 8080')
 # Integration Tests (full installation flow)
 # ============================================================================
 
+@test "integration: host storage upgrade works with stock update permissions" {
+    # First restart after a stock updater fetched the new release: the new
+    # checkout/images exist, but the helper and its sudo permissions do not.
+    # This test creates no formatting request and formats no drives.
+    install -d -o testuser -g testuser "$PROJECT_DIR/data/flags"
+    rm -f /etc/sudoers.d/testuser
+    cat > /etc/sudoers.d/birdnet-pipy <<EOF
+testuser ALL=(ALL) NOPASSWD: $PROJECT_DIR/install.sh --update
+testuser ALL=(ALL) NOPASSWD: $PROJECT_DIR/install.sh --update --branch *
+EOF
+    chmod 440 /etc/sudoers.d/birdnet-pipy
+    run visudo -cf /etc/sudoers.d/birdnet-pipy
+    [ "$status" -eq 0 ]
+    [ ! -e /usr/local/libexec/birdnet-pipy/storage-format.py ]
+    run sudo -u testuser env TEST_PROJECT="$PROJECT_DIR" bash -c '
+        source <(sed "/^main$/d" "$TEST_PROJECT/deployment/birdnet-service.sh")
+        PROJECT_ROOT="$TEST_PROJECT"
+        ensure_host_storage_setup
+    '
+    local setup_status="$status"
+    local setup_output="$output"
+    # Restore the test harness permission even if setup failed.
+    echo 'testuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/testuser
+    chmod 440 /etc/sudoers.d/testuser
+    echo "Host upgrade output: $setup_output"
+    [ "$setup_status" -eq 0 ]
+    [[ "$setup_output" == *"Host storage integration is ready"* ]]
+    [[ "$setup_output" == *"no images fetched or built"* ]]
+    for helper in storage-format.py storage_mounts.py; do
+        assert_file_executable "/usr/local/libexec/birdnet-pipy/$helper"
+        [ "$(stat -c '%U:%G:%a' "/usr/local/libexec/birdnet-pipy/$helper")" = root:root:755 ]
+    done
+    assert_sudoers_valid /etc/sudoers.d/birdnet-pipy
+    assert_service_enabled birdnet-media-mounts
+    assert_file_contains "$PROJECT_DIR/.env" 'BIRDNET_MANAGED_MEDIA_PROPAGATION=rslave'
+    run bash -c "cd '$PROJECT_DIR' && docker compose config --format json | python3 -c '
+import json, sys
+services = json.load(sys.stdin)[\"services\"]
+for name in (\"api\", \"main\", \"model-server\"):
+    mount = next(v for v in services[name][\"volumes\"] if v[\"target\"] == \"/managed-media\")
+    assert mount[\"source\"] == \"/var/lib/birdnet-pipy/media\"
+    assert mount[\"bind\"][\"propagation\"] == \"rslave\"
+'"
+    [ "$status" -eq 0 ]
+    run sudo -u testuser sudo -n /usr/local/libexec/birdnet-pipy/storage-format.py
+    [ "$status" -eq 0 ]
+    run python3 -c "import json; assert json.load(open('$PROJECT_DIR/data/flags/storage-format-status.json'))['ready']"
+    [ "$status" -eq 0 ]
+    [ ! -e "$PROJECT_DIR/data/flags/storage-format-request.json" ]
+    run sudo -u testuser env TEST_PROJECT="$PROJECT_DIR" bash -c '
+        source <(sed "/^main$/d" "$TEST_PROJECT/deployment/birdnet-service.sh")
+        PROJECT_ROOT="$TEST_PROJECT"
+        ensure_host_storage_setup
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Installing host storage integration"* ]]
+}
+
 @test "integration: full installation completes successfully" {
     # Run installation with --no-reboot --skip-build
     # --skip-build skips Docker image build (which doesn't work in DinD due to overlay issues)
