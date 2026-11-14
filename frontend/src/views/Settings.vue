@@ -1903,6 +1903,7 @@ export default {
     const mediaStorageStatus = ref(null)
     let mediaTargetsRequest = 0
     const driveDiscovery = ref(null)
+    let driveDiscoveryRequest = 0
     const selectedFormatDrive = ref(null)
     const formatProgress = ref(null)
     const formatActive = computed(() => ['queued', 'checking', 'unmounting', 'partitioning', 'formatting', 'mounting'].includes(formatProgress.value?.state))
@@ -1913,6 +1914,11 @@ export default {
         if (viewStopped) return
         const wasActive = formatActive.value
         if (data.state === 'complete') {
+          if (data.storage_devices && (!driveDiscovery.value?.updated_at
+              || data.storage_devices.updated_at >= driveDiscovery.value.updated_at)) {
+            driveDiscoveryRequest += 1
+            driveDiscovery.value = data.storage_devices
+          }
           if (data.media_storage) {
             // A pre-format request must not replace the mounted drive list.
             mediaTargetsRequest += 1
@@ -1926,7 +1932,7 @@ export default {
           clearInterval(formatTimer)
           formatTimer = null
           if (wasActive) showStatus(data.state === 'complete' ? 'success' : 'error', data.message)
-          loadConnectedDrives()
+          if (!data.storage_devices) loadConnectedDrives()
         } else if (formatActive.value && !formatTimer) {
           formatTimer = setInterval(pollFormat, 2000)
         }
@@ -1947,11 +1953,15 @@ export default {
 
     let driveDiscoveryTimer = null
     const loadConnectedDrives = async () => {
+      const requestId = ++driveDiscoveryRequest
       try {
         const { data } = await api.get('/system/storage-devices')
-        if (!viewStopped) driveDiscovery.value = data
+        if (viewStopped || requestId !== driveDiscoveryRequest) return
+        // The periodic host snapshot can briefly predate the format result.
+        if (driveDiscovery.value?.updated_at && data.updated_at < driveDiscovery.value.updated_at) return
+        driveDiscovery.value = data
       } catch {
-        if (!viewStopped) driveDiscovery.value = {
+        if (!viewStopped && requestId === driveDiscoveryRequest) driveDiscovery.value = {
           state: 'unavailable', message: 'Drive discovery is unavailable.'
         }
       }

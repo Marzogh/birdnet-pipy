@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed connected-drive status remaining stale after formatting. Successful jobs now return fresh mount information, and older discovery responses cannot overwrite it.
+
 - Fixed duplicate drive mounts on hosts with shared mount propagation by separating the managed media folder from its parent's sharing group. Storage guidance now directs users to the Media storage dropdown.
 
 - Fixed repeated media setup stacking duplicate mounts and hiding mounted drives. Existing bind mounts are now detected from the kernel mount table.

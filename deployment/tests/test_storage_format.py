@@ -160,6 +160,41 @@ class FormattingTests(unittest.TestCase):
             self.assertEqual(journal.stat().st_mtime_ns, before)
             self.assertFalse((flags / 'storage-format-status.json').exists())
 
+    def test_completion_publishes_fresh_mount_inventory(self):
+        self.disk['children'][0].update(fstype='ext4', mountpoints=['/managed-media/synthetic'])
+        with tempfile.TemporaryDirectory() as directory:
+            flags = Path(directory)
+            (flags / 'storage-format-request.json').write_text(json.dumps(
+                {'id': 'fresh-inventory', 'created_at': time.time()}))
+            def complete(_request, _project, progress, **_kwargs):
+                progress('complete', 'Drive formatted and mounted.')
+            with patch.object(formatter, 'JOURNAL', flags / 'journal.json'), \
+                    patch.object(formatter, 'format_drive', side_effect=complete), \
+                    patch.object(formatter, 'live_inventory', return_value=self.discover()) as discover:
+                formatter.serve({'flags': str(flags), 'uid': flags.stat().st_uid, 'project': '/synthetic'})
+            discover.assert_called_once_with('/synthetic')
+            status = json.loads((flags / 'storage-format-status.json').read_text())
+            self.assertEqual(status['state'], 'complete')
+            drive = status['storage_devices']['devices'][0]
+            self.assertTrue(drive['mounted'])
+            self.assertEqual(drive['filesystems'], ['ext4'])
+            self.assertEqual(drive['mount_points'], ['/managed-media/synthetic'])
+
+    def test_inventory_refresh_failure_does_not_report_formatting_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            flags = Path(directory)
+            (flags / 'storage-format-request.json').write_text(json.dumps(
+                {'id': 'refresh-failure', 'created_at': time.time()}))
+            def complete(_request, _project, progress, **_kwargs):
+                progress('complete', 'Drive formatted and mounted.')
+            with patch.object(formatter, 'JOURNAL', flags / 'journal.json'), \
+                    patch.object(formatter, 'format_drive', side_effect=complete), \
+                    patch.object(formatter, 'live_inventory', side_effect=RuntimeError('inventory unavailable')):
+                formatter.serve({'flags': str(flags), 'uid': flags.stat().st_uid, 'project': '/synthetic'})
+            status = json.loads((flags / 'storage-format-status.json').read_text())
+            self.assertEqual(status['state'], 'complete')
+            self.assertNotIn('storage_devices', status)
+
 
 if __name__ == '__main__':
     unittest.main()

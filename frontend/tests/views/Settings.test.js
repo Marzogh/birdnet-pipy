@@ -574,6 +574,70 @@ describe('Settings', () => {
       vi.useRealTimers()
     })
 
+    it('refreshes mounted drive status after formatting and ignores older discovery results', async () => {
+      vi.useFakeTimers()
+      let status = { state: 'idle' }
+      let finishOldRequest
+      const drive = { path: '/dev/sda', device_id: 'synthetic-device', name: 'BIRDSTORE',
+        size_bytes: 500000000000, connection: 'USB', filesystems: ['ext4'], mounted: true }
+      let discovery = { state: 'available', updated_at: 10, devices: [{ ...drive, mounted: false }] }
+      mockApi.get.mockImplementation(url => {
+        if (url === '/system/storage/format-status') return Promise.resolve({ data: status })
+        if (url === '/system/storage-devices') {
+          if (!finishOldRequest) return new Promise(resolve => { finishOldRequest = resolve })
+          return Promise.resolve({ data: discovery })
+        }
+        return defaultGetResponse(url)
+      })
+      const wrapper = mountSettings()
+      await flushPromises()
+      const details = wrapper.get('details')
+      details.element.open = true
+      await details.trigger('toggle')
+      await flushPromises()
+      wrapper.vm.formatStarted({ id: 'mount-refresh', state: 'queued' })
+      status = { id: 'mount-refresh', state: 'complete', message: 'Drive formatted and mounted.',
+        storage_devices: { state: 'available', updated_at: 20, devices: [drive] } }
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushPromises()
+      expect(details.text()).toContain('/dev/sda · USB · ext4 · Mounted')
+      finishOldRequest({ data: discovery })
+      await flushPromises()
+      expect(details.text()).not.toContain('Not mounted')
+      // A later request can still read an older periodic host snapshot.
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(details.text()).not.toContain('Not mounted')
+      // Newer host information must still be applied, including disconnection.
+      discovery = { ...discovery, updated_at: 30 }
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(details.text()).toContain('Not mounted')
+      vi.useRealTimers()
+    })
+
+    it('preserves newer discovery when loading an old completed formatting job', async () => {
+      let finishStatus
+      const drive = { path: '/dev/sda', name: 'BIRDSTORE', size_bytes: 500000000000,
+        connection: 'USB', filesystems: ['ext4'], mounted: false }
+      mockApi.get.mockImplementation(url => {
+        if (url === '/system/storage/format-status') return new Promise(resolve => { finishStatus = resolve })
+        if (url === '/system/storage-devices') return Promise.resolve({
+          data: { state: 'available', updated_at: 30, devices: [drive] }
+        })
+        return defaultGetResponse(url)
+      })
+      const wrapper = mountSettings()
+      await flushPromises()
+      const details = wrapper.get('details')
+      details.element.open = true
+      await details.trigger('toggle')
+      await flushPromises()
+      finishStatus({ data: { state: 'complete', storage_devices: {
+        state: 'available', updated_at: 20, devices: [{ ...drive, mounted: true }]
+      } } })
+      await flushPromises()
+      expect(details.text()).toContain('Not mounted')
+    })
+
     it('loads and displays available media storage targets', async () => {
       let moveQueued = false
       const movedSettings = createMockSettings()

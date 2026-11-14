@@ -148,6 +148,16 @@ def serve(config):
 
     def progress(state, message, job_id=None):
         payload = {'state': state, 'message': message, 'id': job_id, 'updated_at': time.time()}
+        if state == 'complete':
+            try:
+                inventory, protected = live_inventory(config['project'])
+                payload['storage_devices'] = {
+                    'state': 'available', 'updated_at': time.time(),
+                    'devices': describe_devices(inventory, protected),
+                }
+            except Exception as error:
+                # Formatting succeeded even if refreshing display metadata fails.
+                print(f'Could not refresh connected-drive information: {error}', flush=True)
         atomic_json(JOURNAL, payload)
         atomic_json(status_path, payload)
         print(f'Storage formatting: {message}', flush=True)
