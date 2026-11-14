@@ -468,7 +468,7 @@
             v-if="externalMediaTargets.length === 0"
             class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600"
           >
-            No external drive is configured. Set BIRDNET_MEDIA_PATH and restart BirdNET-PiPy to make one available.
+            Connect and prepare a drive, then select it in the Media storage dropdown.
           </p>
 
           <div

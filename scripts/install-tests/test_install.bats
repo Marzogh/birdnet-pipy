@@ -680,10 +680,23 @@ mounts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mounts)
 
 with tempfile.TemporaryDirectory() as directory:
+    # Native systemd hosts have a shared parent. A self-bind inherits its peer
+    # group unless explicitly detached, causing each child mount to appear twice.
+    subprocess.run(['mount', '--bind', directory, directory], check=True)
+    subprocess.run(['mount', '--make-rshared', directory], check=True)
     root = Path(directory) / 'media'
+    root.mkdir()
+    # Also cover upgrading an already-created bind with the wrong peer group.
+    subprocess.run(['mount', '--bind', str(root), str(root)], check=True)
     mounts.MEDIA_ROOT = root
     mounts.prepare_root()
     assert not os.path.ismount(root), 'Fixture must exercise a same-filesystem bind mount'
+    # Mirror Docker's rslave view and verify it still receives later mounts.
+    observer = Path(directory) / 'container-view'
+    observer.mkdir()
+    subprocess.run(['mount', '--bind', str(root), str(observer)], check=True)
+    subprocess.run(['mount', '--make-rslave', str(observer)], check=True)
+    mounts.prepare_root()
     child = root / 'synthetic-child'
     child.mkdir()
     subprocess.run(['mount', '-t', 'tmpfs', '-o', 'size=1m', 'tmpfs', str(child)], check=True)
@@ -700,9 +713,13 @@ with tempfile.TemporaryDirectory() as directory:
         mounts.prepare_root()
         assert entries() == before, 'Repeated setup added mount layers'
         assert sentinel.read_text() == 'existing media remains visible'
+        assert (observer / 'synthetic-child/preserved.txt').read_text() == 'existing media remains visible'
         print(f'Repeated setup {attempt + 1}/5: mount IDs and child contents preserved', flush=True)
     subprocess.run(['umount', str(child)], check=True)
+    assert not mounts.is_mountpoint(observer / 'synthetic-child')
+    subprocess.run(['umount', str(observer)], check=True)
     subprocess.run(['umount', str(root)], check=True)
+    subprocess.run(['umount', directory], check=True)
 PYMOUNT
     echo "Mount regression output: $output"
     [ "$status" -eq 0 ]

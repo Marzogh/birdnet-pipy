@@ -48,6 +48,8 @@ class MountTests(unittest.TestCase):
             self.mounted.add(args[-1])
         elif args[:2] == ['mount', '--make-rshared']:
             self.shared = True
+        elif args[:2] == ['mount', '--make-private']:
+            self.shared = False
         elif args[0] == 'mount':
             self.mounted.add(args[-1])
         elif args[0] == 'findmnt':
@@ -107,6 +109,16 @@ class MountTests(unittest.TestCase):
 
 
 class MountTableTests(unittest.TestCase):
+    def test_shared_parent_is_detached_but_independent_group_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            table = Path(directory) / 'mountinfo'
+            target = Path(directory).resolve() / 'media'
+            parent = '1 0 0:1 / / rw shared:1 - ext4 synthetic rw\n'
+            with patch.object(mounts, 'MOUNTINFO', table):
+                for group, expected in [('shared:1', True), ('shared:2', False), ('', False)]:
+                    table.write_text(parent + f'2 1 0:1 / {target} rw {group} - ext4 synthetic rw\n')
+                    self.assertEqual(mounts.shares_parent_peer_group(target), expected)
+
     def test_kernel_mount_lookup_decodes_escapes_and_matches_exact_path(self):
         with tempfile.TemporaryDirectory() as directory:
             table = Path(directory) / 'mountinfo'

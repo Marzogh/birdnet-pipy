@@ -55,6 +55,26 @@ def is_mountpoint(path):
     return False
 
 
+def shares_parent_peer_group(path):
+    """Detect a self-bind that still shares mount events with its parent."""
+    target = os.path.realpath(path)
+    group = None
+    parent_group = None
+    parent_length = -1
+    with MOUNTINFO.open(encoding='utf-8', errors='surrogateescape') as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 7:
+                continue
+            mountpoint = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), fields[4])
+            peer = next((field for field in fields[6:fields.index('-')] if field.startswith('shared:')), None)
+            if mountpoint == target:
+                group = peer
+            elif target.startswith(mountpoint.rstrip('/') + '/') and len(mountpoint) >= parent_length:
+                parent_length, parent_group = len(mountpoint), peer
+    return group is not None and group == parent_group
+
+
 def prepare_root(command=run):
     """Share only this dedicated mount tree, never the host's root mount."""
     MEDIA_ROOT.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -62,6 +82,10 @@ def prepare_root(command=run):
         raise RuntimeError('The managed media folder must not be a symbolic link.')
     if not is_mountpoint(MEDIA_ROOT):
         command(['mount', '--bind', str(MEDIA_ROOT), str(MEDIA_ROOT)])
+    # A bind inherits its parent's shared peer group. Detach that relationship
+    # before sharing with Docker, otherwise child mounts propagate back twice.
+    if shares_parent_peer_group(MEDIA_ROOT):
+        command(['mount', '--make-private', str(MEDIA_ROOT)])
     propagation = command(['findmnt', '--noheadings', '--raw', '--mountpoint', str(MEDIA_ROOT),
                            '--output', 'PROPAGATION']).strip()
     if 'shared' not in propagation.split(','):

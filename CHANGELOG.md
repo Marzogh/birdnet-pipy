@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed duplicate drive mounts on hosts with shared mount propagation by separating the managed media folder from its parent's sharing group. Storage guidance now directs users to the Media storage dropdown.
+
 - Fixed repeated media setup stacking duplicate mounts and hiding mounted drives. Existing bind mounts are now detected from the kernel mount table.
 
 - Improved drive formatting feedback with a persistent progress dialog and an automatically refreshed media storage dropdown after completion.
